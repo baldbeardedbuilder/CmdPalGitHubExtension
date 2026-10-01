@@ -1,0 +1,85 @@
+name: Bug report
+description: Something isn't working the way it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. Please don't paste tokens or client secrets anywhere in this form.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Tell us the story. What were you doing, and what went wrong?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Command Palette
+        2. Type 'GitHub'
+        3. Click '...'
+        4. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: host
+    attributes:
+      label: Which GitHub are you signed in to?
+      options:
+        - github.com
+        - GitHub Enterprise Server
+        - GitHub Enterprise Cloud with data residency (ghe.com)
+        - Not signed in
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: Windows version
+      description: Like Windows 11 24H2
+    validations:
+      required: true
+
+  - type: input
+    id: powertoys-version
+    attributes:
+      label: PowerToys version
+      description: Like v0.93.0
+    validations:
+      required: true
+
+  - type: input
+    id: extension-version
+    attributes:
+      label: Extension version
+      description: Check Command Palette settings
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Anything else?
+    validations:
+      required: false

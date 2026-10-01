@@ -1,0 +1,39 @@
+name: Feature request
+description: Suggest something new or better
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea! The more we understand what you're trying to do, the better we can build it.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: What's the problem or frustration behind this?
+      placeholder: Every morning I open five tabs just to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: What would you like to see?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Anything else?
+      description: Mockups, screenshots, links.
+    validations:
+      required: false

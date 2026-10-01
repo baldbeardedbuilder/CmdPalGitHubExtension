@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.x
+
+      - name: Restore
+        run: |
+          dotnet restore GitHubExtension/GitHubExtension.csproj -r win-x64
+          dotnet restore GitHubExtension.Tests/GitHubExtension.Tests.csproj -r win-x64
+
+      - name: Build
+        run: |
+          dotnet build GitHubExtension/GitHubExtension.csproj -r win-x64 --no-restore
+          dotnet build GitHubExtension.Tests/GitHubExtension.Tests.csproj -r win-x64 --no-restore
+
+      - name: Test
+        run: dotnet test GitHubExtension.Tests/GitHubExtension.Tests.csproj -r win-x64 --no-build
