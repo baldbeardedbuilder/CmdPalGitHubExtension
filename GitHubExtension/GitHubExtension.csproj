@@ -1,0 +1,113 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>BaldBeardedBuilder.CmdPal.GitHub</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AppxManifest>$(ProjectDir)Package.appxmanifest</AppxManifest>
+
+    <WindowsSdkPackageVersion>10.0.26100.68-preview</WindowsSdkPackageVersion>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+
+    <PublishProfile>win-$(Platform).pubxml</PublishProfile>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <LangVersion>preview</LangVersion>
+    <DebugType>embedded</DebugType>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <AssemblyName>BaldBeardedBuilder.GitHubExtension</AssemblyName>
+    <Company>Bald Bearded Builder LLC</Company>
+    <Copyright>(c) Bald Bearded Builder LLC</Copyright>
+    <NeutralLanguage>en-US</NeutralLanguage>
+    <Product>GitHub for Command Palette</Product>
+    <AssemblyTitle>GitHub for Command Palette</AssemblyTitle>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="Assets\**\*" />
+    <Content Include="Assets\**\*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Manifest Include="$(ApplicationManifest)" />
+  </ItemGroup>
+
+  <!--
+    The github.com OAuth app credentials come from the GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET
+    environment variables (CI uses repo secrets) or a gitignored oauth.local.props next to this file.
+  -->
+  <Import Project="oauth.local.props" Condition="Exists('oauth.local.props')" />
+
+  <PropertyGroup>
+    <GitHubOAuthClientId Condition="'$(GitHubOAuthClientId)' == ''">$(GITHUB_OAUTH_CLIENT_ID)</GitHubOAuthClientId>
+    <GitHubOAuthClientSecret Condition="'$(GitHubOAuthClientSecret)' == ''">$(GITHUB_OAUTH_CLIENT_SECRET)</GitHubOAuthClientSecret>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="GitHubOAuthClientId" Value="$(GitHubOAuthClientId)" Condition="'$(GitHubOAuthClientId)' != ''" />
+    <AssemblyMetadata Include="GitHubOAuthClientSecret" Value="$(GitHubOAuthClientSecret)" Condition="'$(GitHubOAuthClientSecret)' != ''" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CommandPalette.Extensions" />
+    <PackageReference Include="Microsoft.Windows.CsWinRT" />
+    <PackageReference Include="Shmuelie.WinRTServer" />
+
+    <!-- Needed to enable building an MSIX package -->
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools.MSIX">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(DisableMsixProjectCapabilityAddedByProject)'!='true' and '$(EnableMsixTooling)'=='true'">
+    <ProjectCapability Include="Msix" />
+  </ItemGroup>
+
+  <PropertyGroup Condition="'$(DisableHasPackageAndPublishMenuAddedByProject)'!='true' and '$(EnableMsixTooling)'=='true'">
+    <HasPackageAndPublishMenu>true</HasPackageAndPublishMenu>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(Configuration)' != 'Debug' ">
+    <IsAotCompatible>true</IsAotCompatible>
+    <PublishTrimmed>true</PublishTrimmed>
+    <PublishSingleFile>true</PublishSingleFile>
+    <PublishAot>true</PublishAot>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <CsWinRTAotOptimizerEnabled>true</CsWinRTAotOptimizerEnabled>
+    <CsWinRTAotWarningLevel>2</CsWinRTAotWarningLevel>
+    <!-- Suppress DynamicallyAccessedMemberTypes.PublicParameterlessConstructor in fallback code path of Windows SDK projection -->
+    <WarningsNotAsErrors>IL2081</WarningsNotAsErrors>
+
+    <GenerateTemporaryStoreCertificate>True</GenerateTemporaryStoreCertificate>
+    <GenerateAppInstallerFile>False</GenerateAppInstallerFile>
+    <AppxPackageSigningEnabled>False</AppxPackageSigningEnabled>
+    <AppxPackageSigningTimestampDigestAlgorithm>SHA256</AppxPackageSigningTimestampDigestAlgorithm>
+    <AppxAutoIncrementPackageRevision>False</AppxAutoIncrementPackageRevision>
+    <AppxSymbolPackageEnabled>True</AppxSymbolPackageEnabled>
+    <GenerateTestArtifacts>True</GenerateTestArtifacts>
+    <AppxBundle>Never</AppxBundle>
+    <HoursBetweenUpdateChecks>0</HoursBetweenUpdateChecks>
+    <DefaultLanguage>en-US</DefaultLanguage>
+  </PropertyGroup>
+
+  <!-- Package.appxmanifest is the single source of truth for the version. -->
+  <Target Name="UpdateVersionFromManifest" BeforeTargets="BeforeBuild">
+    <XmlPeek XmlInputPath="$(AppxManifest)" Query="/appx:Package/appx:Identity/@Version" Namespaces="&lt;Namespace Prefix='appx' Uri='http://schemas.microsoft.com/appx/manifest/foundation/windows10'/&gt;">
+      <Output TaskParameter="Result" PropertyName="appxManifestVersion" />
+    </XmlPeek>
+    <PropertyGroup>
+      <Version>$(appxManifestVersion)</Version>
+    </PropertyGroup>
+  </Target>
+
+  <!-- Command Palette keeps the extension process alive, which locks the exe during rebuilds. -->
+  <Target Name="KillRunningExecutable" BeforeTargets="Build;Deploy;Publish">
+    <Exec Command="taskkill /F /IM $(AssemblyName).exe" ContinueOnError="true" IgnoreExitCode="true" StandardOutputImportance="low" StandardErrorImportance="low" />
+  </Target>
+</Project>
