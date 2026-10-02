@@ -38,6 +38,11 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
         {
             await throttle.WaitAsync(cancellationToken).ConfigureAwait(false);
             var errors = new List<string>();
+            if (task.RepositoryError is { } repositoryError)
+            {
+                errors.Add($"Couldn't load the repository. {repositoryError}");
+            }
+
             try
             {
                 if (task.RepositoryId is { } repositoryId)
@@ -119,20 +124,23 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
             }
 
             long? repositoryId = null;
+            string? repositoryError = null;
             if (element.TryGetProperty("repository", out var repository) && repository.ValueKind != JsonValueKind.Null)
             {
                 if (repository.ValueKind != JsonValueKind.Object
                     || !repository.TryGetProperty("id", out var value) || value.ValueKind != JsonValueKind.Number
                     || !value.TryGetInt64(out var number) || number <= 0)
                 {
-                    throw new GitHubApiException("GitHub sent back an agent task with an invalid repository.");
+                    repositoryError = "GitHub sent back an agent task with an invalid repository.";
                 }
-
-                repositoryId = number;
+                else
+                {
+                    repositoryId = number;
+                }
             }
 
             result.Add(new GitHubAgentTask(id, GetString(element, "name") is { Length: > 0 } name ? name : "Agent task",
-                webUrl, state, updatedAt, repositoryId));
+                webUrl, state, updatedAt, repositoryId, RepositoryError: repositoryError));
         }
 
         return result;

@@ -13,6 +13,7 @@ internal sealed record GitHubAgentTask(
     long? RepositoryId,
     string? RepositoryFullName = null,
     string? Model = null,
-    string? DetailsError = null);
+    string? DetailsError = null,
+    string? RepositoryError = null);
 
 internal sealed record AgentTasksPageResult(IReadOnlyList<GitHubAgentTask> Tasks, Uri? NextPage);
