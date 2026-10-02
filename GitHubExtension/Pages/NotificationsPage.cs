@@ -20,6 +20,7 @@ internal sealed partial class NotificationsPage : DynamicListPage
     private readonly AuthService _auth;
     private readonly INotificationsClient _client;
     private readonly IBrowserLauncher _browser;
+    private readonly IssueDetailsPage? _issueDetails;
     private readonly TimeProvider _time;
     private readonly Lock _lock = new();
     private readonly List<NotificationItem> _items = [];
@@ -31,11 +32,12 @@ internal sealed partial class NotificationsPage : DynamicListPage
     private int _generation;
     private Task _currentLoad = Task.CompletedTask;
 
-    public NotificationsPage(AuthService auth, INotificationsClient client, IBrowserLauncher browser, TimeProvider? time = null)
+    public NotificationsPage(AuthService auth, INotificationsClient client, IBrowserLauncher browser, TimeProvider? time = null, IssueDetailsPage? issueDetails = null)
     {
         _auth = auth;
         _client = client;
         _browser = browser;
+        _issueDetails = issueDetails;
         _time = time ?? TimeProvider.System;
         Id = PageId;
         Name = "Open";
@@ -102,13 +104,23 @@ internal sealed partial class NotificationsPage : DynamicListPage
         return StartLoad(reset: true);
     }
 
-    internal void Open(NotificationItem item)
+    internal ICommandResult Open(NotificationItem item)
     {
-        _browser.Open(item.WebUrl);
         if (item.Unread)
         {
             MarkAsRead(item);
         }
+
+        if (item.Notification.SubjectType == "Issue"
+            && item.Notification.SubjectApiUrl is { } issueApiUrl
+            && _auth.CurrentAccount is { } account
+            && _issueDetails is { } details)
+        {
+            return details.Open(account, issueApiUrl, item.Notification.RepositoryFullName);
+        }
+
+        _browser.Open(item.WebUrl);
+        return CommandResult.Dismiss();
     }
 
     internal void MarkAsRead(NotificationItem item)
@@ -204,7 +216,7 @@ internal sealed partial class NotificationsPage : DynamicListPage
                 var known = _items.Select(i => i.Notification.Id).ToHashSet(StringComparer.Ordinal);
                 foreach (var notification in result.Notifications.Where(n => known.Add(n.Id)))
                 {
-                    var item = new NotificationItem(this, notification, NotificationFormatting.WebUrl(account.Host, notification), now);
+                    var item = new NotificationItem(this, notification, NotificationFormatting.WebUrl(account.Host, notification), _browser, now);
                     if (_subjectCache.TryGetValue(notification.Id, out var cached) && cached.UpdatedAt == notification.UpdatedAt)
                     {
                         item.ApplySubject(cached.Details);

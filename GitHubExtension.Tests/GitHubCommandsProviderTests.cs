@@ -88,6 +88,7 @@ public class GitHubCommandsProviderTests
         using var provider = CreateProvider(new InMemoryAccountStore(), out _);
 
         Assert.IsInstanceOfType<NotificationsPage>(provider.GetCommand(NotificationsPage.PageId));
+        Assert.IsInstanceOfType<IssueDetailsPage>(provider.GetCommand(IssueDetailsPage.PageId));
         Assert.IsInstanceOfType<ReposPage>(provider.GetCommand(ReposPage.PageId));
     }
 

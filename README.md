@@ -10,7 +10,7 @@ Your notifications, repos, agents, codespaces, and saved queries, one keystroke 
 - Sign in to github.com through your browser. No tokens to copy and paste.
 - Sign in to GitHub Enterprise Server with your server URL and a personal access token.
 - Your token lives in Windows Credential Locker, not in a file on disk.
-- Browse your notifications with issue and PR state, filter as you type, and mark them read or done.
+- Browse your notifications with issue and PR state, open issue details in Command Palette, filter as you type, and mark them read or done.
 - Preview a pull request's description, branches, labels, and change counts beside its notification. Enter still opens it on GitHub.
 - Find repos fast. Yours filter instantly, and pausing on a search checks all of GitHub too. Qualifiers like `user:` and `language:` work.
 
