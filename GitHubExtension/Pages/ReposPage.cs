@@ -46,6 +46,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         _time = time ?? TimeProvider.System;
         _searchDelay = searchDelay ?? DefaultSearchDelay;
         Actions = actions;
+        RepositoryPage = new RepositoryPage(browser, actions);
         Id = PageId;
         Name = "Open";
         Title = "Repos";
@@ -55,6 +56,8 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     }
 
     internal ActionsPage? Actions { get; }
+
+    internal RepositoryPage RepositoryPage { get; }
 
     /// <summary>
     /// The in flight load of your repos. Handy for tests.
@@ -353,6 +356,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
 
     private void Reset()
     {
+        RepositoryPage.Reset();
         lock (_lock)
         {
             _generation++;

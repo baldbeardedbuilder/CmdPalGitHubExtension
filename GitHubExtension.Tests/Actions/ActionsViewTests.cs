@@ -26,7 +26,7 @@ public class ActionsViewTests
     public TestContext TestContext { get; set; } = null!;
 
     [TestMethod]
-    public async Task RepoMenu_OpensRegisteredActionsPageWithoutChangingDefaultCommand()
+    public async Task RepoMenu_OpensRegisteredRepositoryAndActionsPages()
     {
         var auth = Auth();
         var repos = new Mock<IRepositoriesClient>();
@@ -40,16 +40,24 @@ public class ActionsViewTests
         page.GetItems();
         await page.CurrentLoad;
         var item = page.GetItems().Single();
-        Assert.IsInstanceOfType<OpenInBrowserCommand>(item.Command);
-        var command = item.MoreCommands.OfType<CommandContextItem>().Single(c => c.Command is OpenActionsCommand);
+        Assert.IsInstanceOfType<OpenRepositoryCommand>(item.Command).Invoke();
+        var repository = Assert.IsInstanceOfType<RepositoryPage>(provider.GetCommand(RepositoryPage.PageId));
+        Assert.AreEqual("o/r", repository.Title);
+        Assert.IsNull(browser.LastOpened);
+        var command = repository.GetItems().Single(i => i.Title == "Actions").Command;
 
-        ((OpenActionsCommand)command.Command!).Invoke();
+        Assert.IsInstanceOfType<OpenActionsCommand>(command).Invoke();
         var actions = (ActionsPage)provider.GetCommand(ActionsPage.PageId)!;
         actions.GetItems();
         await actions.CurrentLoad;
 
         Assert.AreEqual("CI", actions.GetItems().Single().Title);
         client.Verify(c => c.GetRunsAsync(Account, "o/r", null, It.IsAny<CancellationToken>()), Times.Once);
+        Assert.IsInstanceOfType<OpenActionsCommand>(item.MoreCommands.OfType<CommandContextItem>()
+            .Single(c => c.Command is OpenActionsCommand).Command);
+        auth.SignOut();
+        Assert.IsEmpty(repository.GetItems());
+        Assert.AreEqual("Repository", repository.Title);
     }
 
     [TestMethod]

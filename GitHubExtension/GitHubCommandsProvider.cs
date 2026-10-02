@@ -80,6 +80,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         NotificationsPage.PageId => _notificationsPage,
         IssueDetailsPage.PageId => _issueDetailsPage,
         ReposPage.PageId => _reposPage,
+        RepositoryPage.PageId => _reposPage.RepositoryPage,
         AgentsPage.PageId => _agentsPage,
         ActionsPage.PageId => _actionsPage,
         CodespacesPage.PageId => _codespacesPage,

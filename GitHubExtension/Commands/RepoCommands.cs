@@ -4,8 +4,25 @@
 
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
+using BaldBeardedBuilder.CmdPal.GitHub.Repositories;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Commands;
+
+internal sealed partial class OpenRepositoryCommand : InvokableCommand
+{
+    private readonly RepositoryPage _page;
+    private readonly GitHubRepository _repository;
+
+    public OpenRepositoryCommand(RepositoryPage page, GitHubRepository repository)
+    {
+        _page = page;
+        _repository = repository;
+        Name = "Open";
+        Icon = Icons.Repos;
+    }
+
+    public override ICommandResult Invoke() => _page.OpenRepository(_repository);
+}
 
 internal sealed partial class OpenInBrowserCommand : InvokableCommand
 {
