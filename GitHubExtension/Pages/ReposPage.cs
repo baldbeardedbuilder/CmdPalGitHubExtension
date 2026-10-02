@@ -160,6 +160,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
 
         GitHubAccount? account;
         CancellationTokenSource? cts = null;
+        CancellationToken token = default;
         bool hasMore;
         bool fetching;
         lock (_lock)
@@ -182,14 +183,24 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
             {
                 cts = _searchCts = new CancellationTokenSource();
                 _searching = true;
-                var token = cts.Token;
-                _currentSearch = Task.Run(() => SearchAsync(account, query, token));
+                token = cts.Token;
             }
         }
 
         // Only your own list pages; search results come back in one shot.
         HasMoreItems = cts is null && hasMore;
         IsLoading = cts is not null || fetching;
+        if (cts is not null && account is not null)
+        {
+            lock (_lock)
+            {
+                if (!token.IsCancellationRequested)
+                {
+                    _currentSearch = Task.Run(() => SearchAsync(account, query, token));
+                }
+            }
+        }
+
         RaiseItemsChanged();
     }
 
@@ -297,11 +308,19 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
             _fetching = true;
             page = reset ? null : _nextPage;
             generation = _generation;
-            _currentLoad = Task.Run(() => LoadAsync(account, page, reset, generation));
         }
 
         IsLoading = true;
-        return _currentLoad;
+        lock (_lock)
+        {
+            if (generation != _generation)
+            {
+                return _currentLoad;
+            }
+
+            _currentLoad = Task.Run(() => LoadAsync(account, page, reset, generation));
+            return _currentLoad;
+        }
     }
 
     private async Task LoadAsync(GitHubAccount account, Uri? page, bool reset, int generation)
@@ -351,9 +370,11 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         finally
         {
             bool searching;
+            bool publish;
             lock (_lock)
             {
-                if (generation == _generation)
+                publish = generation == _generation;
+                if (publish)
                 {
                     _fetching = false;
                 }
@@ -361,8 +382,11 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
                 searching = _searching;
             }
 
-            IsLoading = searching;
-            RaiseItemsChanged();
+            if (publish)
+            {
+                IsLoading = searching;
+                RaiseItemsChanged();
+            }
         }
     }
 

@@ -54,15 +54,23 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
 
     public override IListItem[] GetItems()
     {
+        bool needsLoad;
         lock (_lock)
         {
-            if (!_loaded && !_fetching)
-            {
-                StartLoad(reset: true);
-            }
+            needsLoad = !_loaded && !_fetching;
+        }
 
+        if (needsLoad)
+        {
+            StartLoad(reset: true);
+        }
+
+        CommandItem empty;
+        IListItem[] result;
+        lock (_lock)
+        {
             var terms = SearchText.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            EmptyContent = _fetching
+            empty = _fetching
                 ? Empty("Loading agents...", "Checking your GitHub agent tasks")
                 : _error is not null
                     ? Empty("Couldn't load agents", _error)
@@ -81,8 +89,11 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
                 });
             }
 
-            return [.. items];
+            result = [.. items];
         }
+
+        EmptyContent = empty;
+        return result;
     }
 
     public override void UpdateSearchText(string oldSearch, string newSearch) => RaiseItemsChanged();
@@ -94,8 +105,9 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
         lock (_lock)
         {
             CancelLoad();
-            return StartLoad(reset: true);
         }
+
+        return StartLoad(reset: true);
     }
 
     public void Dispose()
@@ -106,6 +118,8 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
             _disposed = true;
             CancelLoad();
         }
+
+        IsLoading = false;
     }
 
     private CommandItem Empty(string title, string subtitle) =>
@@ -113,21 +127,35 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
 
     private Task StartLoad(bool reset)
     {
+        GitHubAccount account;
+        CancellationToken token;
+        int generation;
+        Uri? page;
         lock (_lock)
         {
-            if (_disposed || _auth.CurrentAccount is not { } account || _fetching || (!reset && _nextPage is null))
+            if (_disposed || _auth.CurrentAccount is not { } currentAccount || _fetching || (!reset && _nextPage is null))
             {
                 return _currentLoad;
             }
 
             _loadCts?.Dispose();
             _loadCts = new CancellationTokenSource();
-            var token = _loadCts.Token;
-            var generation = _generation;
-            var page = reset ? null : _nextPage;
+            account = currentAccount;
+            token = _loadCts.Token;
+            generation = _generation;
+            page = reset ? null : _nextPage;
             _fetching = true;
             _error = null;
-            IsLoading = true;
+        }
+
+        IsLoading = true;
+        lock (_lock)
+        {
+            if (generation != _generation || _disposed)
+            {
+                return _currentLoad;
+            }
+
             _currentLoad = Task.Run(() => LoadAsync(account, page, reset, generation, token));
             return _currentLoad;
         }
@@ -138,6 +166,7 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
         try
         {
             var result = await _client.GetTasksAsync(account, page, token).ConfigureAwait(false);
+            bool hasMore;
             lock (_lock)
             {
                 if (generation != _generation || token.IsCancellationRequested)
@@ -156,8 +185,10 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
                 _items.Sort((a, b) => b.Task.UpdatedAt.CompareTo(a.Task.UpdatedAt));
                 _nextPage = result.NextPage;
                 _loaded = true;
-                HasMoreItems = _nextPage is not null;
+                hasMore = _nextPage is not null;
             }
+
+            HasMoreItems = hasMore;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
@@ -177,14 +208,20 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
         }
         finally
         {
+            bool publish;
             lock (_lock)
             {
-                if (generation == _generation && !_disposed)
+                publish = generation == _generation && !_disposed;
+                if (publish)
                 {
                     _fetching = false;
-                    IsLoading = false;
-                    RaiseItemsChanged();
                 }
+            }
+
+            if (publish)
+            {
+                IsLoading = false;
+                RaiseItemsChanged();
             }
         }
     }
@@ -198,10 +235,10 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
             _nextPage = null;
             _loaded = false;
             _error = null;
-            HasMoreItems = false;
-            IsLoading = false;
         }
 
+        HasMoreItems = false;
+        IsLoading = false;
         RaiseItemsChanged();
     }
 

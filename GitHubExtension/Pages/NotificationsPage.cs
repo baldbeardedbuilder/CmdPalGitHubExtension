@@ -186,11 +186,19 @@ internal sealed partial class NotificationsPage : DynamicListPage
             _fetching = true;
             page = reset ? null : _nextPage;
             generation = _generation;
-            _currentLoad = Task.Run(() => LoadAsync(account, page, reset, generation));
         }
 
         IsLoading = true;
-        return _currentLoad;
+        lock (_lock)
+        {
+            if (generation != _generation)
+            {
+                return _currentLoad;
+            }
+
+            _currentLoad = Task.Run(() => LoadAsync(account, page, reset, generation));
+            return _currentLoad;
+        }
     }
 
     private async Task LoadAsync(GitHubAccount account, Uri? page, bool reset, int generation)
@@ -248,16 +256,21 @@ internal sealed partial class NotificationsPage : DynamicListPage
         }
         finally
         {
+            bool publish;
             lock (_lock)
             {
-                if (generation == _generation)
+                publish = generation == _generation;
+                if (publish)
                 {
                     _fetching = false;
                 }
             }
 
-            IsLoading = false;
-            RaiseItemsChanged();
+            if (publish)
+            {
+                IsLoading = false;
+                RaiseItemsChanged();
+            }
         }
 
         await LoadSubjectsAsync(account, added, generation).ConfigureAwait(false);
@@ -281,29 +294,32 @@ internal sealed partial class NotificationsPage : DynamicListPage
                             return;
                         }
 
-                        if (details is not null)
+                        if (details is not null && (item.Notification.SubjectType != "PullRequest" || details.PullRequest is not null))
                         {
-                            item.ApplySubject(details);
-                            if (item.Notification.SubjectType != "PullRequest" || details.PullRequest is not null)
-                            {
-                                _subjectCache[item.Notification.Id] = (item.Notification.UpdatedAt, details);
-                            }
+                            _subjectCache[item.Notification.Id] = (item.Notification.UpdatedAt, details);
                         }
-                        else
-                        {
-                            item.SetSubjectError("Couldn't load pull request details. Try refreshing notifications or open it on GitHub.");
-                        }
+                    }
+
+                    if (details is not null)
+                    {
+                        item.ApplySubject(details);
+                    }
+                    else
+                    {
+                        item.SetSubjectError("Couldn't load pull request details. Try refreshing notifications or open it on GitHub.");
                     }
                 }
                 catch (GitHubApiException ex)
                 {
                     lock (_lock)
                     {
-                        if (generation == _generation)
+                        if (generation != _generation)
                         {
-                            item.SetSubjectError(ex.Message);
+                            return;
                         }
                     }
+
+                    item.SetSubjectError(ex.Message);
                 }
                 finally
                 {
