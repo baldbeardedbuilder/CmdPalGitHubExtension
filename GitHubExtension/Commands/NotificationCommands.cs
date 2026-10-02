@@ -20,8 +20,7 @@ internal sealed partial class OpenNotificationCommand : InvokableCommand
 
     public override ICommandResult Invoke()
     {
-        _page.Open(_item);
-        return CommandResult.Dismiss();
+        return _page.Open(_item);
     }
 }
 
