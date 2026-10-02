@@ -58,6 +58,14 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         }
     }
 
+    internal RepositoryPullRequestsPage ForRepository(string repository) =>
+        new(_auth, _client, _browser, _time)
+        {
+            Id = $"{PageId}.{Uri.EscapeDataString(repository)}",
+            Title = $"{repository} pull requests",
+            _repository = repository,
+        };
+
     internal ICommandResult Open(string repository)
     {
         lock (_lock)

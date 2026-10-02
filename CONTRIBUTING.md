@@ -35,6 +35,8 @@ Tests never touch real GitHub or your Credential Locker. Auth tests use fakes, a
 
 ### Updating pages
 
+Use the destination page itself as a list item's command when navigating within Command Palette. The host doesn't handle `CommandResult.GoToPage`, so returning it from an invokable command won't open the page.
+
 Command Palette handles property and item notifications synchronously and may read the page from another thread before returning. Update your private state under its lock, then release the lock before setting toolkit properties, updating visible items, or calling `RaiseItemsChanged()` so those reads don't deadlock.
 
 Reuse the same `EmptyContent` item when its text and command haven't changed. Creating a new item on every `GetItems()` call can send the host into a notification loop, including when you're showing an error.

@@ -6,22 +6,6 @@ using BaldBeardedBuilder.CmdPal.GitHub.Pages;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Commands;
 
-internal sealed partial class OpenActionsCommand : InvokableCommand
-{
-    private readonly ActionsPage _page;
-    private readonly string _repository;
-
-    public OpenActionsCommand(ActionsPage page, string repository)
-    {
-        _page = page;
-        _repository = repository;
-        Name = "Actions";
-        Icon = Icons.Actions;
-    }
-
-    public override ICommandResult Invoke() => _page.OpenRepository(_repository);
-}
-
 internal sealed partial class RefreshActionsCommand : InvokableCommand
 {
     private readonly ActionsPage _page;

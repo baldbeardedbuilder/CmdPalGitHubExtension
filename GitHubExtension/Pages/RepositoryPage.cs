@@ -8,7 +8,7 @@ using BaldBeardedBuilder.CmdPal.GitHub.Repositories;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 
-internal sealed partial class RepositoryPage : ListPage
+internal sealed partial class RepositoryPage : ListPage, IDisposable
 {
     public const string PageId = "com.baldbeardedbuilder.cmdpal.github.repository";
 
@@ -26,9 +26,9 @@ internal sealed partial class RepositoryPage : ListPage
         RepositoryPullRequestsPage? pullRequestsPage = null)
     {
         _browser = browser;
-        _actions = actions;
-        _issuesPage = issuesPage;
-        _pullRequestsPage = pullRequestsPage;
+        _actions = actions?.ForRepository(repository.FullName);
+        _issuesPage = issuesPage?.ForRepository(repository.FullName);
+        _pullRequestsPage = pullRequestsPage?.ForRepository(repository.FullName);
         Id = $"{PageId}.{Uri.EscapeDataString(repository.FullName)}";
         Name = "Open";
         Icon = Icons.Repos;
@@ -49,21 +49,21 @@ internal sealed partial class RepositoryPage : ListPage
         ];
         var actions = _actions is null
             ? (ICommand)new OpenInBrowserCommand(_browser, new Uri(repoBase + "actions"), "Open on GitHub", Icons.Actions)
-            : new OpenActionsCommand(_actions, repository.FullName);
+            : _actions;
 
         _items =
         [
             new ListItem(open) { Title = repository.FullName, Subtitle = repository.Description ?? string.Empty, Icon = Icons.Repos, MoreCommands = more },
             new ListItem(_issuesPage is null
                 ? new OpenInBrowserCommand(_browser, new Uri(repoBase + "issues"), "Open on GitHub", Icons.Issues)
-                : new BrowseRepositoryIssuesCommand(_issuesPage, repository.FullName))
+                : _issuesPage)
             {
                 Title = "Issues", Subtitle = _issuesPage is null ? "Open issues on GitHub" : $"Browse issues in {repository.FullName}",
                 Icon = Icons.Issues, MoreCommands = more,
             },
             new ListItem(_pullRequestsPage is null
                 ? new OpenInBrowserCommand(_browser, new Uri(repoBase + "pulls"), "Open on GitHub", Icons.PullRequests)
-                : new BrowseRepositoryPullRequestsCommand(_pullRequestsPage, repository.FullName))
+                : _pullRequestsPage)
             {
                 Title = "Pull Requests", Subtitle = _pullRequestsPage is null
                     ? "Open pull requests on GitHub"
@@ -85,6 +85,15 @@ internal sealed partial class RepositoryPage : ListPage
 
     public override IListItem[] GetItems() => _items;
 
+    internal ActionsPage? Actions => _actions;
+
+    public void Dispose()
+    {
+        _actions?.Dispose();
+        _issuesPage?.Dispose();
+        _pullRequestsPage?.Dispose();
+    }
+
     internal void Reset()
     {
         _items = [];
@@ -92,5 +101,6 @@ internal sealed partial class RepositoryPage : ListPage
         PlaceholderText = "Search repository sections...";
         SearchText = string.Empty;
         RaiseItemsChanged();
+        Dispose();
     }
 }

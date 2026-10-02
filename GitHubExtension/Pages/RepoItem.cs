@@ -35,9 +35,9 @@ internal sealed partial class RepoItem : ListItem
             new CommandContextItem(new OpenInBrowserCommand(browser, new Uri(repoBase + "pulls"), "Open pull requests", Icons.PullRequests)),
         };
 
-        if (page.Actions is { } actions)
+        if (RepositoryPage.Actions is { } actions)
         {
-            more.Add(new CommandContextItem(new OpenActionsCommand(actions, repository.FullName)));
+            more.Add(new CommandContextItem(actions));
         }
 
         if (repository.CloneUrl is { } clone)
