@@ -17,6 +17,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     private readonly IPullRequestsClient _client;
     private readonly IBrowserLauncher _browser;
     private readonly TimeProvider _time;
+    private readonly PageEmptyContent _emptyContent;
     private readonly Lock _lock = new();
     private readonly List<RepositoryPullRequestItem> _items = [];
     private string? _repository;
@@ -37,6 +38,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         _client = client;
         _browser = browser;
         _time = time ?? TimeProvider.System;
+        _emptyContent = new PageEmptyContent(Icons.PullRequests, new RefreshRepositoryItemsCommand(RefreshAsync, Icons.PullRequests));
         Id = PageId;
         Name = "Pull requests";
         Title = "Pull requests";
@@ -108,12 +110,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
             : [.. snapshot.Where(item => item.Matches(terms))];
 
         EmptyContent = error is not null
-            ? new CommandItem(new RefreshRepositoryItemsCommand(RefreshAsync, Icons.PullRequests))
-            {
-                Title = "Couldn't load pull requests",
-                Subtitle = error,
-                Icon = Icons.PullRequests,
-            }
+            ? Empty("Couldn't load pull requests", error, refresh: true)
             : matches.Length == 0
                 ? Empty(terms.Length == 0 ? "No pull requests found" : "No matching pull requests", terms.Length == 0
                     ? $"{repository} doesn't have any pull requests"
@@ -125,11 +122,13 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
 
     public override void UpdateSearchText(string oldSearch, string newSearch)
     {
+        bool hasMore;
         lock (_lock)
         {
-            HasMoreItems = newSearch.Trim().Length == 0 && _nextPage is not null;
+            hasMore = newSearch.Trim().Length == 0 && _nextPage is not null;
         }
 
+        HasMoreItems = hasMore;
         RaiseItemsChanged();
     }
 
@@ -167,8 +166,8 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         _auth.AccountChanged -= OnAccountChanged;
     }
 
-    private static CommandItem Empty(string title, string subtitle) =>
-        new(new NoOpCommand()) { Title = title, Subtitle = subtitle, Icon = Icons.PullRequests };
+    private CommandItem Empty(string title, string subtitle, bool refresh = false) =>
+        _emptyContent.Get(title, subtitle, refresh);
 
     private Task StartLoad(bool reset)
     {
@@ -188,11 +187,19 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
             _fetching = true;
             page = reset ? null : _nextPage;
             generation = _generation;
-            _currentLoad = Task.Run(() => LoadAsync(account, repository, page, reset, generation));
         }
 
         IsLoading = true;
-        return _currentLoad;
+        lock (_lock)
+        {
+            if (generation != _generation)
+            {
+                return _currentLoad;
+            }
+
+            _currentLoad = Task.Run(() => LoadAsync(account, repository, page, reset, generation));
+            return _currentLoad;
+        }
     }
 
     private async Task LoadAsync(GitHubAccount account, string repository, Uri? page, bool reset, int generation)
@@ -201,6 +208,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         {
             var result = await _client.GetPullRequestsAsync(account, repository, page, CancellationToken.None).ConfigureAwait(false);
             var now = _time.GetUtcNow();
+            bool hasMore;
 
             lock (_lock)
             {
@@ -221,8 +229,10 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
                 _nextPage = result.NextPage;
                 _loaded = true;
                 _error = null;
-                HasMoreItems = result.NextPage is not null && SearchText.Trim().Length == 0;
+                hasMore = result.NextPage is not null && SearchText.Trim().Length == 0;
             }
+
+            HasMoreItems = hasMore;
         }
         catch (GitHubApiException ex)
         {

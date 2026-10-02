@@ -16,6 +16,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     private readonly IActionsClient _client;
     private readonly IBrowserLauncher _browser;
     private readonly TimeProvider _time;
+    private readonly PageEmptyContent _emptyContent;
     private readonly Lock _lock = new();
     private readonly List<WorkflowRunItem> _items = [];
     private string? _repository;
@@ -32,6 +33,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         _client = client;
         _browser = browser;
         _time = time ?? TimeProvider.System;
+        _emptyContent = new PageEmptyContent(Icons.Actions, new RefreshActionsCommand(this));
         Id = PageId;
         Name = "Actions";
         Title = "Actions";
@@ -87,12 +89,12 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
             empty = _auth.CurrentAccount is null
                 ? Empty("Sign in to view workflow runs", "Open GitHub to sign in")
                 : _error is not null
-                    ? new CommandItem(new RefreshActionsCommand(this)) { Title = "Couldn't load workflow runs", Subtitle = _error, Icon = Icons.Actions }
+                    ? Empty("Couldn't load workflow runs", _error, refresh: true)
                     : _fetching && _items.Count == 0
                         ? Empty("Loading workflow runs...", _repository ?? string.Empty)
                         : terms.Length > 0
-                            ? new CommandItem(new RefreshActionsCommand(this)) { Title = "No workflow runs found", Subtitle = $"Nothing matches \"{SearchText.Trim()}\"", Icon = Icons.Actions }
-                            : new CommandItem(new RefreshActionsCommand(this)) { Title = "No workflow runs yet", Subtitle = "Refresh to check for new runs", Icon = Icons.Actions };
+                            ? Empty("No workflow runs found", $"Nothing matches \"{SearchText.Trim()}\"", refresh: true)
+                            : Empty("No workflow runs yet", "Refresh to check for new runs", refresh: true);
             var matches = _items.Where(i => terms.All(t => i.SearchText.Contains(t, StringComparison.OrdinalIgnoreCase))).Cast<IListItem>().ToList();
             if (_error is not null && _items.Count > 0)
             {
@@ -128,8 +130,8 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
     public void Dispose() => _auth.AccountChanged -= OnAccountChanged;
 
-    private static CommandItem Empty(string title, string subtitle) =>
-        new(new NoOpCommand()) { Title = title, Subtitle = subtitle, Icon = Icons.Actions };
+    private CommandItem Empty(string title, string subtitle, bool refresh = false) =>
+        _emptyContent.Get(title, subtitle, refresh);
 
     private Task StartLoad(bool reset)
     {

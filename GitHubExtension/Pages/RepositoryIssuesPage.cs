@@ -17,6 +17,7 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
     private readonly IIssuesClient _client;
     private readonly IBrowserLauncher _browser;
     private readonly TimeProvider _time;
+    private readonly PageEmptyContent _emptyContent;
     private readonly Lock _lock = new();
     private readonly List<RepositoryIssueItem> _items = [];
     private string? _repository;
@@ -33,6 +34,7 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         _client = client;
         _browser = browser;
         _time = time ?? TimeProvider.System;
+        _emptyContent = new PageEmptyContent(Icons.Issues, new RefreshRepositoryItemsCommand(RefreshAsync, Icons.Issues));
         Id = PageId;
         Name = "Issues";
         Title = "Issues";
@@ -104,12 +106,7 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
             : [.. snapshot.Where(item => item.Matches(terms))];
 
         EmptyContent = error is not null
-            ? new CommandItem(new RefreshRepositoryItemsCommand(RefreshAsync, Icons.Issues))
-            {
-                Title = "Couldn't load issues",
-                Subtitle = error,
-                Icon = Icons.Issues,
-            }
+            ? Empty("Couldn't load issues", error, refresh: true)
             : matches.Length == 0
                 ? Empty(terms.Length == 0 ? "No issues found" : "No matching issues", terms.Length == 0
                     ? $"{repository} doesn't have any issues"
@@ -121,11 +118,13 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
 
     public override void UpdateSearchText(string oldSearch, string newSearch)
     {
+        bool hasMore;
         lock (_lock)
         {
-            HasMoreItems = newSearch.Trim().Length == 0 && _nextPage is not null;
+            hasMore = newSearch.Trim().Length == 0 && _nextPage is not null;
         }
 
+        HasMoreItems = hasMore;
         RaiseItemsChanged();
     }
 
@@ -163,8 +162,8 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         _auth.AccountChanged -= OnAccountChanged;
     }
 
-    private static CommandItem Empty(string title, string subtitle) =>
-        new(new NoOpCommand()) { Title = title, Subtitle = subtitle, Icon = Icons.Issues };
+    private CommandItem Empty(string title, string subtitle, bool refresh = false) =>
+        _emptyContent.Get(title, subtitle, refresh);
 
     private Task StartLoad(bool reset)
     {
@@ -184,11 +183,19 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
             _fetching = true;
             page = reset ? null : _nextPage;
             generation = _generation;
-            _currentLoad = Task.Run(() => LoadAsync(account, repository, page, reset, generation));
         }
 
         IsLoading = true;
-        return _currentLoad;
+        lock (_lock)
+        {
+            if (generation != _generation)
+            {
+                return _currentLoad;
+            }
+
+            _currentLoad = Task.Run(() => LoadAsync(account, repository, page, reset, generation));
+            return _currentLoad;
+        }
     }
 
     private async Task LoadAsync(GitHubAccount account, string repository, Uri? page, bool reset, int generation)
@@ -197,6 +204,7 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         {
             var result = await _client.GetIssuesAsync(account, repository, page, CancellationToken.None).ConfigureAwait(false);
             var now = _time.GetUtcNow();
+            bool hasMore;
 
             lock (_lock)
             {
@@ -217,8 +225,10 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
                 _nextPage = result.NextPage;
                 _loaded = true;
                 _error = null;
-                HasMoreItems = result.NextPage is not null && SearchText.Trim().Length == 0;
+                hasMore = result.NextPage is not null && SearchText.Trim().Length == 0;
             }
+
+            HasMoreItems = hasMore;
         }
         catch (GitHubApiException ex)
         {
