@@ -14,6 +14,7 @@ Your notifications, repos, agents, codespaces, and saved queries, one keystroke 
 - Preview a pull request's description, branches, labels, and change counts beside its notification. Enter still opens it on GitHub.
 - Find repos fast. Yours filter instantly, and pausing on a search checks all of GitHub too. Qualifiers like `user:` and `language:` work.
 - Check your Copilot cloud agent tasks, newest activity first, with repository names, models, and status badges. Filter by title, repo, model, or status, press Enter to open a task, or use More to copy its URL and refresh.
+- Pick **Actions** from a repo's **More** menu to browse workflow runs. Filter by workflow, run title, actor, or status, refresh the list, and open a run on GitHub.
 - Browse your codespaces with repository names, branches, last-used times, and status badges. Filter as you type, open one in your browser, or use **More** to copy its URL or name and refresh the list.
 
 Codespaces requires a github.com account and the `codespace` token scope. It isn't available on GitHub Enterprise Server. Opening a stopped codespace takes you to GitHub's browser editor, where it can start the environment.

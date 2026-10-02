@@ -33,6 +33,16 @@ internal static class Icons
 
     internal static IconInfo Repos { get; } = Themed("repo");
 
+    internal static IconInfo Actions { get; } = new("\uE945");
+
+    internal static IconInfo RunSuccess { get; } = Themed("run-success");
+
+    internal static IconInfo RunFailure { get; } = Themed("run-failure");
+
+    internal static IconInfo RunInProgress { get; } = Themed("run-in-progress");
+
+    internal static IconInfo RunNeutral { get; } = Themed("run-neutral");
+
     internal static IconInfo Agents { get; } = Themed("copilot");
 
     internal static IconInfo Codespaces { get; } = Themed("codespaces");
