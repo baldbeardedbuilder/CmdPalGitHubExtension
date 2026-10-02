@@ -16,6 +16,7 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
     private readonly IAgentsClient _client;
     private readonly IBrowserLauncher _browser;
     private readonly TimeProvider _time;
+    private readonly PageEmptyContent _emptyContent;
     private readonly Lock _lock = new();
     private readonly List<AgentItem> _items = [];
     private CancellationTokenSource? _loadCts;
@@ -33,6 +34,7 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
         _client = client;
         _browser = browser;
         _time = time ?? TimeProvider.System;
+        _emptyContent = new PageEmptyContent(Icons.Agents, new RefreshAgentsCommand(this));
         Id = PageId;
         Name = "Open";
         Title = "Agents";
@@ -123,7 +125,7 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
     }
 
     private CommandItem Empty(string title, string subtitle) =>
-        new(new RefreshAgentsCommand(this)) { Title = title, Subtitle = subtitle, Icon = Icons.Agents };
+        _emptyContent.Get(title, subtitle, refresh: true);
 
     private Task StartLoad(bool reset)
     {

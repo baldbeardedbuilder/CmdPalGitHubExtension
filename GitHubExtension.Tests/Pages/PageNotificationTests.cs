@@ -24,11 +24,94 @@ public sealed class PageNotificationTests
     private static readonly DateTimeOffset Now = new(2026, 10, 2, 12, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
+    public async Task ErrorNotifications_CanReturnHomeAndOpenAnotherPage()
+    {
+        var auth = CreateAuth();
+        var browser = new FakeBrowser(_ => null);
+        var repos = new Mock<IRepositoriesClient>();
+        repos.Setup(c => c.GetMyRepositoriesAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new GitHubApiException("rate limited"));
+        var notifications = new Mock<INotificationsClient>();
+        notifications.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationsPageResult(
+                [new GitHubNotification("1", "Test notification", "Discussion", null, "o/r", WebUrl, "mention", true, Now)], null));
+        using var provider = new GitHubCommandsProvider(auth, () => string.Empty, notifications.Object, browser, repos.Object);
+        var home = Assert.IsInstanceOfType<HomePage>(provider.TopLevelCommands().Single().Command);
+        var reposPage = Assert.IsInstanceOfType<ReposPage>(home.GetItems().Single(item => item.Title == "Repos").Command);
+        reposPage.GetItems();
+        await reposPage.CurrentLoad;
+        Assert.IsEmpty(reposPage.GetItems());
+        Assert.AreEqual("rate limited", reposPage.EmptyContent!.Subtitle);
+
+        Assert.AreSame(home, provider.GetCommand(HomePage.PageId));
+        var notificationsPage = Assert.IsInstanceOfType<NotificationsPage>(
+            home.GetItems().Single(item => item.Title == "Notifications").Command);
+        Assert.AreSame(notificationsPage, provider.GetCommand(NotificationsPage.PageId));
+        notificationsPage.GetItems();
+        await notificationsPage.CurrentLoad;
+        Assert.AreEqual("Test notification", notificationsPage.GetItems().Single().Title);
+        Assert.IsFalse(notificationsPage.IsLoading);
+        Assert.AreSame(reposPage, provider.GetCommand(ReposPage.PageId));
+        Assert.AreEqual("rate limited", reposPage.EmptyContent.Subtitle);
+    }
+
+    [TestMethod]
     [DataRow("agents")]
     [DataRow("codespaces")]
     [DataRow("actions")]
     [DataRow("repos")]
     [DataRow("notifications")]
+    [DataRow("issues")]
+    [DataRow("pull-requests")]
+    public async Task ErrorNotifications_ReentrantReadSettlesAndRefreshRecovers(string name)
+    {
+        var fail = true;
+        var (page, currentLoad, refresh) = CreateListPage(name, CreateAuth(), () => fail);
+        var emptyEvents = 0;
+        page.PropChanged += (_, args) =>
+        {
+            if (args.PropertyName == "EmptyContent" && Interlocked.Increment(ref emptyEvents) <= 10)
+            {
+                page.GetItems();
+            }
+        };
+
+        try
+        {
+            page.GetItems();
+            await currentLoad();
+            Assert.IsEmpty(page.GetItems());
+            Assert.AreEqual("rate limited", page.EmptyContent!.Subtitle);
+            Assert.IsFalse(page.IsLoading);
+            Assert.IsLessThan(10, emptyEvents, "Reading an error must not keep publishing EmptyContent.");
+
+            var error = page.EmptyContent;
+            var events = emptyEvents;
+            page.GetItems();
+            Assert.AreSame(error, page.EmptyContent);
+            Assert.AreEqual(events, emptyEvents);
+
+            fail = false;
+            await refresh();
+            Assert.HasCount(1, page.GetItems());
+            Assert.IsFalse(page.IsLoading);
+            Assert.AreNotEqual("rate limited", page.EmptyContent!.Subtitle);
+            Assert.IsLessThan(10, emptyEvents);
+        }
+        finally
+        {
+            (page as IDisposable)?.Dispose();
+        }
+    }
+
+    [TestMethod]
+    [DataRow("agents")]
+    [DataRow("codespaces")]
+    [DataRow("actions")]
+    [DataRow("repos")]
+    [DataRow("notifications")]
+    [DataRow("issues")]
+    [DataRow("pull-requests")]
     public async Task ListNotifications_HostCanReadDuringLoadRefreshAndAccountChange(string name)
     {
         var auth = CreateAuth();
@@ -43,10 +126,7 @@ public sealed class PageNotificationTests
             CheckRead(() =>
             {
                 _ = currentLoad();
-                if (propertyName != "EmptyContent")
-                {
-                    page.GetItems();
-                }
+                page.GetItems();
             }, propertyName, blocked);
         };
         page.ItemsChanged += (_, _) =>
@@ -173,7 +253,7 @@ public sealed class PageNotificationTests
     private static AuthService CreateAuth() =>
         new(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(), new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
 
-    private static (DynamicListPage Page, Func<Task> CurrentLoad, Func<Task> Refresh) CreateListPage(string name, AuthService auth)
+    private static (DynamicListPage Page, Func<Task> CurrentLoad, Func<Task> Refresh) CreateListPage(string name, AuthService auth, Func<bool>? fail = null)
     {
         var browser = new FakeBrowser(_ => null);
         switch (name)
@@ -181,26 +261,26 @@ public sealed class PageNotificationTests
             case "agents":
                 var agents = new Mock<IAgentsClient>();
                 agents.Setup(c => c.GetTasksAsync(Account, It.IsAny<Uri?>(), It.IsAny<CancellationToken>()))
-                    .ReturnsAsync(new AgentTasksPageResult([new GitHubAgentTask("1", "Test agent", WebUrl, "completed", Now, null)], NextPage));
+                    .Returns(() => LoadResult(new AgentTasksPageResult([new GitHubAgentTask("1", "Test agent", WebUrl, "completed", Now, null)], NextPage), fail));
                 var agentsPage = new AgentsPage(auth, agents.Object, browser);
                 return (agentsPage, () => agentsPage.CurrentLoad, agentsPage.RefreshAsync);
             case "codespaces":
                 var codespaces = new Mock<ICodespacesClient>();
                 codespaces.Setup(c => c.GetCodespacesAsync(Account, It.IsAny<Uri?>(), It.IsAny<CancellationToken>()))
-                    .ReturnsAsync(new CodespacesPageResult([new GitHubCodespace("test", "Test codespace", "o/r", "main", "Available", Now, WebUrl)], NextPage));
+                    .Returns(() => LoadResult(new CodespacesPageResult([new GitHubCodespace("test", "Test codespace", "o/r", "main", "Available", Now, WebUrl)], NextPage), fail));
                 var codespacesPage = new CodespacesPage(auth, codespaces.Object, browser);
                 return (codespacesPage, () => codespacesPage.CurrentLoad, codespacesPage.RefreshAsync);
             case "actions":
                 var actions = new Mock<IActionsClient>();
                 actions.Setup(c => c.GetRunsAsync(Account, "o/r", It.IsAny<Uri?>(), It.IsAny<CancellationToken>()))
-                    .ReturnsAsync(new WorkflowRunsPageResult([new GitHubWorkflowRun(1, "Build", "Test build", "octocat", "completed", "success", Now, WebUrl)], NextPage));
+                    .Returns(() => LoadResult(new WorkflowRunsPageResult([new GitHubWorkflowRun(1, "Build", "Test build", "octocat", "completed", "success", Now, WebUrl)], NextPage), fail));
                 var actionsPage = new ActionsPage(auth, actions.Object, browser);
                 actionsPage.OpenRepository("o/r");
                 return (actionsPage, () => actionsPage.CurrentLoad, actionsPage.RefreshAsync);
             case "repos":
                 var repos = new Mock<IRepositoriesClient>();
                 repos.Setup(c => c.GetMyRepositoriesAsync(Account, It.IsAny<Uri?>(), It.IsAny<CancellationToken>()))
-                    .ReturnsAsync(new RepositoriesPageResult([new GitHubRepository("o/r", WebUrl, "Test repo", false, false, false, "C#", 0, 0, Now, null)], NextPage));
+                    .Returns(() => LoadResult(new RepositoriesPageResult([new GitHubRepository("o/r", WebUrl, "Test repo", false, false, false, "C#", 0, 0, Now, null)], NextPage), fail));
                 repos.Setup(c => c.SearchAsync(Account, It.IsAny<string>(), It.IsAny<CancellationToken>()))
                     .ReturnsAsync([]);
                 var issuesPage = new RepositoryIssuesPage(auth, Mock.Of<IIssuesClient>(), browser);
@@ -210,11 +290,30 @@ public sealed class PageNotificationTests
             case "notifications":
                 var notifications = new Mock<INotificationsClient>();
                 notifications.Setup(c => c.GetNotificationsAsync(Account, It.IsAny<Uri?>(), It.IsAny<CancellationToken>()))
-                    .ReturnsAsync(new NotificationsPageResult([new GitHubNotification("1", "Test notification", "Discussion", null, "o/r", WebUrl, "mention", true, Now)], NextPage));
+                    .Returns(() => LoadResult(new NotificationsPageResult([new GitHubNotification("1", "Test notification", "Discussion", null, "o/r", WebUrl, "mention", true, Now)], NextPage), fail));
                 var notificationsPage = new NotificationsPage(auth, notifications.Object, browser);
                 return (notificationsPage, () => notificationsPage.CurrentLoad, notificationsPage.RefreshAsync);
+            case "issues":
+                var issues = new Mock<IIssuesClient>();
+                issues.Setup(c => c.GetIssuesAsync(Account, "o/r", It.IsAny<Uri?>(), It.IsAny<CancellationToken>()))
+                    .Returns(() => LoadResult(new IssuesPageResult(
+                        [new GitHubIssue(1, "Test issue", "Body", SubjectState.Open, WebUrl, Now, "octocat", [], [], 0)], NextPage), fail));
+                var repositoryIssues = new RepositoryIssuesPage(auth, issues.Object, browser);
+                repositoryIssues.Open("o/r");
+                return (repositoryIssues, () => repositoryIssues.CurrentLoad, repositoryIssues.RefreshAsync);
+            case "pull-requests":
+                var pulls = new Mock<IPullRequestsClient>();
+                pulls.Setup(c => c.GetPullRequestsAsync(Account, "o/r", It.IsAny<Uri?>(), It.IsAny<CancellationToken>()))
+                    .Returns(() => LoadResult(new PullRequestsPageResult(
+                        [new GitHubPullRequest { Number = 1, Title = "Test pull request", State = SubjectState.Open, WebUrl = WebUrl, CreatedAt = Now, Author = "octocat" }], NextPage), fail));
+                var repositoryPulls = new RepositoryPullRequestsPage(auth, pulls.Object, browser);
+                repositoryPulls.Open("o/r");
+                return (repositoryPulls, () => repositoryPulls.CurrentLoad, repositoryPulls.RefreshAsync);
             default:
                 throw new ArgumentOutOfRangeException(nameof(name));
         }
     }
+
+    private static Task<T> LoadResult<T>(T result, Func<bool>? fail) =>
+        fail?.Invoke() == true ? Task.FromException<T>(new GitHubApiException("rate limited")) : Task.FromResult(result);
 }
