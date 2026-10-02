@@ -6,6 +6,8 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Text.Json;
 using BaldBeardedBuilder.CmdPal.GitHub.Agents;
+using BaldBeardedBuilder.CmdPal.GitHub.Commands;
+using BaldBeardedBuilder.CmdPal.GitHub.Pages;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Tests.Agents;
 
@@ -57,6 +59,36 @@ public sealed class AgentsClientTests
         Assert.IsTrue(handler.Headers.All(h => h.Token == "test-token" && h.Accept == "application/vnd.github+json" && h.HasUserAgent));
         Assert.IsTrue(handler.Headers.Where(h => h.Path.StartsWith("/agents/", StringComparison.Ordinal)).All(h => h.Version == "2026-03-10"));
         Assert.AreEqual("2022-11-28", handler.Headers.Single(h => h.Path.StartsWith("/repositories/", StringComparison.Ordinal)).Version);
+    }
+
+    [TestMethod]
+    [DataRow("")]
+    [DataRow("\"html_url\": null,")]
+    public async Task GetItems_MissingTaskUrlDisplaysAgentWithWorkingLink(string urlField)
+    {
+        var payload = TaskJson.Replace("\"html_url\": \"https://github.com/copilot/tasks/task-1\",", urlField, StringComparison.Ordinal);
+        using var handler = Handler(tasks: $"{{\"tasks\":[{payload}]}}");
+        using var http = new HttpClient(handler);
+
+        var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(),
+            new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
+        var browser = new FakeBrowser(_ => null);
+        using var page = new AgentsPage(auth, new AgentsClient(http), browser);
+
+        page.GetItems();
+        await page.CurrentLoad;
+        var item = Assert.IsInstanceOfType<AgentItem>(page.GetItems().Single());
+        var task = item.Task;
+
+        Assert.AreEqual("task-1", task.Id);
+        Assert.AreEqual("Fix token expiry", item.Title);
+        Assert.AreEqual(new Uri("https://github.com/copilot/tasks/task-1"), task.WebUrl);
+        Assert.AreEqual("microsoft/PowerToys", task.RepositoryFullName);
+        Assert.AreEqual("claude-sonnet-5", task.Model);
+        Assert.IsNull(task.DetailsError);
+        Assert.IsFalse(page.IsLoading);
+        Assert.IsInstanceOfType<OpenInBrowserCommand>(item.Command).Invoke();
+        Assert.AreEqual(task.WebUrl, browser.LastOpened);
     }
 
     [TestMethod]
@@ -207,12 +239,45 @@ public sealed class AgentsClientTests
     }
 
     [TestMethod]
+    [DataRow("github.com")]
+    [DataRow("octocorp.ghe.com")]
+    [DataRow("github.example.com:8443")]
+    public void ParseTasks_MissingTaskUrlUsesAccountHostAndEscapesId(string hostname)
+    {
+        Assert.IsTrue(GitHubHost.TryParse(hostname, out var host));
+        using var json = JsonDocument.Parse("""
+            {"tasks":[{"id":"task/1?source=#fragment","state":"queued","created_at":"2026-10-01T00:00:00Z"}]}
+            """);
+
+        var task = AgentsClient.ParseTasks(json.RootElement, host).Single();
+
+        Assert.AreEqual($"https://{hostname}/copilot/tasks/task%2F1%3Fsource%3D%23fragment", task.WebUrl.AbsoluteUri);
+        Assert.AreEqual("queued", task.State);
+        Assert.AreEqual(new DateTimeOffset(2026, 10, 1, 0, 0, 0, TimeSpan.Zero), task.UpdatedAt);
+    }
+
+    [TestMethod]
+    public void ParseTasks_SuppliedTaskUrlIsPreserved()
+    {
+        using var json = JsonDocument.Parse("""
+            {"tasks":[{"id":"task-1","state":"completed","html_url":"https://github.com/copilot/tasks/task-1?source=agents","created_at":"2026-10-01T00:00:00Z"}]}
+            """);
+
+        var task = AgentsClient.ParseTasks(json.RootElement, Account.Host).Single();
+
+        Assert.AreEqual(new Uri("https://github.com/copilot/tasks/task-1?source=agents"), task.WebUrl);
+    }
+
+    [TestMethod]
     [DataRow("{}")]
     [DataRow("[]")]
     [DataRow("""{"tasks":null}""")]
     [DataRow("""{"tasks":[42]}""")]
     [DataRow("""{"tasks":[{"id":"x","state":"completed","html_url":"https://evil.example/tasks/x","created_at":"2026-10-01T00:00:00Z"}]}""")]
     [DataRow("""{"tasks":[{"id":"x","state":"completed","html_url":"http://github.com/tasks/x","created_at":"2026-10-01T00:00:00Z"}]}""")]
+    [DataRow("""{"tasks":[{"id":"x","state":"completed","html_url":"https://user@github.com/tasks/x","created_at":"2026-10-01T00:00:00Z"}]}""")]
+    [DataRow("""{"tasks":[{"id":"x","state":"completed","html_url":"","created_at":"2026-10-01T00:00:00Z"}]}""")]
+    [DataRow("""{"tasks":[{"id":"x","state":"completed","html_url":42,"created_at":"2026-10-01T00:00:00Z"}]}""")]
     [DataRow("""{"tasks":[{"id":"x","state":"completed","html_url":"https://github.com/tasks/x","created_at":"bad"}]}""")]
     public void ParseTasks_InvalidResponsesAreNotEmptySuccesses(string payload)
     {
