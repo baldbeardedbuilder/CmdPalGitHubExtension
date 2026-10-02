@@ -137,7 +137,7 @@ internal sealed partial class NotificationItem : ListItem
         more.Add(new CommandContextItem(new MarkNotificationDoneCommand(_page, this)));
         if (Notification.RepositoryWebUrl is { } repo)
         {
-            more.Add(new CommandContextItem(new OpenUrlCommand(repo.AbsoluteUri) { Name = "Open repository", Icon = Icons.Repos }));
+            more.Add(new CommandContextItem(new OpenInBrowserCommand(_browser, repo, "Open repository", Icons.Repos)));
         }
 
         more.Add(new CommandContextItem(new CopyTextCommand(WebUrl.AbsoluteUri) { Name = "Copy link", Icon = Icons.Copy }));

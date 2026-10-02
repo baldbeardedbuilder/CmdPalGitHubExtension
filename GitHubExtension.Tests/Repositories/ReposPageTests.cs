@@ -9,6 +9,7 @@ using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
 using BaldBeardedBuilder.CmdPal.GitHub.PullRequests;
 using BaldBeardedBuilder.CmdPal.GitHub.Repositories;
+using Microsoft.CommandPalette.Extensions;
 using Microsoft.CommandPalette.Extensions.Toolkit;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Tests.Repositories;
@@ -140,9 +141,10 @@ public class ReposPageTests
         var command = page.GetItems().Single().MoreCommands.OfType<CommandContextItem>()
             .Single(c => c.Command is OpenInBrowserCommand open && open.Url.AbsolutePath == "/o/a");
 
-        ((InvokableCommand)command.Command!).Invoke();
+        var result = ((InvokableCommand)command.Command!).Invoke();
 
         Assert.AreEqual(new Uri("https://github.com/o/a"), browser.LastOpened);
+        Assert.AreEqual(CommandResultKind.Dismiss, result.Kind);
     }
 
     [TestMethod]
@@ -161,10 +163,12 @@ public class ReposPageTests
             .ToArray();
 
         CollectionAssert.AreEqual(RepositoryBrowserActions, browseCommands.Select(command => command.Name).ToArray());
-        browseCommands[0].Invoke();
+        var issuesResult = browseCommands[0].Invoke();
         Assert.AreEqual(new Uri("https://github.com/octocat/toolkit/issues"), browser.LastOpened);
-        browseCommands[1].Invoke();
+        Assert.AreEqual(CommandResultKind.Dismiss, issuesResult.Kind);
+        var pullRequestsResult = browseCommands[1].Invoke();
         Assert.AreEqual(new Uri("https://github.com/octocat/toolkit/pulls"), browser.LastOpened);
+        Assert.AreEqual(CommandResultKind.Dismiss, pullRequestsResult.Kind);
     }
 
     [TestMethod]
