@@ -13,6 +13,8 @@ internal interface ICodespacesClient
 {
     Task<CodespacesPageResult> GetCodespacesAsync(GitHubAccount account, Uri? page, CancellationToken cancellationToken);
 
+    Task<GitHubCodespace> StopCodespaceAsync(GitHubAccount account, string name, CancellationToken cancellationToken);
+
     Task<GitHubCodespace> CreateCodespaceAsync(
         GitHubAccount account,
         string repository,
@@ -23,6 +25,27 @@ internal interface ICodespacesClient
 internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClient
 {
     internal const int PageSize = 50;
+
+    public async Task<GitHubCodespace> StopCodespaceAsync(GitHubAccount account, string name, CancellationToken cancellationToken)
+    {
+        if (!account.Host.IsGitHubDotCom)
+        {
+            throw new GitHubApiException("Codespaces isn't available on GitHub Enterprise Server. Sign in to github.com to close one.");
+        }
+
+        var uri = new Uri(account.Host.ApiUrl, $"user/codespaces/{Uri.EscapeDataString(name)}/stop");
+        try
+        {
+            using var response = await SendAsync(httpClient, account, HttpMethod.Post, uri, cancellationToken).ConfigureAwait(false);
+            using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
+            return ParseCodespace(json.RootElement)
+                ?? throw new GitHubApiException("GitHub sent back a codespace we couldn't read.");
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new GitHubApiException("GitHub took too long to close this codespace. Refresh to check its state, then try again.", ex);
+        }
+    }
 
     public async Task<CodespacesPageResult> GetCodespacesAsync(GitHubAccount account, Uri? page, CancellationToken cancellationToken)
     {
