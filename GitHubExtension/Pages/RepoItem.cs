@@ -20,7 +20,8 @@ internal sealed partial class RepoItem : ListItem
         DateTimeOffset now)
     {
         Repository = repository;
-        Command = new OpenRepositoryCommand(page.RepositoryPage, repository);
+        RepositoryPage = page.CreateRepositoryPage(repository);
+        Command = RepositoryPage;
         Title = repository.FullName;
         Subtitle = RepoFormatting.Subtitle(repository, now);
         Icon = Icons.Repos;
@@ -50,6 +51,8 @@ internal sealed partial class RepoItem : ListItem
     }
 
     public GitHubRepository Repository { get; }
+
+    public RepositoryPage RepositoryPage { get; }
 
     public bool Matches(string[] terms) => terms.All(t =>
         Repository.FullName.Contains(t, StringComparison.OrdinalIgnoreCase)

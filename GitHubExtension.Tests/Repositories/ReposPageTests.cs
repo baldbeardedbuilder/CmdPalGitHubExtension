@@ -116,18 +116,18 @@ public class ReposPageTests
     }
 
     [TestMethod]
-    public async Task Open_ShowsRepositoryMenuWithoutLaunchingBrowser()
+    public async Task Open_NavigatesToRepositoryPageWithoutLaunchingBrowser()
     {
         using var page = CreatePage(Client([RepoFormattingTests.Repo("o/a")]).Object, out var browser);
         page.GetItems();
         await page.CurrentLoad;
 
-        ((InvokableCommand)page.GetItems().Single().Command!).Invoke();
+        var repository = Assert.IsInstanceOfType<RepositoryPage>(page.GetItems().Single().Command);
 
         Assert.IsNull(browser.LastOpened);
-        Assert.AreEqual("o/a", page.RepositoryPage.Title);
-        Assert.AreEqual("Search in o/a...", page.RepositoryPage.PlaceholderText);
-        CollectionAssert.AreEqual(RepositorySections, page.RepositoryPage.GetItems().Select(i => i.Title).ToArray());
+        Assert.AreEqual("o/a", repository.Title);
+        Assert.AreEqual("Search in o/a...", repository.PlaceholderText);
+        CollectionAssert.AreEqual(RepositorySections, repository.GetItems().Select(i => i.Title).ToArray());
     }
 
     [TestMethod]
@@ -192,11 +192,10 @@ public class ReposPageTests
             issuesClient.Object,
             pullRequestsClient.Object,
             out var issuesPage,
-            out var pullRequestsPage,
-            out var repositoryPage);
+            out var pullRequestsPage);
         page.GetItems();
         await page.CurrentLoad;
-        ((InvokableCommand)page.GetItems().Single().Command!).Invoke();
+        var repositoryPage = Assert.IsInstanceOfType<RepositoryPage>(page.GetItems().Single().Command);
 
         Assert.AreEqual("octocat/toolkit", repositoryPage.Title);
         var sections = repositoryPage.GetItems();
@@ -225,9 +224,8 @@ public class ReposPageTests
     public void RepositoryMenu_OpensSectionOnRepositoryHost(string section, string path)
     {
         var browser = new FakeBrowser(_ => null);
-        var page = new RepositoryPage(browser, null);
         var repository = RepoFormattingTests.Repo("o/a") with { WebUrl = new Uri("https://github.example.com/o/a/") };
-        page.OpenRepository(repository);
+        var page = new RepositoryPage(browser, null, repository);
 
         ((InvokableCommand)page.GetItems().Single(i => i.Title == section).Command!).Invoke();
 
@@ -235,22 +233,22 @@ public class ReposPageTests
     }
 
     [TestMethod]
-    public void RepositoryMenu_SwitchingRepositoriesReplacesContextAndClearsSearch()
+    public void RepositoryPages_KeepTheirOwnRepositoryContext()
     {
         var browser = new FakeBrowser(_ => null);
-        var page = new RepositoryPage(browser, null);
-        page.OpenRepository(RepoFormattingTests.Repo("o/a"));
-        page.SearchText = "issues";
-        page.OpenRepository(RepoFormattingTests.Repo("o/b", description: "Another repo"));
+        var first = new RepositoryPage(browser, null, RepoFormattingTests.Repo("o/a"));
+        first.SearchText = "issues";
+        var second = new RepositoryPage(browser, null, RepoFormattingTests.Repo("o/b", description: "Another repo"));
 
-        Assert.AreEqual(string.Empty, page.SearchText);
-        Assert.AreEqual("o/b", page.Title);
-        var overview = page.GetItems()[0];
+        Assert.AreNotEqual(first.Id, second.Id);
+        Assert.AreEqual("issues", first.SearchText);
+        Assert.AreEqual("o/a", first.Title);
+        var overview = second.GetItems()[0];
         Assert.AreEqual("o/b", overview.Title);
         Assert.AreEqual("Another repo", overview.Subtitle);
         ((InvokableCommand)overview.Command!).Invoke();
         Assert.AreEqual(new Uri("https://github.com/o/b"), browser.LastOpened);
-        foreach (var item in page.GetItems())
+        foreach (var item in second.GetItems())
         {
             var open = item.MoreCommands.OfType<CommandContextItem>()
                 .Select(c => c.Command).OfType<OpenInBrowserCommand>().Single();
@@ -268,10 +266,10 @@ public class ReposPageTests
         page.SearchText = "remote";
         await page.CurrentSearch;
 
-        ((InvokableCommand)page.GetItems().Single().Command!).Invoke();
+        var repository = Assert.IsInstanceOfType<RepositoryPage>(page.GetItems().Single().Command);
 
-        Assert.AreEqual("o/remote", page.RepositoryPage.Title);
-        Assert.AreEqual("o/remote", page.RepositoryPage.GetItems()[0].Title);
+        Assert.AreEqual("o/remote", repository.Title);
+        Assert.AreEqual("o/remote", repository.GetItems()[0].Title);
     }
 
     [TestMethod]
@@ -309,7 +307,6 @@ public class ReposPageTests
             Mock.Of<IIssuesClient>(),
             Mock.Of<IPullRequestsClient>(),
             out _,
-            out _,
             out _);
 
     private static ReposPage CreatePage(
@@ -318,8 +315,7 @@ public class ReposPageTests
         IIssuesClient issuesClient,
         IPullRequestsClient pullRequestsClient,
         out RepositoryIssuesPage issuesPage,
-        out RepositoryPullRequestsPage pullRequestsPage,
-        out RepositoryPage repositoryPage)
+        out RepositoryPullRequestsPage pullRequestsPage)
     {
         var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(), new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
         browser = new FakeBrowser(_ => null);
@@ -328,16 +324,7 @@ public class ReposPageTests
         issuesPage = new RepositoryIssuesPage(auth, issuesClient, browser, time.Object);
         pullRequestsPage = new RepositoryPullRequestsPage(auth, pullRequestsClient, browser, time.Object);
         var page = new ReposPage(auth, client, browser, issuesPage, pullRequestsPage, time.Object, TimeSpan.Zero);
-        repositoryPage = page.RepositoryPage;
         return page;
     }
 
-    private static ReposPage CreatePage(
-        IRepositoriesClient client,
-        out FakeBrowser browser,
-        IIssuesClient issuesClient,
-        IPullRequestsClient pullRequestsClient,
-        out RepositoryIssuesPage issuesPage,
-        out RepositoryPullRequestsPage pullRequestsPage)
-        => CreatePage(client, out browser, issuesClient, pullRequestsClient, out issuesPage, out pullRequestsPage, out _);
 }

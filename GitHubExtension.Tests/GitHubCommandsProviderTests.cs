@@ -93,7 +93,6 @@ public class GitHubCommandsProviderTests
 
         Assert.IsInstanceOfType<NotificationsPage>(provider.GetCommand(NotificationsPage.PageId));
         Assert.IsInstanceOfType<IssueDetailsPage>(provider.GetCommand(IssueDetailsPage.PageId));
-        Assert.IsInstanceOfType<RepositoryPage>(provider.GetCommand(RepositoryPage.PageId));
         Assert.IsInstanceOfType<RepositoryIssuesPage>(provider.GetCommand(RepositoryIssuesPage.PageId));
         Assert.IsInstanceOfType<RepositoryPullRequestsPage>(provider.GetCommand(RepositoryPullRequestsPage.PageId));
         Assert.IsInstanceOfType<ReposPage>(provider.GetCommand(ReposPage.PageId));

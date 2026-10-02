@@ -98,7 +98,6 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         RepositoryIssuesPage.PageId => _repositoryIssuesPage,
         RepositoryPullRequestsPage.PageId => _repositoryPullRequestsPage,
         ReposPage.PageId => _reposPage,
-        RepositoryPage.PageId => _reposPage.RepositoryPage,
         AgentsPage.PageId => _agentsPage,
         ActionsPage.PageId => _actionsPage,
         CodespacesPage.PageId => _codespacesPage,

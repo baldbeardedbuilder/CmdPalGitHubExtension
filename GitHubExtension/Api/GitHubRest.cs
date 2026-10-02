@@ -27,8 +27,10 @@ internal static class GitHubRest
         CancellationToken cancellationToken,
         bool throwOnError = true,
         string apiVersion = "2022-11-28",
+        Action<string>? logError = null,
         HttpContent? content = null)
     {
+        logError ??= LogError;
         EnsureSameHost(account, uri);
 
         using var request = new HttpRequestMessage(method, uri);
@@ -45,7 +47,22 @@ internal static class GitHubRest
         }
         catch (HttpRequestException ex)
         {
+            logError($"GitHub API error: {method} {LogEndpoint(uri)}; transport={ex.HttpRequestError}.");
             throw new GitHubApiException($"Couldn't reach {uri.Host}. {ex.Message}", ex);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            logError($"GitHub API error: {method} {LogEndpoint(uri)}; transport=Timeout.");
+            throw;
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            logError($"GitHub API error: {method} {LogEndpoint(uri)}; status={(int)response.StatusCode}; "
+                + $"request-id={Header(response, "X-GitHub-Request-Id")}; "
+                + $"rate-limit-remaining={Header(response, "X-RateLimit-Remaining")}; "
+                + $"rate-limit-reset={Header(response, "X-RateLimit-Reset")}; "
+                + $"sso-header-present={response.Headers.Contains("X-GitHub-SSO")}.");
         }
 
         if (!throwOnError || response.IsSuccessStatusCode)
@@ -64,7 +81,7 @@ internal static class GitHubRest
         }
     }
 
-    public static async Task<JsonDocument> ReadJsonAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    public static async Task<JsonDocument> ReadJsonAsync(HttpResponseMessage response, CancellationToken cancellationToken, Action<string>? logError = null)
     {
         try
         {
@@ -73,9 +90,21 @@ internal static class GitHubRest
         }
         catch (JsonException ex)
         {
+            (logError ?? LogError)(
+                $"GitHub API error: invalid JSON; endpoint={LogEndpoint(response.RequestMessage?.RequestUri)}; "
+                + $"status={(int)response.StatusCode}; request-id={Header(response, "X-GitHub-Request-Id")}.");
             throw new GitHubApiException("GitHub sent back something we couldn't read.", ex);
         }
     }
+
+    private static string Header(HttpResponseMessage response, string name) =>
+        response.Headers.TryGetValues(name, out var values) ? string.Join(',', values) : "unknown";
+
+    internal static string LogEndpoint(Uri? uri) =>
+        uri is null ? "unknown" : $"{uri.Scheme}://{uri.Authority}{uri.AbsolutePath}";
+
+    internal static void LogError(string message) =>
+        ExtensionHost.LogMessage(new LogMessage(message) { State = MessageState.Error });
 
     public static Uri? NextPage(HttpResponseMessage response) =>
         ParseNextLink(response.Headers.TryGetValues("Link", out var links) ? string.Join(',', links) : null);

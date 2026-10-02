@@ -51,14 +51,16 @@ internal sealed class NotificationsClient(HttpClient httpClient) : INotification
 
     public async Task<SubjectDetails?> GetSubjectAsync(GitHubAccount account, Uri subjectApiUrl, CancellationToken cancellationToken)
     {
-        using var response = await SendAsync(httpClient, account,  HttpMethod.Get, subjectApiUrl, cancellationToken, throwOnError: false).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
+        try
         {
-            return null;
+            using var response = await SendAsync(httpClient, account, HttpMethod.Get, subjectApiUrl, cancellationToken).ConfigureAwait(false);
+            using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
+            return ParseSubject(json.RootElement);
         }
-
-        using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
-        return ParseSubject(json.RootElement);
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new GitHubApiException($"The request to {subjectApiUrl.Host} timed out. Try again.", ex);
+        }
     }
 
     public async Task MarkAsReadAsync(GitHubAccount account, string threadId, CancellationToken cancellationToken)

@@ -16,6 +16,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
     private readonly ICodespacesClient _client;
     private readonly IBrowserLauncher _browser;
     private readonly TimeProvider _time;
+    private readonly PageEmptyContent _emptyContent;
     private readonly Lock _lock = new();
     private readonly List<CodespaceItem> _items = [];
     private Uri? _nextPage;
@@ -38,6 +39,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         _client = client;
         _browser = browser;
         _time = time ?? TimeProvider.System;
+        _emptyContent = new PageEmptyContent(Icons.Codespaces, new RefreshCodespacesCommand(this));
         CreatePage = createPage;
         Id = PageId;
         Name = "Open";
@@ -92,7 +94,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
             if (_error is not null)
             {
                 var error = new ListItem(refresh) { Title = "Couldn't load codespaces", Subtitle = _error, Icon = Icons.Codespaces };
-                empty = error;
+                empty = Empty("Couldn't load codespaces", _error, refresh: true);
                 if (items.Count > 0)
                 {
                     items.Add(error);
@@ -102,12 +104,9 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
             {
                 empty = _fetching && items.Count == 0
                     ? Empty("Loading codespaces...", "Getting your development environments from GitHub")
-                    : new CommandItem(refresh)
-                    {
-                        Title = terms.Length == 0 ? "No codespaces yet" : "No codespaces found",
-                        Subtitle = terms.Length == 0 ? "Create a codespace on GitHub, then refresh" : $"Nothing matches \"{SearchText.Trim()}\"",
-                        Icon = Icons.Codespaces,
-                    };
+                    : Empty(terms.Length == 0 ? "No codespaces yet" : "No codespaces found",
+                        terms.Length == 0 ? "Create a codespace on GitHub, then refresh" : $"Nothing matches \"{SearchText.Trim()}\"",
+                        refresh: true);
             }
 
             result = [.. items];
@@ -143,8 +142,8 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         IsLoading = false;
     }
 
-    private static CommandItem Empty(string title, string subtitle) =>
-        new(new NoOpCommand()) { Title = title, Subtitle = subtitle, Icon = Icons.Codespaces };
+    private CommandItem Empty(string title, string subtitle, bool refresh = false) =>
+        _emptyContent.Get(title, subtitle, refresh);
 
     private Task StartLoad(bool reset)
     {

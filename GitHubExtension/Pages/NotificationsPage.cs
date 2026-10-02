@@ -22,6 +22,7 @@ internal sealed partial class NotificationsPage : DynamicListPage
     private readonly IBrowserLauncher _browser;
     private readonly IssueDetailsPage? _issueDetails;
     private readonly TimeProvider _time;
+    private readonly PageEmptyContent _emptyContent;
     private readonly Lock _lock = new();
     private readonly List<NotificationItem> _items = [];
     private readonly Dictionary<string, (DateTimeOffset UpdatedAt, SubjectDetails Details)> _subjectCache = [];
@@ -39,6 +40,7 @@ internal sealed partial class NotificationsPage : DynamicListPage
         _browser = browser;
         _issueDetails = issueDetails;
         _time = time ?? TimeProvider.System;
+        _emptyContent = new PageEmptyContent(Icons.Notifications, new RefreshNotificationsCommand(this));
         Id = PageId;
         Name = "Open";
         Title = "Notifications";
@@ -80,8 +82,8 @@ internal sealed partial class NotificationsPage : DynamicListPage
         }
 
         EmptyContent = error is not null
-            ? new CommandItem(new RefreshNotificationsCommand(this)) { Title = "Couldn't load notifications", Subtitle = error, Icon = Icons.Notifications }
-            : new CommandItem(new NoOpCommand()) { Title = "You're all caught up", Subtitle = "No notifications to show", Icon = Icons.Notifications };
+            ? _emptyContent.Get("Couldn't load notifications", error, refresh: true)
+            : _emptyContent.Get("You're all caught up", "No notifications to show");
 
         var terms = SearchText.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         return terms.Length == 0
@@ -302,6 +304,11 @@ internal sealed partial class NotificationsPage : DynamicListPage
 
                     if (details is not null)
                     {
+                        if (item.Notification.SubjectType == "PullRequest" && details.PullRequest is null)
+                        {
+                            GitHubRest.LogError($"GitHub API error: pull request details missing; endpoint={GitHubRest.LogEndpoint(item.Notification.SubjectApiUrl)}.");
+                        }
+
                         item.ApplySubject(details);
                     }
                     else

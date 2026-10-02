@@ -23,6 +23,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     private readonly RepositoryIssuesPage _repositoryIssuesPage;
     private readonly RepositoryPullRequestsPage _repositoryPullRequestsPage;
     private readonly TimeProvider _time;
+    private readonly PageEmptyContent _emptyContent;
     private readonly TimeSpan _searchDelay;
     private readonly Lock _lock = new();
     private readonly List<RepoItem> _mine = [];
@@ -56,9 +57,9 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         _repositoryIssuesPage = repositoryIssuesPage;
         _repositoryPullRequestsPage = repositoryPullRequestsPage;
         _time = time ?? TimeProvider.System;
+        _emptyContent = new PageEmptyContent(Icons.Repos, new RefreshReposCommand(this));
         _searchDelay = searchDelay ?? DefaultSearchDelay;
         Actions = actions;
-        RepositoryPage = new RepositoryPage(browser, actions, repositoryIssuesPage, repositoryPullRequestsPage);
         Id = PageId;
         Name = "Open";
         Title = "Repos";
@@ -68,8 +69,6 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     }
 
     internal ActionsPage? Actions { get; }
-
-    internal RepositoryPage RepositoryPage { get; }
 
     /// <summary>
     /// The in flight load of your repos. Handy for tests.
@@ -128,7 +127,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         if (query.Length == 0)
         {
             EmptyContent = error is not null
-                ? Empty("Couldn't load your repos", error)
+                ? Empty("Couldn't load your repos", error, refresh: true)
                 : Empty("No repos yet", "Repos you own or collaborate on show up here");
             return mine;
         }
@@ -142,9 +141,9 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         }
 
         EmptyContent = searching
-            ? new CommandItem(new NoOpCommand()) { Title = "Searching GitHub...", Icon = Icons.Repos }
+            ? Empty("Searching GitHub...", string.Empty)
             : searchError is not null
-                ? Empty("Couldn't search GitHub", searchError)
+                ? Empty("Couldn't search GitHub", searchError, refresh: true)
                 : Empty("No repos found", $"Nothing matches \"{query}\"");
 
         return [.. local];
@@ -235,8 +234,11 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         }
     }
 
-    private static CommandItem Empty(string title, string subtitle) =>
-        new(new NoOpCommand()) { Title = title, Subtitle = subtitle, Icon = Icons.Repos };
+    private CommandItem Empty(string title, string subtitle, bool refresh = false) =>
+        _emptyContent.Get(title, subtitle, refresh);
+
+    internal RepositoryPage CreateRepositoryPage(GitHubRepository repository) =>
+        new(_browser, Actions, repository, _repositoryIssuesPage, _repositoryPullRequestsPage);
 
     private async Task SearchAsync(GitHubAccount account, string query, CancellationToken cancellationToken)
     {
@@ -392,9 +394,10 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
 
     private void Reset()
     {
-        RepositoryPage.Reset();
+        RepositoryPage[] repositoryPages;
         lock (_lock)
         {
+            repositoryPages = [.. _mine.Concat(_searchResults).Select(i => i.RepositoryPage).Distinct()];
             _generation++;
             _mine.Clear();
             _nextPage = null;
@@ -408,6 +411,11 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
             _searchQuery = string.Empty;
             _searchResults = [];
             _searchError = null;
+        }
+
+        foreach (var repositoryPage in repositoryPages)
+        {
+            repositoryPage.Reset();
         }
 
         HasMoreItems = false;

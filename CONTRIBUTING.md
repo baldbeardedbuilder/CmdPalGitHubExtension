@@ -37,6 +37,8 @@ Tests never touch real GitHub or your Credential Locker. Auth tests use fakes, a
 
 Command Palette handles property and item notifications synchronously and may read the page from another thread before returning. Update your private state under its lock, then release the lock before setting toolkit properties, updating visible items, or calling `RaiseItemsChanged()` so those reads don't deadlock.
 
+Reuse the same `EmptyContent` item when its text and command haven't changed. Creating a new item on every `GetItems()` call can send the host into a notification loop, including when you're showing an error.
+
 ### Trying it in Command Palette
 
 Open `GitHubExtension.slnx` in Visual Studio, set **GitHubExtension** as the startup project, and deploy it. Then open Command Palette and run **Reload Command Palette extensions**.
