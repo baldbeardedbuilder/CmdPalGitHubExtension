@@ -18,6 +18,7 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
     private readonly IBrowserLauncher _browser;
     private readonly TimeProvider _time;
     private readonly PageEmptyContent _emptyContent;
+    private readonly IssueFilters _filters = new();
     private readonly Lock _lock = new();
     private readonly List<RepositoryIssueItem> _items = [];
     private string? _repository;
@@ -40,6 +41,9 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         Title = "Issues";
         Icon = Icons.Issues;
         PlaceholderText = "Filter issues...";
+        _filters.CurrentFilterId = IssueFilters.Open;
+        _filters.PropChanged += (_, _) => RaiseItemsChanged();
+        Filters = _filters;
         _auth.AccountChanged += OnAccountChanged;
     }
 
@@ -89,12 +93,14 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         RepositoryIssueItem[] snapshot;
         string? repository;
         string? error;
+        string filter;
         lock (_lock)
         {
             needsLoad = _repository is not null && !_loaded && !_fetching;
             snapshot = [.. _items];
             repository = _repository;
             error = _error;
+            filter = _filters.CurrentFilterId;
         }
 
         if (needsLoad)
@@ -109,17 +115,21 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         }
 
         var terms = SearchText.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var matches = terms.Length == 0
-            ? snapshot
-            : [.. snapshot.Where(item => item.Matches(terms))];
+        var matches = snapshot
+            .Where(item => filter == IssueFilters.Closed
+                ? item.Issue.State is SubjectState.Closed or SubjectState.NotPlanned
+                : item.Issue.State is SubjectState.Open)
+            .Where(item => terms.Length == 0 || item.Matches(terms))
+            .ToArray();
+        var status = filter == IssueFilters.Closed ? "closed" : "open";
 
         EmptyContent = error is not null
             ? Empty("Couldn't load issues", error, refresh: true)
             : matches.Length == 0
                 ? Empty(terms.Length == 0 ? "No issues found" : "No matching issues", terms.Length == 0
-                    ? $"{repository} doesn't have any issues"
+                    ? $"{repository} doesn't have any {status} issues"
                     : $"Nothing matches \"{SearchText.Trim()}\"")
-                : Empty("No issues found", $"{repository} doesn't have any issues");
+                : Empty("No issues found", $"{repository} doesn't have any {status} issues");
 
         return matches;
     }
@@ -290,6 +300,18 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
     }
 
     private void OnAccountChanged(object? sender, EventArgs e) => Reset();
+}
+
+internal sealed partial class IssueFilters : Filters
+{
+    internal const string Open = "open";
+    internal const string Closed = "closed";
+
+    public override IFilterItem[] GetFilters() =>
+    [
+        new Filter { Id = Open, Name = "Open" },
+        new Filter { Id = Closed, Name = "Closed" },
+    ];
 }
 
 internal sealed partial class RepositoryIssueItem : ListItem
