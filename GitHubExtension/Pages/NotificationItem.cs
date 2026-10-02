@@ -4,6 +4,7 @@
 
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using BaldBeardedBuilder.CmdPal.GitHub.Commands;
+using BaldBeardedBuilder.CmdPal.GitHub.Issues;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using BaldBeardedBuilder.CmdPal.GitHub.PullRequests;
 
@@ -33,6 +34,12 @@ internal sealed partial class NotificationItem : ListItem
             Details = notification.SubjectApiUrl is null
                 ? PullRequestDetails.Unavailable(notification.Title, "No pull request details are available. Open it on GitHub to learn more.")
                 : PullRequestDetails.Loading(notification.Title);
+        }
+        else if (notification.SubjectType == "Issue")
+        {
+            Details = notification.SubjectApiUrl is null
+                ? IssueDetails.Unavailable(notification.Title, "No issue details are available. Open it on GitHub to learn more.")
+                : IssueDetails.Loading(notification.Title);
         }
 
         Refresh();
@@ -81,6 +88,12 @@ internal sealed partial class NotificationItem : ListItem
                 ? new PullRequestDetails(pullRequest)
                 : PullRequestDetails.Unavailable(Notification.Title, "Couldn't load pull request details. Try refreshing notifications or open it on GitHub.");
         }
+        else if (Notification.SubjectType == "Issue")
+        {
+            Details = subject.Issue is { } issue
+                ? new IssueDetails(issue, Notification.RepositoryFullName)
+                : IssueDetails.Unavailable(Notification.Title, "Couldn't load issue details. Try refreshing notifications or open it on GitHub.");
+        }
 
         Refresh();
     }
@@ -91,6 +104,10 @@ internal sealed partial class NotificationItem : ListItem
         if (Notification.SubjectType == "PullRequest")
         {
             Details = PullRequestDetails.Unavailable(Notification.Title, message, authorizeUrl);
+        }
+        else if (Notification.SubjectType == "Issue")
+        {
+            Details = IssueDetails.Unavailable(Notification.Title, message, authorizeUrl);
         }
 
         Refresh();

@@ -296,7 +296,7 @@ internal sealed partial class NotificationsPage : DynamicListPage
                             return;
                         }
 
-                        if (details is not null && (item.Notification.SubjectType != "PullRequest" || details.PullRequest is not null))
+                        if (details is not null && HasSubjectDetails(item.Notification.SubjectType, details))
                         {
                             _subjectCache[item.Notification.Id] = (item.Notification.UpdatedAt, details);
                         }
@@ -304,16 +304,16 @@ internal sealed partial class NotificationsPage : DynamicListPage
 
                     if (details is not null)
                     {
-                        if (item.Notification.SubjectType == "PullRequest" && details.PullRequest is null)
+                        if (!HasSubjectDetails(item.Notification.SubjectType, details))
                         {
-                            GitHubRest.LogError($"GitHub API error: pull request details missing; endpoint={GitHubRest.LogEndpoint(item.Notification.SubjectApiUrl)}.");
+                            GitHubRest.LogError($"GitHub API error: {item.Notification.SubjectType.ToLowerInvariant()} details missing; endpoint={GitHubRest.LogEndpoint(item.Notification.SubjectApiUrl)}.");
                         }
 
                         item.ApplySubject(details);
                     }
                     else
                     {
-                        item.SetSubjectError("Couldn't load pull request details. Try refreshing notifications or open it on GitHub.");
+                        item.SetSubjectError(UnavailableSubjectMessage(item.Notification.SubjectType));
                     }
                 }
                 catch (GitHubApiException ex)
@@ -352,4 +352,17 @@ internal sealed partial class NotificationsPage : DynamicListPage
         IsLoading = false;
         RaiseItemsChanged();
     }
+
+    private static bool HasSubjectDetails(string subjectType, SubjectDetails details) => subjectType switch
+    {
+        "Issue" => details.Issue is not null,
+        "PullRequest" => details.PullRequest is not null,
+        _ => true,
+    };
+
+    private static string UnavailableSubjectMessage(string subjectType) => subjectType switch
+    {
+        "Issue" => "Couldn't load issue details. Try refreshing notifications or open it on GitHub.",
+        _ => "Couldn't load pull request details. Try refreshing notifications or open it on GitHub.",
+    };
 }

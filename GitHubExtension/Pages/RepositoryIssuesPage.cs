@@ -299,6 +299,7 @@ internal sealed partial class RepositoryIssueItem : ListItem
         Issue = issue;
         Command = new OpenInBrowserCommand(browser, issue.WebUrl, "Open in browser", Icons.Issues);
         Title = $"#{issue.Number} {issue.Title}";
+        Details = new IssueDetails(issue, repository);
         var opened = $"opened {NotificationFormatting.RelativeTime(issue.CreatedAt, now)}";
         if (!string.IsNullOrWhiteSpace(issue.Author))
         {

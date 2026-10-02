@@ -35,6 +35,7 @@ public sealed class RepositoryIssuesPageTests
         Assert.AreEqual("opened 45m ago by htcfreek · 3 comments", item.Subtitle);
         Assert.AreSame(Icons.StateOpenIssue, item.Icon);
         CollectionAssert.AreEqual(ExpectedLabels, item.Tags.Select(tag => tag.Text).ToArray());
+        Assert.IsInstanceOfType<IssueDetails>(item.Details);
         Assert.AreEqual("octo/tool issues", page.Title);
     }
 

@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Text.Json;
+using BaldBeardedBuilder.CmdPal.GitHub.Issues;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Tests.Notifications;
@@ -53,6 +54,33 @@ public class NotificationParsingTests
     {
         using var json = JsonDocument.Parse(body);
         Assert.AreEqual(Enum.Parse<SubjectState>(expected), NotificationsClient.ParseSubject(json.RootElement).State);
+    }
+
+    [TestMethod]
+    public void ParseSubject_IssueIncludesDetails()
+    {
+        using var json = JsonDocument.Parse("""
+            {
+              "number": 9,
+              "title": "Fix the thing",
+              "body": "Issue description",
+              "state": "open",
+              "html_url": "https://github.com/o/r/issues/9",
+              "created_at": "2025-01-02T03:04:05Z",
+              "user": { "login": "octocat" },
+              "assignees": [{ "login": "mona" }],
+              "labels": [{ "name": "bug" }],
+              "comments": 2
+            }
+            """);
+
+        var subject = NotificationsClient.ParseSubject(json.RootElement);
+
+        Assert.IsNull(subject.PullRequest);
+        Assert.AreEqual(9, subject.Issue!.Number);
+        Assert.AreEqual("Issue description", subject.Issue.Body);
+        Assert.AreEqual("octocat", subject.Issue.Author);
+        Assert.AreEqual("mona", subject.Issue.Assignees.Single());
     }
 
     [TestMethod]
