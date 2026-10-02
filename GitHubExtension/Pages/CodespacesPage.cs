@@ -54,32 +54,37 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
 
     public override IListItem[] GetItems()
     {
+        var account = _auth.CurrentAccount;
+        if (account is null || !account.Host.IsGitHubDotCom)
+        {
+            EmptyContent = account is null
+                ? Empty("Sign in to see your codespaces", "Your codespaces show up here after you sign in")
+                : Empty("Codespaces isn't available here", "GitHub Enterprise Server doesn't support Codespaces. Sign in to github.com to see yours.");
+            return [];
+        }
+
+        bool needsLoad;
         lock (_lock)
         {
-            if (_auth.CurrentAccount is not { } account)
-            {
-                EmptyContent = Empty("Sign in to see your codespaces", "Your codespaces show up here after you sign in");
-                return [];
-            }
+            needsLoad = !_loaded && !_fetching;
+        }
 
-            if (!account.Host.IsGitHubDotCom)
-            {
-                EmptyContent = Empty("Codespaces isn't available here", "GitHub Enterprise Server doesn't support Codespaces. Sign in to github.com to see yours.");
-                return [];
-            }
+        if (needsLoad)
+        {
+            StartLoad(reset: true);
+        }
 
-            if (!_loaded && !_fetching)
-            {
-                StartLoad(reset: true);
-            }
-
+        ICommandItem empty;
+        IListItem[] result;
+        lock (_lock)
+        {
             var terms = SearchText.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             var items = _items.Where(i => i.Matches(terms)).Cast<IListItem>().ToList();
             var refresh = new RefreshCodespacesCommand(this);
             if (_error is not null)
             {
                 var error = new ListItem(refresh) { Title = "Couldn't load codespaces", Subtitle = _error, Icon = Icons.Codespaces };
-                EmptyContent = error;
+                empty = error;
                 if (items.Count > 0)
                 {
                     items.Add(error);
@@ -87,7 +92,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
             }
             else
             {
-                EmptyContent = _fetching && items.Count == 0
+                empty = _fetching && items.Count == 0
                     ? Empty("Loading codespaces...", "Getting your development environments from GitHub")
                     : new CommandItem(refresh)
                     {
@@ -97,8 +102,11 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
                     };
             }
 
-            return [.. items];
+            result = [.. items];
         }
+
+        EmptyContent = empty;
+        return result;
     }
 
     public override void UpdateSearchText(string oldSearch, string newSearch) => RaiseItemsChanged();
@@ -110,8 +118,9 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         lock (_lock)
         {
             CancelLoad();
-            return StartLoad(reset: true);
         }
+
+        return StartLoad(reset: true);
     }
 
     public void Dispose()
@@ -122,6 +131,8 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
             _disposed = true;
             CancelLoad();
         }
+
+        IsLoading = false;
     }
 
     private static CommandItem Empty(string title, string subtitle) =>
@@ -129,9 +140,13 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
 
     private Task StartLoad(bool reset)
     {
+        GitHubAccount account;
+        CancellationToken token;
+        Uri? page;
+        int generation;
         lock (_lock)
         {
-            if (_disposed || _auth.CurrentAccount is not { } account || !account.Host.IsGitHubDotCom
+            if (_disposed || _auth.CurrentAccount is not { } currentAccount || !currentAccount.Host.IsGitHubDotCom
                 || _fetching || (!reset && _nextPage is null))
             {
                 return _currentLoad;
@@ -139,12 +154,22 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
 
             _loadCts?.Dispose();
             _loadCts = new CancellationTokenSource();
-            var token = _loadCts.Token;
-            var page = reset ? null : _nextPage;
-            var generation = _generation;
+            account = currentAccount;
+            token = _loadCts.Token;
+            page = reset ? null : _nextPage;
+            generation = _generation;
             _fetching = true;
             _error = null;
-            IsLoading = true;
+        }
+
+        IsLoading = true;
+        lock (_lock)
+        {
+            if (generation != _generation || _disposed)
+            {
+                return _currentLoad;
+            }
+
             _currentLoad = Task.Run(() => LoadAsync(account, page, reset, generation, token));
             return _currentLoad;
         }
@@ -156,6 +181,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         {
             var result = await _client.GetCodespacesAsync(account, page, token).ConfigureAwait(false);
             var now = _time.GetUtcNow();
+            bool hasMore;
             lock (_lock)
             {
                 if (generation != _generation)
@@ -173,8 +199,10 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
                 _items.Sort((a, b) => b.Codespace.LastUsedAt.CompareTo(a.Codespace.LastUsedAt));
                 _nextPage = result.NextPage;
                 _loaded = true;
-                HasMoreItems = _nextPage is not null;
+                hasMore = _nextPage is not null;
             }
+
+            HasMoreItems = hasMore;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
@@ -194,14 +222,20 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         }
         finally
         {
+            bool publish;
             lock (_lock)
             {
-                if (generation == _generation)
+                publish = generation == _generation;
+                if (publish)
                 {
                     _fetching = false;
-                    IsLoading = false;
-                    RaiseItemsChanged();
                 }
+            }
+
+            if (publish)
+            {
+                IsLoading = false;
+                RaiseItemsChanged();
             }
         }
     }
@@ -213,7 +247,6 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         _loadCts?.Dispose();
         _loadCts = null;
         _fetching = false;
-        IsLoading = false;
     }
 
     private void OnAccountChanged(object? sender, EventArgs e)
@@ -225,9 +258,10 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
             _nextPage = null;
             _loaded = false;
             _error = null;
-            HasMoreItems = false;
         }
 
+        HasMoreItems = false;
+        IsLoading = false;
         RaiseItemsChanged();
     }
 }

@@ -57,24 +57,34 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         {
             Reset();
             _repository = repository;
-            SearchText = string.Empty;
         }
 
+        SearchText = string.Empty;
+        HasMoreItems = false;
+        IsLoading = false;
         RaiseItemsChanged();
         return CommandResult.GoToPage(new GoToPageArgs { PageId = PageId });
     }
 
     public override IListItem[] GetItems()
     {
+        bool needsLoad;
         lock (_lock)
         {
-            if (!_loaded && !_fetching)
-            {
-                StartLoad(reset: true);
-            }
+            needsLoad = !_loaded && !_fetching;
+        }
 
+        if (needsLoad)
+        {
+            StartLoad(reset: true);
+        }
+
+        ICommandItem empty;
+        IListItem[] result;
+        lock (_lock)
+        {
             var terms = SearchText.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            EmptyContent = _auth.CurrentAccount is null
+            empty = _auth.CurrentAccount is null
                 ? Empty("Sign in to view workflow runs", "Open GitHub to sign in")
                 : _error is not null
                     ? new CommandItem(new RefreshActionsCommand(this)) { Title = "Couldn't load workflow runs", Subtitle = _error, Icon = Icons.Actions }
@@ -94,8 +104,11 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
                 });
             }
 
-            return [.. matches];
+            result = [.. matches];
         }
+
+        EmptyContent = empty;
+        return result;
     }
 
     public override void UpdateSearchText(string oldSearch, string newSearch) => RaiseItemsChanged();
@@ -108,8 +121,9 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         {
             _generation++;
             _fetching = false;
-            return StartLoad(reset: true);
         }
+
+        return StartLoad(reset: true);
     }
 
     public void Dispose() => _auth.AccountChanged -= OnAccountChanged;
@@ -119,9 +133,13 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
     private Task StartLoad(bool reset)
     {
+        GitHubAccount account;
+        string repository;
+        int generation;
+        Uri? nextPage;
         lock (_lock)
         {
-            if (_auth.CurrentAccount is not { } account || _repository is not { } repository
+            if (_auth.CurrentAccount is not { } currentAccount || _repository is not { } currentRepository
                 || _fetching || (!reset && _nextPage is null))
             {
                 return _currentLoad;
@@ -129,9 +147,20 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
             _fetching = true;
             _error = null;
-            IsLoading = true;
-            var generation = _generation;
-            var nextPage = reset ? null : _nextPage;
+            account = currentAccount;
+            repository = currentRepository;
+            generation = _generation;
+            nextPage = reset ? null : _nextPage;
+        }
+
+        IsLoading = true;
+        lock (_lock)
+        {
+            if (generation != _generation)
+            {
+                return _currentLoad;
+            }
+
             _currentLoad = Task.Run(() => LoadAsync(account, repository, nextPage, reset, generation));
             return _currentLoad;
         }
@@ -143,6 +172,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         {
             var result = await _client.GetRunsAsync(account, repository, page, CancellationToken.None).ConfigureAwait(false);
             var now = _time.GetUtcNow();
+            bool hasMore;
             lock (_lock)
             {
                 if (generation != _generation)
@@ -158,9 +188,11 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
                 var known = _items.Select(i => i.Run.Id).ToHashSet();
                 _items.AddRange(result.Runs.Where(r => known.Add(r.Id)).Select(r => new WorkflowRunItem(this, r, _browser, now)));
                 _nextPage = result.NextPage;
-                HasMoreItems = _nextPage is not null;
+                hasMore = _nextPage is not null;
                 _loaded = true;
             }
+
+            HasMoreItems = hasMore;
         }
         catch (GitHubApiException ex)
         {
@@ -173,19 +205,26 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
                 _error = ex.Message;
                 _loaded = true;
-                HasMoreItems = false;
             }
+
+            HasMoreItems = false;
         }
         finally
         {
+            bool publish;
             lock (_lock)
             {
-                if (generation == _generation)
+                publish = generation == _generation;
+                if (publish)
                 {
                     _fetching = false;
-                    IsLoading = false;
-                    RaiseItemsChanged();
                 }
+            }
+
+            if (publish)
+            {
+                IsLoading = false;
+                RaiseItemsChanged();
             }
         }
     }
@@ -198,6 +237,8 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
             _repository = null;
         }
 
+        HasMoreItems = false;
+        IsLoading = false;
         RaiseItemsChanged();
     }
 
@@ -209,7 +250,5 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         _loaded = false;
         _fetching = false;
         _error = null;
-        HasMoreItems = false;
-        IsLoading = false;
     }
 }

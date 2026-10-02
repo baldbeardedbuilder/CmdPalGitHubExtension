@@ -33,6 +33,10 @@ dotnet test GitHubExtension.Tests/GitHubExtension.Tests.csproj -r win-x64
 
 Tests never touch real GitHub or your Credential Locker. Auth tests use fakes, and the OAuth flow is exercised against a real loopback listener on `127.0.0.1`.
 
+### Updating pages
+
+Command Palette handles property and item notifications synchronously and may read the page from another thread before returning. Update your private state under its lock, then release the lock before setting toolkit properties, updating visible items, or calling `RaiseItemsChanged()` so those reads don't deadlock.
+
 ### Trying it in Command Palette
 
 Open `GitHubExtension.slnx` in Visual Studio, set **GitHubExtension** as the startup project, and deploy it. Then open Command Palette and run **Reload Command Palette extensions**.

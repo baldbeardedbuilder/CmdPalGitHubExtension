@@ -144,15 +144,17 @@ internal sealed partial class IssueDetailsPage : ContentPage
         }
         finally
         {
+            bool publish;
             lock (_lock)
             {
-                if (generation == _generation)
-                {
-                    IsLoading = false;
-                }
+                publish = generation == _generation;
             }
 
-            RaiseItemsChanged();
+            if (publish)
+            {
+                IsLoading = false;
+                RaiseItemsChanged();
+            }
         }
     }
 
