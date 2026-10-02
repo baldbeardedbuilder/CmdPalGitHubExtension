@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
+using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub;
@@ -11,6 +12,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
 {
     private readonly AuthService _auth;
     private readonly SignInPage _signInPage;
+    private readonly NotificationsPage _notificationsPage;
     private readonly HomePage _homePage;
     private readonly CommandItem _topLevel;
 
@@ -19,11 +21,19 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
     {
     }
 
-    internal GitHubCommandsProvider(AuthService auth, Func<string>? logoProvider = null)
+    internal GitHubCommandsProvider(
+        AuthService auth,
+        Func<string>? logoProvider = null,
+        INotificationsClient? notificationsClient = null,
+        IBrowserLauncher? browser = null)
     {
         _auth = auth;
         _signInPage = new SignInPage(auth, logoProvider);
-        _homePage = new HomePage(auth);
+        _notificationsPage = new NotificationsPage(
+            auth,
+            notificationsClient ?? new NotificationsClient(new HttpClient()),
+            browser ?? new ShellBrowserLauncher());
+        _homePage = new HomePage(auth, _notificationsPage);
 
         Id = "com.baldbeardedbuilder.cmdpal.github";
         DisplayName = "GitHub";
@@ -47,6 +57,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
     {
         SignInPage.PageId => _signInPage,
         HomePage.PageId => _homePage,
+        NotificationsPage.PageId => _notificationsPage,
         _ => null,
     };
 

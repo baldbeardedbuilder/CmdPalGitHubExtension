@@ -3,13 +3,17 @@
 // See the LICENSE file in the project root for more information.
 
 using BaldBeardedBuilder.CmdPal.GitHub.Commands;
+using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
+using Microsoft.CommandPalette.Extensions.Toolkit;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Tests;
 
 [TestClass]
 public class GitHubCommandsProviderTests
 {
+    private static readonly string[] HomeSections = ["Notifications", "Saved Queries", "Repos", "Agents", "Codespaces"];
+
     public TestContext TestContext { get; set; } = null!;
 
     [TestMethod]
@@ -61,16 +65,27 @@ public class GitHubCommandsProviderTests
     }
 
     [TestMethod]
-    public void HomePage_ShowsAccountAndSignOut()
+    public void HomePage_ShowsSections()
     {
         var store = new InMemoryAccountStore(new GitHubAccount(GitHubHost.GitHubDotCom, "octocat", "t"));
         using var provider = CreateProvider(store, out _);
 
         var items = ((HomePage)provider.GetCommand(HomePage.PageId)!).GetItems();
 
-        Assert.HasCount(2, items);
-        Assert.AreEqual("Signed in as @octocat", items[0].Title);
-        Assert.IsInstanceOfType<SignOutCommand>(items[1].Command);
+        CollectionAssert.AreEqual(
+            HomeSections,
+            items.Select(i => i.Title).ToArray());
+        Assert.IsInstanceOfType<NotificationsPage>(items[0].Command);
+        Assert.IsTrue(items.Skip(1).All(i => i.Command is NoOpCommand));
+        Assert.IsTrue(items.All(i => i.MoreCommands.OfType<CommandContextItem>().Any(c => c.Command is SignOutCommand)));
+    }
+
+    [TestMethod]
+    public void GetCommand_ResolvesNotificationsPage()
+    {
+        using var provider = CreateProvider(new InMemoryAccountStore(), out _);
+
+        Assert.IsInstanceOfType<NotificationsPage>(provider.GetCommand(NotificationsPage.PageId));
     }
 
     private static GitHubCommandsProvider CreateProvider(InMemoryAccountStore store, out AuthService auth)
@@ -78,6 +93,6 @@ public class GitHubCommandsProviderTests
         var client = new Mock<IGitHubAuthClient>();
         client.Setup(c => c.GetLoginAsync(It.IsAny<GitHubHost>(), It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync("mona");
         auth = new AuthService(store, client.Object, new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
-        return new GitHubCommandsProvider(auth, () => string.Empty);
+        return new GitHubCommandsProvider(auth, () => string.Empty, Mock.Of<INotificationsClient>(), new FakeBrowser(_ => null));
     }
 }

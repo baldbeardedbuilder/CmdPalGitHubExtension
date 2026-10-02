@@ -8,18 +8,20 @@ using BaldBeardedBuilder.CmdPal.GitHub.Commands;
 namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 
 /// <summary>
-/// The signed in landing page. Notifications, repos, and friends will hang off of this.
+/// The signed in landing page. Everything you can do with GitHub starts here.
 /// </summary>
 internal sealed partial class HomePage : ListPage
 {
     public const string PageId = "com.baldbeardedbuilder.cmdpal.github.home";
 
     private readonly AuthService _auth;
+    private readonly NotificationsPage _notifications;
     private readonly SignOutCommand _signOut;
 
-    public HomePage(AuthService auth)
+    public HomePage(AuthService auth, NotificationsPage notifications)
     {
         _auth = auth;
+        _notifications = notifications;
         _signOut = new SignOutCommand(auth);
         Id = PageId;
         Name = "Open";
@@ -37,19 +39,22 @@ internal sealed partial class HomePage : ListPage
             return [];
         }
 
+        IContextItem[] accountCommands =
+        [
+            new CommandContextItem(new OpenUrlCommand(new Uri(account.Host.WebUrl, account.Login).AbsoluteUri) { Name = $"Open @{account.Login} profile", Icon = Icons.Account }),
+            new CommandContextItem(_signOut),
+        ];
+
         return
         [
-            new ListItem(new OpenUrlCommand(new Uri(account.Host.WebUrl, account.Login).AbsoluteUri) { Name = "Open profile" })
-            {
-                Title = $"Signed in as @{account.Login}",
-                Subtitle = account.Host.Name,
-                Icon = Icons.Account,
-            },
-            new ListItem(_signOut)
-            {
-                Title = "Sign out",
-                Subtitle = $"Sign out of {account.Host.Name}",
-            },
+            new ListItem(_notifications) { Title = "Notifications", Subtitle = "Your GitHub inbox", Icon = Icons.Notifications, MoreCommands = accountCommands },
+            ComingSoon("Saved Queries", Icons.SavedQueries, accountCommands),
+            ComingSoon("Repos", Icons.Repos, accountCommands),
+            ComingSoon("Agents", Icons.Agents, accountCommands),
+            ComingSoon("Codespaces", Icons.Codespaces, accountCommands),
         ];
     }
+
+    private static ListItem ComingSoon(string title, IIconInfo icon, IContextItem[] more) =>
+        new(new NoOpCommand()) { Title = title, Subtitle = "Coming soon", Icon = icon, MoreCommands = more };
 }

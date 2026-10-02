@@ -3,13 +3,14 @@
 Your notifications, repos, agents, codespaces, and saved queries, one keystroke away. This extension brings GitHub into [Microsoft Command Palette](https://learn.microsoft.com/windows/powertoys/command-palette/overview) so you can check on your work without opening a browser tab you'll forget to close.
 
 > [!NOTE]
-> This is early. Right now you can sign in and sign out. The fun stuff lands next.
+> This is early. Sign in, then check your notifications. Repos, agents, codespaces, and saved queries land next.
 
 ## What works today
 
 - Sign in to github.com through your browser. No tokens to copy and paste.
 - Sign in to GitHub Enterprise Server with your server URL and a personal access token.
 - Your token lives in Windows Credential Locker, not in a file on disk.
+- Browse your notifications with issue and PR state, filter as you type, and mark them read or done.
 
 ## Install
 
@@ -75,3 +76,5 @@ Bugs, ideas, and pull requests are all welcome. Start with [CONTRIBUTING.md](CON
 ## License
 
 [MIT](LICENSE)
+
+Icons come from [GitHub Octicons](https://github.com/primer/octicons), also [MIT licensed](GitHubExtension/Assets/Octicons/LICENSE).

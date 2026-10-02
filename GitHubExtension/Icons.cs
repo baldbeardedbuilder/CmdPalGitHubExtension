@@ -19,6 +19,64 @@ internal static class Icons
 
     internal static IconInfo Account { get; } = new("\uE77B");
 
+    internal static IconInfo Refresh { get; } = new("\uE72C");
+
+    internal static IconInfo MarkRead { get; } = new("\uE8C3");
+
+    internal static IconInfo Done { get; } = new("\uE73E");
+
+    internal static IconInfo Copy { get; } = new("\uE8C8");
+
+    internal static IconInfo Notifications { get; } = Themed("bell");
+
+    internal static IconInfo SavedQueries { get; } = Themed("search");
+
+    internal static IconInfo Repos { get; } = Themed("repo");
+
+    internal static IconInfo Agents { get; } = Themed("copilot");
+
+    internal static IconInfo Codespaces { get; } = Themed("codespaces");
+
+    internal static IconInfo StateOpenIssue { get; } = Octicon("state-issue-opened.svg");
+
+    internal static IconInfo StateOpenPullRequest { get; } = Octicon("state-git-pull-request.svg");
+
+    internal static IconInfo StateDraft { get; } = Octicon("state-git-pull-request-draft.svg");
+
+    internal static IconInfo StateMerged { get; } = Octicon("state-git-merge.svg");
+
+    internal static IconInfo StateClosedIssue { get; } = Octicon("state-issue-closed.svg");
+
+    internal static IconInfo StateNotPlanned { get; } = Octicon("state-skip.svg");
+
+    internal static IconInfo StateClosedPullRequest { get; } = Octicon("state-git-pull-request-closed.svg");
+
+    private static readonly Dictionary<(string Glyph, bool Unread), IconInfo> ListIcons = [];
+
+    /// <summary>
+    /// Notification row icons share a layout with a leading unread dot so read and unread rows line up.
+    /// </summary>
+    internal static IconInfo NotificationIcon(string glyph, bool unread)
+    {
+        lock (ListIcons)
+        {
+            if (!ListIcons.TryGetValue((glyph, unread), out var icon))
+            {
+                var suffix = unread ? ".unread" : string.Empty;
+                icon = Themed($"list-{glyph}{suffix}");
+                ListIcons[(glyph, unread)] = icon;
+            }
+
+            return icon;
+        }
+    }
+
+    private static IconInfo Themed(string name) => new(
+        IconHelpers.FromRelativePath($"Assets\\Octicons\\{name}.light.svg").Light,
+        IconHelpers.FromRelativePath($"Assets\\Octicons\\{name}.dark.svg").Dark);
+
+    private static IconInfo Octicon(string file) => IconHelpers.FromRelativePath($"Assets\\Octicons\\{file}");
+
     private static readonly Lazy<string> LightMarkDataUri = new(() => ToDataUri(LightMarkPath));
     private static readonly Lazy<string> DarkMarkDataUri = new(() => ToDataUri(DarkMarkPath));
 
