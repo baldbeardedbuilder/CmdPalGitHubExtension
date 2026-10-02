@@ -26,11 +26,13 @@ internal static class GitHubRest
         Uri uri,
         CancellationToken cancellationToken,
         bool throwOnError = true,
-        string apiVersion = "2022-11-28")
+        string apiVersion = "2022-11-28",
+        HttpContent? content = null)
     {
         EnsureSameHost(account, uri);
 
         using var request = new HttpRequestMessage(method, uri);
+        request.Content = content;
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", account.Token);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
         request.Headers.UserAgent.Add(UserAgent);

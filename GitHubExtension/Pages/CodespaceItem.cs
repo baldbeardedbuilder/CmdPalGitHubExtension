@@ -18,12 +18,19 @@ internal sealed partial class CodespaceItem : ListItem
         Subtitle = CodespaceFormatting.Subtitle(codespace, now);
         Icon = Icons.Codespaces;
         Tags = [CodespaceFormatting.StateTag(codespace.State)];
-        MoreCommands =
-        [
+
+        var more = new List<IContextItem>
+        {
             new CommandContextItem(new CopyTextCommand(codespace.WebUrl.AbsoluteUri) { Name = "Copy URL", Icon = Icons.Copy }),
             new CommandContextItem(new CopyTextCommand(codespace.Name) { Name = "Copy name", Icon = Icons.Copy }),
-            new CommandContextItem(new RefreshCodespacesCommand(page)),
-        ];
+        };
+        if (page.CreatePage is { } createPage)
+        {
+            more.Add(new CommandContextItem(new CreateCodespaceCommand(createPage)));
+        }
+
+        more.Add(new CommandContextItem(new RefreshCodespacesCommand(page)));
+        MoreCommands = [.. more];
     }
 
     public GitHubCodespace Codespace { get; }

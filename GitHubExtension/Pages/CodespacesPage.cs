@@ -27,12 +27,18 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
     private CancellationTokenSource? _loadCts;
     private Task _currentLoad = Task.CompletedTask;
 
-    public CodespacesPage(AuthService auth, ICodespacesClient client, IBrowserLauncher browser, TimeProvider? time = null)
+    public CodespacesPage(
+        AuthService auth,
+        ICodespacesClient client,
+        IBrowserLauncher browser,
+        TimeProvider? time = null,
+        CreateCodespacePage? createPage = null)
     {
         _auth = auth;
         _client = client;
         _browser = browser;
         _time = time ?? TimeProvider.System;
+        CreatePage = createPage;
         Id = PageId;
         Name = "Open";
         Title = "Codespaces";
@@ -51,6 +57,8 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
             }
         }
     }
+
+    internal CreateCodespacePage? CreatePage { get; }
 
     public override IListItem[] GetItems()
     {

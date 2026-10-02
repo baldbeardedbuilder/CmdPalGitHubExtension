@@ -104,6 +104,21 @@ public class CodespacesPageTests
     }
 
     [TestMethod]
+    public async Task CodespaceMoreMenu_OffersCreateCodespace()
+    {
+        var client = Client([Codespace("one")]);
+        using var page = CreatePage(client.Object, out _, out _, createCodespacePage: true);
+        page.GetItems();
+        await page.CurrentLoad;
+
+        var item = (CodespaceItem)page.GetItems().Single();
+
+        Assert.IsTrue(item.MoreCommands.OfType<CommandContextItem>()
+            .Any(context => context.Command is CreateCodespaceCommand));
+        page.CreatePage!.Dispose();
+    }
+
+    [TestMethod]
     public async Task Refresh_ReplacesRowsAndState()
     {
         var client = Client([Codespace("one")]);
@@ -281,7 +296,12 @@ public class CodespacesPageTests
         return client;
     }
 
-    private static CodespacesPage CreatePage(ICodespacesClient client, out FakeBrowser browser, out AuthService auth, GitHubAccount? account = null)
+    private static CodespacesPage CreatePage(
+        ICodespacesClient client,
+        out FakeBrowser browser,
+        out AuthService auth,
+        GitHubAccount? account = null,
+        bool createCodespacePage = false)
     {
         var authClient = new Mock<IGitHubAuthClient>();
         authClient.Setup(c => c.GetLoginAsync(It.IsAny<GitHubHost>(), It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync("octocat");
@@ -289,6 +309,7 @@ public class CodespacesPageTests
         browser = new FakeBrowser(_ => null);
         var time = new Mock<TimeProvider>();
         time.Setup(t => t.GetUtcNow()).Returns(Now);
-        return new CodespacesPage(auth, client, browser, time.Object);
+        var createPage = createCodespacePage ? new CreateCodespacePage(auth, client, browser) : null;
+        return new CodespacesPage(auth, client, browser, time.Object, createPage);
     }
 }
