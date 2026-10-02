@@ -47,15 +47,26 @@ internal sealed partial class PullRequestDetails : Details
         Metadata = [.. metadata];
     }
 
-    private PullRequestDetails(string title, string message)
+    private PullRequestDetails(string title, string message, Uri? authorizeUrl = null)
     {
         Title = title;
         Body = message;
+        if (authorizeUrl is not null)
+        {
+            Metadata =
+            [
+                new DetailsElement
+                {
+                    Key = "Single sign-on",
+                    Data = new DetailsLink { Text = "Authorize on GitHub", Link = authorizeUrl },
+                },
+            ];
+        }
     }
 
     public static PullRequestDetails Loading(string title) => new(title, "Loading pull request details...");
 
-    public static PullRequestDetails Unavailable(string title, string message) => new(title, message);
+    public static PullRequestDetails Unavailable(string title, string message, Uri? authorizeUrl = null) => new(title, message, authorizeUrl);
 
     private static void AddText(List<IDetailsElement> metadata, string key, string? text)
     {

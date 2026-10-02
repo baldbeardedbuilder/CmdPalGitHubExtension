@@ -10,7 +10,13 @@ using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Api;
 
-internal sealed class GitHubApiException(string message, Exception? innerException = null) : Exception(message, innerException);
+internal sealed class GitHubApiException(string message, Exception? innerException = null, Uri? authorizeUrl = null) : Exception(message, innerException)
+{
+    /// <summary>
+    /// Where the user can grant this app SAML SSO access to the organization that blocked the request.
+    /// </summary>
+    public Uri? AuthorizeUrl { get; } = authorizeUrl;
+}
 
 /// <summary>
 /// The plumbing every GitHub REST call needs: auth headers, friendly errors, JSON, and pagination links.
@@ -72,6 +78,11 @@ internal static class GitHubRest
 
         using (response)
         {
+            if (response.StatusCode == HttpStatusCode.Forbidden && SsoRequired(account, response) is { } sso)
+            {
+                throw sso;
+            }
+
             throw response.StatusCode switch
             {
                 HttpStatusCode.Unauthorized => new GitHubApiException("GitHub didn't accept your token. Sign out and back in to fix it."),
@@ -95,6 +106,38 @@ internal static class GitHubRest
                 + $"status={(int)response.StatusCode}; request-id={Header(response, "X-GitHub-Request-Id")}.");
             throw new GitHubApiException("GitHub sent back something we couldn't read.", ex);
         }
+    }
+
+    /// <summary>
+    /// GitHub answers with "X-GitHub-SSO: required; url=..." when an org's SAML SSO hasn't been granted to this token.
+    /// </summary>
+    internal static GitHubApiException? SsoRequired(GitHubAccount account, HttpResponseMessage response)
+    {
+        if (!response.Headers.TryGetValues("X-GitHub-SSO", out var values))
+        {
+            return null;
+        }
+
+        var parts = string.Join(';', values).Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (!parts.Contains("required", StringComparer.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var url = parts
+            .Where(p => p.StartsWith("url=", StringComparison.OrdinalIgnoreCase))
+            .Select(p => Uri.TryCreate(p[4..], UriKind.Absolute, out var uri) ? uri : null)
+            .FirstOrDefault(uri => uri is not null
+                && uri.Scheme == Uri.UriSchemeHttps
+                && string.IsNullOrEmpty(uri.UserInfo)
+                && string.Equals(uri.Authority, account.Host.WebUrl.Authority, StringComparison.OrdinalIgnoreCase));
+
+        var segments = url?.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries) ?? [];
+        var org = segments.Length >= 2 && segments[0] == "orgs" ? Uri.UnescapeDataString(segments[1]) : null;
+        var message = org is null
+            ? "An organization requires SAML single sign-on. Authorize this app for it on GitHub, then refresh."
+            : $"The {org} organization requires SAML single sign-on. Authorize this app for {org}, then refresh.";
+        return new GitHubApiException(message, authorizeUrl: url);
     }
 
     private static string Header(HttpResponseMessage response, string name) =>

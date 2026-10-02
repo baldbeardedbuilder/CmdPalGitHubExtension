@@ -27,6 +27,8 @@ internal static class Icons
 
     internal static IconInfo Copy { get; } = new("\uE8C8");
 
+    internal static IconInfo Authorize { get; } = new("\uE72E");
+
     internal static IconInfo Notifications { get; } = Themed("bell");
 
     internal static IconInfo SavedQueries { get; } = Themed("search");
