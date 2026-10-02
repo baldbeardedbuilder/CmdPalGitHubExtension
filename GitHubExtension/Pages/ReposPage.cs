@@ -38,13 +38,14 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     private bool _searching;
     private Task _currentSearch = Task.CompletedTask;
 
-    public ReposPage(AuthService auth, IRepositoriesClient client, IBrowserLauncher browser, TimeProvider? time = null, TimeSpan? searchDelay = null)
+    public ReposPage(AuthService auth, IRepositoriesClient client, IBrowserLauncher browser, TimeProvider? time = null, TimeSpan? searchDelay = null, ActionsPage? actions = null)
     {
         _auth = auth;
         _client = client;
         _browser = browser;
         _time = time ?? TimeProvider.System;
         _searchDelay = searchDelay ?? DefaultSearchDelay;
+        Actions = actions;
         Id = PageId;
         Name = "Open";
         Title = "Repos";
@@ -52,6 +53,8 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         PlaceholderText = "Filter repos...";
         _auth.AccountChanged += (_, _) => Reset();
     }
+
+    internal ActionsPage? Actions { get; }
 
     /// <summary>
     /// The in flight load of your repos. Handy for tests.
