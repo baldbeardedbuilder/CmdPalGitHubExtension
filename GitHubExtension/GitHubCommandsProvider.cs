@@ -4,6 +4,7 @@
 
 using BaldBeardedBuilder.CmdPal.GitHub.Agents;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
+using BaldBeardedBuilder.CmdPal.GitHub.Codespaces;
 using BaldBeardedBuilder.CmdPal.GitHub.Issues;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
@@ -19,6 +20,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
     private readonly IssueDetailsPage _issueDetailsPage;
     private readonly ReposPage _reposPage;
     private readonly AgentsPage _agentsPage;
+    private readonly CodespacesPage _codespacesPage;
     private readonly HomePage _homePage;
     private readonly CommandItem _topLevel;
 
@@ -34,6 +36,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         IBrowserLauncher? browser = null,
         IRepositoriesClient? repositoriesClient = null,
         IIssuesClient? issuesClient = null,
+        ICodespacesClient? codespacesClient = null,
         IAgentsClient? agentsClient = null)
     {
         _auth = auth;
@@ -45,7 +48,8 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         _notificationsPage = new NotificationsPage(auth, notificationsClient ?? new NotificationsClient(Http()), browser, issueDetails: _issueDetailsPage);
         _reposPage = new ReposPage(auth, repositoriesClient ?? new RepositoriesClient(Http()), browser);
         _agentsPage = new AgentsPage(auth, agentsClient ?? new AgentsClient(Http()), browser);
-        _homePage = new HomePage(auth, _notificationsPage, _reposPage, _agentsPage);
+        _codespacesPage = new CodespacesPage(auth, codespacesClient ?? new CodespacesClient(Http()), browser);
+        _homePage = new HomePage(auth, _notificationsPage, _reposPage, _agentsPage, _codespacesPage);
 
         Id = "com.baldbeardedbuilder.cmdpal.github";
         DisplayName = "GitHub";
@@ -73,6 +77,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         IssueDetailsPage.PageId => _issueDetailsPage,
         ReposPage.PageId => _reposPage,
         AgentsPage.PageId => _agentsPage,
+        CodespacesPage.PageId => _codespacesPage,
         _ => null,
     };
 
@@ -81,6 +86,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         _auth.AccountChanged -= OnAccountChanged;
         _reposPage.Dispose();
         _agentsPage.Dispose();
+        _codespacesPage.Dispose();
         base.Dispose();
         GC.SuppressFinalize(this);
     }
