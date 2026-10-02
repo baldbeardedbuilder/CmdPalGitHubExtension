@@ -4,7 +4,6 @@
 
 using System.Text.Json;
 using BaldBeardedBuilder.CmdPal.GitHub.Codespaces;
-using BaldBeardedBuilder.CmdPal.GitHub.Commands;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
 using Microsoft.CommandPalette.Extensions;
 
@@ -16,13 +15,12 @@ public class CreateCodespacePageTests
     private static readonly GitHubAccount Account = new(GitHubHost.GitHubDotCom, "octocat", "t");
 
     [TestMethod]
-    public void CreateCommand_NavigatesToCreatePage()
+    public void CreatePage_ProvidesNavigationCommandAndForm()
     {
         using var page = CreatePage(Mock.Of<ICodespacesClient>(), out _);
 
-        var result = new CreateCodespaceCommand(page).Invoke();
-
-        Assert.AreEqual(CommandResultKind.GoToPage, result.Kind);
+        Assert.AreEqual(CreateCodespacePage.PageId, page.Id);
+        Assert.AreEqual("Create Codespace", page.Name);
         Assert.Contains("repository", CurrentTemplate(page));
         Assert.Contains("branch", CurrentTemplate(page));
     }

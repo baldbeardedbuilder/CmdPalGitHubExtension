@@ -70,7 +70,7 @@ internal sealed partial class HomePage : ListPage
                 Title = "Codespaces",
                 Subtitle = "Find and open your codespaces",
                 Icon = Icons.Codespaces,
-                MoreCommands = [.. accountCommands, new CommandContextItem(new CreateCodespaceCommand(_createCodespace))],
+                MoreCommands = [.. accountCommands, new CommandContextItem(_createCodespace)],
             },
         ];
     }
