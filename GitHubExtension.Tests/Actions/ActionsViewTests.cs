@@ -17,6 +17,7 @@ public class ActionsViewTests
 {
     private static readonly GitHubAccount Account = new(GitHubHost.GitHubDotCom, "octocat", "t");
     private static readonly DateTimeOffset Now = new(2025, 6, 1, 12, 0, 0, TimeSpan.Zero);
+    private static readonly string[] RepositorySections = ["o/r", "Issues", "Pull Requests", "Actions", "Discussions"];
     private const string RunJson = """
         {"workflow_runs":[{"id":9876543210,"name":"CI","display_title":"Fix palette flicker",
         "actor":{"login":"mona"},"status":"completed","conclusion":"failure",
@@ -44,6 +45,7 @@ public class ActionsViewTests
         var repository = Assert.IsInstanceOfType<RepositoryPage>(provider.GetCommand(RepositoryPage.PageId));
         Assert.AreEqual("o/r", repository.Title);
         Assert.IsNull(browser.LastOpened);
+        CollectionAssert.AreEqual(RepositorySections, repository.GetItems().Select(section => section.Title).ToArray());
         var command = repository.GetItems().Single(i => i.Title == "Actions").Command;
 
         Assert.IsInstanceOfType<OpenActionsCommand>(command).Invoke();
