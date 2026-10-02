@@ -18,6 +18,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     private readonly IBrowserLauncher _browser;
     private readonly TimeProvider _time;
     private readonly PageEmptyContent _emptyContent;
+    private readonly PullRequestFilters _filters = new();
     private readonly Lock _lock = new();
     private readonly List<RepositoryPullRequestItem> _items = [];
     private string? _repository;
@@ -44,6 +45,9 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         Title = "Pull requests";
         Icon = Icons.PullRequests;
         PlaceholderText = "Filter pull requests...";
+        _filters.CurrentFilterId = PullRequestFilters.All;
+        _filters.PropChanged += (_, _) => RaiseItemsChanged();
+        Filters = _filters;
         _auth.AccountChanged += OnAccountChanged;
     }
 
@@ -93,12 +97,14 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         RepositoryPullRequestItem[] snapshot;
         string? repository;
         string? error;
+        string filter;
         lock (_lock)
         {
             needsLoad = _repository is not null && !_loaded && !_fetching;
             snapshot = [.. _items];
             repository = _repository;
             error = _error;
+            filter = _filters.CurrentFilterId;
         }
 
         if (needsLoad)
@@ -113,16 +119,28 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         }
 
         var terms = SearchText.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var matches = terms.Length == 0
-            ? snapshot
-            : [.. snapshot.Where(item => item.Matches(terms))];
+        var matches = snapshot
+            .Where(item => MatchesFilter(item.PullRequest.State, filter))
+            .Where(item => terms.Length == 0 || item.Matches(terms))
+            .ToArray();
+        var emptyStatus = filter switch
+        {
+            PullRequestFilters.Open => "open",
+            PullRequestFilters.Closed => "closed",
+            PullRequestFilters.Merged => "merged",
+            _ => null,
+        };
 
         EmptyContent = error is not null
             ? Empty("Couldn't load pull requests", error, refresh: true)
             : matches.Length == 0
-                ? Empty(terms.Length == 0 ? "No pull requests found" : "No matching pull requests", terms.Length == 0
-                    ? $"{repository} doesn't have any pull requests"
-                    : $"Nothing matches \"{SearchText.Trim()}\"")
+                ? Empty(
+                    terms.Length == 0 && emptyStatus is null ? "No pull requests found" : "No matching pull requests",
+                    terms.Length == 0
+                        ? emptyStatus is null
+                            ? $"{repository} doesn't have any pull requests"
+                            : $"{repository} doesn't have any {emptyStatus} pull requests"
+                        : $"Nothing matches \"{SearchText.Trim()}\"")
                 : Empty("No pull requests found", $"{repository} doesn't have any pull requests");
 
         return matches;
@@ -176,6 +194,15 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
 
     private CommandItem Empty(string title, string subtitle, bool refresh = false) =>
         _emptyContent.Get(title, subtitle, refresh);
+
+    private static bool MatchesFilter(SubjectState state, string filter) =>
+        filter switch
+        {
+            PullRequestFilters.Open => state is SubjectState.Open or SubjectState.Draft,
+            PullRequestFilters.Closed => state is SubjectState.Closed,
+            PullRequestFilters.Merged => state is SubjectState.Merged,
+            _ => true,
+        };
 
     private Task StartLoad(bool reset)
     {
@@ -294,6 +321,22 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     }
 
     private void OnAccountChanged(object? sender, EventArgs e) => Reset();
+}
+
+internal sealed partial class PullRequestFilters : Filters
+{
+    internal const string All = "all";
+    internal const string Open = "open";
+    internal const string Closed = "closed";
+    internal const string Merged = "merged";
+
+    public override IFilterItem[] GetFilters() =>
+    [
+        new Filter { Id = All, Name = "All" },
+        new Filter { Id = Open, Name = "Open" },
+        new Filter { Id = Closed, Name = "Closed" },
+        new Filter { Id = Merged, Name = "Merged" },
+    ];
 }
 
 internal sealed partial class RepositoryPullRequestItem : ListItem
