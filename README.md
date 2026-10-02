@@ -21,6 +21,8 @@ Your notifications, repos, agents, codespaces, and saved queries, one keystroke 
 
 Repository issue lists start with **Open** selected. Switch to **Closed** to see completed and not-planned issues. Text search narrows the selected state, and more results load as you scroll.
 
+Actions lists start with **Running** selected, including queued runs; switch to **Succeeded** for successful runs or **Failed** for every other completed outcome, including cancelled and skipped runs. Each filter has a status icon, text search narrows the selected group, and more results load as you scroll.
+
 Codespaces requires a github.com account and the `codespace` token scope. It isn't available on GitHub Enterprise Server. Use **More > Close Codespace** on an active codespace to stop it without deleting its files. The list shows the state GitHub returns, and **Refresh** checks whether shutdown has finished. Opening a stopped codespace takes you to GitHub's browser editor, where it can start the environment.
 
 ### Agents access

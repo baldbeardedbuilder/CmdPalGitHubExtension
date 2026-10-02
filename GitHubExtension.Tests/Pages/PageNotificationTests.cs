@@ -273,7 +273,7 @@ public sealed class PageNotificationTests
             case "actions":
                 var actions = new Mock<IActionsClient>();
                 actions.Setup(c => c.GetRunsAsync(Account, "o/r", It.IsAny<Uri?>(), It.IsAny<CancellationToken>()))
-                    .Returns(() => LoadResult(new WorkflowRunsPageResult([new GitHubWorkflowRun(1, "Build", "Test build", "octocat", "completed", "success", Now, WebUrl)], NextPage), fail));
+                    .Returns(() => LoadResult(new WorkflowRunsPageResult([new GitHubWorkflowRun(1, "Build", "Test build", "octocat", "in_progress", null, Now, WebUrl)], NextPage), fail));
                 var actionsPage = new ActionsPage(auth, actions.Object, browser);
                 actionsPage.OpenRepository("o/r");
                 return (actionsPage, () => actionsPage.CurrentLoad, actionsPage.RefreshAsync);
