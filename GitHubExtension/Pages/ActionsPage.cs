@@ -196,7 +196,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
                 }
 
                 var known = _items.Select(i => i.Run.Id).ToHashSet();
-                _items.AddRange(result.Runs.Where(r => known.Add(r.Id)).Select(r => new WorkflowRunItem(this, r, _browser, now)));
+                _items.AddRange(result.Runs.Where(r => known.Add(r.Id)).Select(r => new WorkflowRunItem(this, repository, r, _browser, now)));
                 _nextPage = result.NextPage;
                 hasMore = _nextPage is not null;
                 _loaded = true;

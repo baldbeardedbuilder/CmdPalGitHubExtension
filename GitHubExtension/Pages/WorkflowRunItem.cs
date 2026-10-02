@@ -10,12 +10,13 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 
 internal sealed partial class WorkflowRunItem : ListItem
 {
-    public WorkflowRunItem(ActionsPage page, GitHubWorkflowRun run, IBrowserLauncher browser, DateTimeOffset now)
+    public WorkflowRunItem(ActionsPage page, string repository, GitHubWorkflowRun run, IBrowserLauncher browser, DateTimeOffset now)
     {
         Run = run;
         Title = run.Name;
         Subtitle = WorkflowRunFormatting.Subtitle(run, now);
         Icon = WorkflowRunFormatting.Icon(run);
+        Details = new WorkflowRunDetails(repository, run);
         var state = WorkflowRunFormatting.State(run);
         SearchText = $"{run.Name} {run.DisplayTitle} {run.Actor} {run.Status} {run.Conclusion} {state}";
         Command = new OpenInBrowserCommand(browser, run.WebUrl, "Open", Icons.Actions);

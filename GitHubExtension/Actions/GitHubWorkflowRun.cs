@@ -12,6 +12,12 @@ internal sealed record GitHubWorkflowRun(
     string Status,
     string? Conclusion,
     DateTimeOffset CreatedAt,
-    Uri WebUrl);
+    Uri WebUrl,
+    string? Event = null,
+    string? HeadBranch = null,
+    string? HeadSha = null,
+    int? RunNumber = null,
+    int? RunAttempt = null,
+    DateTimeOffset UpdatedAt = default);
 
 internal sealed record WorkflowRunsPageResult(IReadOnlyList<GitHubWorkflowRun> Runs, Uri? NextPage);

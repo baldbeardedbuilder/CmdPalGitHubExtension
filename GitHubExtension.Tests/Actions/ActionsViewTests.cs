@@ -8,6 +8,7 @@ using BaldBeardedBuilder.CmdPal.GitHub.Actions;
 using BaldBeardedBuilder.CmdPal.GitHub.Commands;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
 using BaldBeardedBuilder.CmdPal.GitHub.Repositories;
+using Microsoft.CommandPalette.Extensions;
 using Microsoft.CommandPalette.Extensions.Toolkit;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Tests.Actions;
@@ -21,7 +22,9 @@ public class ActionsViewTests
     private const string RunJson = """
         {"workflow_runs":[{"id":9876543210,"name":"CI","display_title":"Fix palette flicker",
         "actor":{"login":"mona"},"status":"completed","conclusion":"failure",
-        "created_at":"2025-06-01T11:48:00Z","html_url":"https://github.com/o/r/actions/runs/9876543210"}]}
+        "event":"push","head_branch":"main","head_sha":"abc123","run_number":42,"run_attempt":2,
+        "created_at":"2025-06-01T11:48:00Z","updated_at":"2025-06-01T11:50:00Z",
+        "html_url":"https://github.com/o/r/actions/runs/9876543210"}]}
         """;
 
     public TestContext TestContext { get; set; } = null!;
@@ -75,6 +78,22 @@ public class ActionsViewTests
         Assert.AreEqual("CI", item.Title);
         Assert.AreEqual("Fix palette flicker \u00B7 mona \u00B7 12m ago", item.Subtitle);
         Assert.AreSame(Icons.RunSuccess, item.Icon);
+        var details = Assert.IsInstanceOfType<WorkflowRunDetails>(item.Details);
+        Assert.AreEqual("Fix palette flicker", details.Title);
+        Assert.AreEqual("CI", details.Body);
+        Assert.AreEqual("Success", Tags(details, "Status").Single().Text);
+        Assert.AreEqual("o/r", Text(details, "Repository"));
+        Assert.AreEqual("@mona", Text(details, "Actor"));
+        Assert.AreEqual("push", Text(details, "Event"));
+        Assert.AreEqual("main", Text(details, "Branch"));
+        Assert.AreEqual("42", Text(details, "Run number"));
+        Assert.AreEqual("2", Text(details, "Attempt"));
+        Assert.AreEqual(Now.AddMinutes(-12).ToLocalTime().ToString("g", System.Globalization.CultureInfo.CurrentCulture), Text(details, "Started"));
+        Assert.AreEqual(Now.ToLocalTime().ToString("g", System.Globalization.CultureInfo.CurrentCulture), Text(details, "Updated"));
+        Assert.AreEqual("abc123", Text(details, "Commit"));
+        var runLink = Assert.IsInstanceOfType<IDetailsLink>(details.Metadata.Single(m => m.Key == "Workflow run").Data);
+        Assert.AreEqual("#42", runLink.Text);
+        Assert.AreEqual(new Uri("https://github.com/o/r/actions/runs/1"), runLink.Link);
         ((InvokableCommand)item.Command!).Invoke();
         Assert.AreEqual(Run().WebUrl, browser.LastOpened);
         Assert.IsTrue(item.MoreCommands.OfType<CommandContextItem>().Any(c => c.Command is RefreshActionsCommand));
@@ -275,6 +294,12 @@ public class ActionsViewTests
         Assert.AreEqual("completed", run.Status);
         Assert.AreEqual("failure", run.Conclusion);
         Assert.AreEqual(Now.AddMinutes(-12), run.CreatedAt);
+        Assert.AreEqual("push", run.Event);
+        Assert.AreEqual("main", run.HeadBranch);
+        Assert.AreEqual("abc123", run.HeadSha);
+        Assert.AreEqual(42, run.RunNumber);
+        Assert.AreEqual(2, run.RunAttempt);
+        Assert.AreEqual(new DateTimeOffset(2025, 6, 1, 11, 50, 0, TimeSpan.Zero), run.UpdatedAt);
         Assert.AreEqual(new Uri("https://github.com/o/r/actions/runs/9876543210"), run.WebUrl);
     }
 
@@ -355,7 +380,8 @@ public class ActionsViewTests
     }
 
     private static GitHubWorkflowRun Run(long id = 1) =>
-        new(id, "CI", "Fix palette flicker", "mona", "completed", "success", Now.AddMinutes(-12), new Uri($"https://github.com/o/r/actions/runs/{id}"));
+        new(id, "CI", "Fix palette flicker", "mona", "completed", "success", Now.AddMinutes(-12),
+            new Uri($"https://github.com/o/r/actions/runs/{id}"), "push", "main", "abc123", 42, 2, Now);
 
     private static AuthService Auth() =>
         new(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(), new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
@@ -382,6 +408,18 @@ public class ActionsViewTests
         page.GetItems();
         await page.CurrentLoad;
         return page;
+    }
+
+    private static string Text(WorkflowRunDetails details, string key)
+    {
+        var data = Assert.IsInstanceOfType<IDetailsLink>(details.Metadata.Single(m => m.Key == key).Data);
+        return data.Text;
+    }
+
+    private static ITag[] Tags(WorkflowRunDetails details, string key)
+    {
+        var data = Assert.IsInstanceOfType<IDetailsTags>(details.Metadata.Single(m => m.Key == key).Data);
+        return data.Tags;
     }
 
     private sealed class Handler(HttpStatusCode status, string body, string? link = null) : HttpMessageHandler

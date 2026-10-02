@@ -59,13 +59,21 @@ internal sealed class ActionsClient(HttpClient httpClient) : IActionsClient
             var actor = run.TryGetProperty("actor", out var user) && user.ValueKind == JsonValueKind.Object
                 ? GetString(user, "login") ?? string.Empty
                 : string.Empty;
+            int? runNumber = GetOptionalInt(run, "run_number");
+            int? runAttempt = GetOptionalInt(run, "run_attempt");
             result.Add(new GitHubWorkflowRun(
                 number, GetString(run, "name") ?? "Workflow",
                 GetString(run, "display_title") ?? GetString(run, "name") ?? "Workflow run",
                 actor, GetString(run, "status") ?? "unknown", GetString(run, "conclusion"),
-                GetDate(run, "created_at"), url));
+                GetDate(run, "created_at"), url, GetString(run, "event"), GetString(run, "head_branch"),
+                GetString(run, "head_sha"), runNumber, runAttempt, GetDate(run, "updated_at")));
         }
 
         return result;
     }
+
+    private static int? GetOptionalInt(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number)
+            ? number
+            : null;
 }
