@@ -19,6 +19,7 @@ public class ActionsViewTests
     private static readonly GitHubAccount Account = new(GitHubHost.GitHubDotCom, "octocat", "t");
     private static readonly DateTimeOffset Now = new(2025, 6, 1, 12, 0, 0, TimeSpan.Zero);
     private static readonly string[] RepositorySections = ["o/r", "Issues", "Pull Requests", "Actions", "Discussions"];
+    private static readonly string[] ExpectedFilters = ["Running", "Succeeded", "Failed"];
     private const string RunJson = """
         {"workflow_runs":[{"id":9876543210,"name":"CI","display_title":"Fix palette flicker",
         "actor":{"login":"mona"},"status":"completed","conclusion":"failure",
@@ -67,7 +68,8 @@ public class ActionsViewTests
     public async Task LoadsScreenshotMetadataAndOpensRun()
     {
         var browser = new FakeBrowser(_ => null);
-        using var page = Page(Client([Run()]).Object, browser: browser);
+        using var page = Page(Client([Run() with { Status = "completed", Conclusion = "success" }]).Object, browser: browser);
+        page.Filters!.CurrentFilterId = ActionFilters.Succeeded;
         page.OpenRepository("o/r");
         Assert.AreEqual("Actions", page.Title);
         Assert.AreEqual("Filter workflow runs...", page.PlaceholderText);
@@ -134,10 +136,15 @@ public class ActionsViewTests
     [TestMethod]
     [DataRow("ci")]
     [DataRow("palette MONA")]
-    [DataRow("success")]
+    [DataRow("success mona")]
     public async Task Filter_MatchesWorkflowTitleActorAndStatus(string query)
     {
-        using var page = await Loaded(Client([Run(), Run(2) with { Name = "Release", DisplayTitle = "v1", Actor = "bob", Conclusion = "failure" }]).Object);
+        using var page = await Loaded(Client([
+            Run() with { Status = "completed", Conclusion = "success" },
+            Run(2) with { Name = "Release", DisplayTitle = "v1", Actor = "bob", Status = "completed", Conclusion = "success" },
+            Run(3) with { Status = "completed", Conclusion = "failure" },
+        ]).Object);
+        page.Filters!.CurrentFilterId = ActionFilters.Succeeded;
         page.SearchText = query;
 
         Assert.AreEqual(1L, ((WorkflowRunItem)page.GetItems().Single()).Run.Id);
@@ -149,12 +156,112 @@ public class ActionsViewTests
     }
 
     [TestMethod]
+    public async Task Filters_DefaultToRunningAndSwitchGroupsWithIcons()
+    {
+        var client = Client([
+            Run(),
+            Run(2) with { Status = "completed", Conclusion = "success" },
+            Run(3) with { Status = "completed", Conclusion = "failure" },
+        ]);
+        using var page = await Loaded(client.Object);
+        var filters = Assert.IsInstanceOfType<ActionFilters>(page.Filters);
+        var options = filters.GetFilters().Cast<Filter>().ToArray();
+        CollectionAssert.AreEqual(ExpectedFilters, options.Select(option => option.Name).ToArray());
+        Assert.AreSame(Icons.RunInProgress, options[0].Icon);
+        Assert.AreSame(Icons.RunSuccess, options[1].Icon);
+        Assert.AreSame(Icons.RunFailure, options[2].Icon);
+        Assert.AreEqual(ActionFilters.Running, filters.CurrentFilterId);
+        Assert.AreEqual(1L, Assert.IsInstanceOfType<WorkflowRunItem>(page.GetItems().Single()).Run.Id);
+        var events = 0;
+        page.ItemsChanged += (_, _) => events++;
+
+        filters.CurrentFilterId = ActionFilters.Succeeded;
+        Assert.AreEqual(2L, Assert.IsInstanceOfType<WorkflowRunItem>(page.GetItems().Single()).Run.Id);
+        filters.CurrentFilterId = ActionFilters.Failed;
+        Assert.AreEqual(3L, Assert.IsInstanceOfType<WorkflowRunItem>(page.GetItems().Single()).Run.Id);
+        filters.CurrentFilterId = ActionFilters.Running;
+        Assert.AreEqual(1L, Assert.IsInstanceOfType<WorkflowRunItem>(page.GetItems().Single()).Run.Id);
+        Assert.IsGreaterThan(0, events);
+        client.Verify(c => c.GetRunsAsync(Account, "o/r", null, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    [DataRow("in_progress", null, ActionFilters.Running)]
+    [DataRow("queued", null, ActionFilters.Running)]
+    [DataRow("requested", null, ActionFilters.Running)]
+    [DataRow("waiting", null, ActionFilters.Running)]
+    [DataRow("pending", null, ActionFilters.Running)]
+    [DataRow("completed", "success", ActionFilters.Succeeded)]
+    [DataRow("completed", "failure", ActionFilters.Failed)]
+    [DataRow("completed", "timed_out", ActionFilters.Failed)]
+    [DataRow("completed", "cancelled", ActionFilters.Failed)]
+    [DataRow("completed", "skipped", ActionFilters.Failed)]
+    [DataRow("completed", "neutral", ActionFilters.Failed)]
+    [DataRow("completed", "action_required", ActionFilters.Failed)]
+    [DataRow("completed", "stale", ActionFilters.Failed)]
+    [DataRow("completed", null, ActionFilters.Failed)]
+    [DataRow("completed", "future_conclusion", ActionFilters.Failed)]
+    [DataRow("future_status", null, null)]
+    public async Task Filters_GroupStatusesAndConclusions(string status, string? conclusion, string? expectedFilter)
+    {
+        using var page = await Loaded(Client([Run() with { Status = status, Conclusion = conclusion }]).Object);
+
+        foreach (var filter in page.Filters!.GetFilters().Cast<Filter>())
+        {
+            page.Filters.CurrentFilterId = filter.Id;
+            if (filter.Id == expectedFilter)
+            {
+                Assert.AreEqual(1L, Assert.IsInstanceOfType<WorkflowRunItem>(page.GetItems().Single()).Run.Id);
+            }
+            else
+            {
+                Assert.IsEmpty(page.GetItems());
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task Filters_CombineWithSearchAndShowSelectedEmptyState()
+    {
+        using var page = await Loaded(Client([
+            Run(),
+            Run(2) with { Name = "Release", Status = "completed", Conclusion = "failure" },
+            Run(3) with { Status = "completed", Conclusion = "failure" },
+        ]).Object);
+        page.SearchText = "release";
+        page.Filters!.CurrentFilterId = ActionFilters.Failed;
+        Assert.AreEqual(2L, Assert.IsInstanceOfType<WorkflowRunItem>(page.GetItems().Single()).Run.Id);
+        page.Filters.CurrentFilterId = ActionFilters.Running;
+        Assert.IsEmpty(page.GetItems());
+        Assert.AreEqual("Nothing matches \"release\"", page.EmptyContent!.Subtitle);
+        page.SearchText = string.Empty;
+        page.Filters.CurrentFilterId = ActionFilters.Succeeded;
+        Assert.IsEmpty(page.GetItems());
+        Assert.AreEqual("No succeeded workflow runs. Refresh to check for new runs", page.EmptyContent.Subtitle);
+        Assert.IsInstanceOfType<RefreshActionsCommand>(page.EmptyContent.Command);
+    }
+
+    [TestMethod]
+    public async Task Filters_RepositoryPagesHaveIndependentRunningDefaults()
+    {
+        using var page = await Loaded(Client([Run()]).Object);
+        page.Filters!.CurrentFilterId = ActionFilters.Failed;
+        using var repositoryPage = page.ForRepository("o/other");
+
+        Assert.AreEqual(ActionFilters.Running, repositoryPage.Filters!.CurrentFilterId);
+        repositoryPage.Filters.CurrentFilterId = ActionFilters.Succeeded;
+        Assert.AreEqual(ActionFilters.Failed, page.Filters.CurrentFilterId);
+    }
+
+    [TestMethod]
     public async Task LoadMore_AppendsAndDeduplicatesRuns()
     {
         var next = new Uri("https://api.github.com/repos/o/r/actions/runs?page=2");
         var client = Client([Run()], next);
         client.Setup(c => c.GetRunsAsync(Account, "o/r", next, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new WorkflowRunsPageResult([Run(), Run(2)], null));
+            .ReturnsAsync(new WorkflowRunsPageResult([
+                Run(), Run(2), Run(3) with { Status = "completed", Conclusion = "success" },
+            ], null));
         using var page = await Loaded(client.Object);
         Assert.IsTrue(page.HasMoreItems);
 
@@ -162,6 +269,8 @@ public class ActionsViewTests
         await page.CurrentLoad;
 
         CollectionAssert.AreEqual(new long[] { 1, 2 }, page.GetItems().Cast<WorkflowRunItem>().Select(i => i.Run.Id).ToArray());
+        page.Filters!.CurrentFilterId = ActionFilters.Succeeded;
+        Assert.AreEqual(3L, Assert.IsInstanceOfType<WorkflowRunItem>(page.GetItems().Single()).Run.Id);
         Assert.IsFalse(page.HasMoreItems);
         page.LoadMore();
         client.Verify(c => c.GetRunsAsync(Account, "o/r", next, It.IsAny<CancellationToken>()), Times.Once);
@@ -170,16 +279,21 @@ public class ActionsViewTests
     [TestMethod]
     public async Task Refresh_ReplacesRunsAndPreservesFilter()
     {
-        var client = Client([Run()]);
+        var client = Client([Run() with { Status = "completed", Conclusion = "failure" }]);
         using var page = await Loaded(client.Object);
+        page.Filters!.CurrentFilterId = ActionFilters.Failed;
         page.SearchText = "release";
         client.Setup(c => c.GetRunsAsync(Account, "o/r", null, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new WorkflowRunsPageResult([Run(2) with { Name = "Release" }], null));
+            .ReturnsAsync(new WorkflowRunsPageResult([
+                Run(2) with { Name = "Release", Status = "completed", Conclusion = "failure" },
+                Run(3) with { Name = "Release" },
+            ], null));
 
         await page.RefreshAsync();
 
         Assert.AreEqual(2L, ((WorkflowRunItem)page.GetItems().Single()).Run.Id);
         Assert.AreEqual("release", page.SearchText);
+        Assert.AreEqual(ActionFilters.Failed, page.Filters.CurrentFilterId);
         Assert.IsFalse(page.IsLoading);
     }
 
@@ -189,7 +303,8 @@ public class ActionsViewTests
         using var page = await Loaded(Client([]).Object);
 
         Assert.IsEmpty(page.GetItems());
-        Assert.AreEqual("No workflow runs yet", page.EmptyContent!.Title);
+        Assert.AreEqual("No workflow runs found", page.EmptyContent!.Title);
+        Assert.AreEqual("No running workflow runs. Refresh to check for new runs", page.EmptyContent.Subtitle);
         Assert.IsInstanceOfType<RefreshActionsCommand>(page.EmptyContent.Command);
     }
 
@@ -278,6 +393,26 @@ public class ActionsViewTests
         Assert.AreEqual("Sign in to view workflow runs", page.EmptyContent!.Title);
         Assert.IsFalse(page.IsLoading);
         Assert.IsFalse(page.HasMoreItems);
+    }
+
+    [TestMethod]
+    public async Task Filters_ChangedDuringLoadApplyToResponse()
+    {
+        var response = new TaskCompletionSource<WorkflowRunsPageResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new Mock<IActionsClient>();
+        client.Setup(c => c.GetRunsAsync(Account, "o/r", null, It.IsAny<CancellationToken>())).Returns(response.Task);
+        using var page = Page(client.Object);
+        page.OpenRepository("o/r");
+        page.GetItems();
+        page.Filters!.CurrentFilterId = ActionFilters.Succeeded;
+
+        response.SetResult(new WorkflowRunsPageResult([
+            Run(), Run(2) with { Status = "completed", Conclusion = "success" },
+        ], null));
+        await page.CurrentLoad;
+
+        Assert.AreEqual(2L, Assert.IsInstanceOfType<WorkflowRunItem>(page.GetItems().Single()).Run.Id);
+        Assert.IsFalse(page.IsLoading);
     }
 
     [TestMethod]
@@ -380,7 +515,7 @@ public class ActionsViewTests
     }
 
     private static GitHubWorkflowRun Run(long id = 1) =>
-        new(id, "CI", "Fix palette flicker", "mona", "completed", "success", Now.AddMinutes(-12),
+        new(id, "CI", "Fix palette flicker", "mona", "in_progress", null, Now.AddMinutes(-12),
             new Uri($"https://github.com/o/r/actions/runs/{id}"), "push", "main", "abc123", 42, 2, Now);
 
     private static AuthService Auth() =>
