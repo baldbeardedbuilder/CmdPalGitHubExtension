@@ -17,6 +17,11 @@ public sealed class RepositoryPullRequestsPageTests
     private static readonly DateTimeOffset Now = new(2025, 6, 1, 12, 0, 0, TimeSpan.Zero);
     private static readonly string[] ExpectedStateTags = ["Draft", "Merged", "Closed"];
     private static readonly string[] ExpectedPagedTitles = ["#1 First", "#2 Second"];
+    private static readonly string[] ExpectedPullRequestFilters = ["All", "Open", "Closed", "Merged"];
+    private static readonly string[] ExpectedAllPullRequestTitles = ["#1 Open", "#2 Draft", "#3 Closed", "#4 Merged"];
+    private static readonly string[] ExpectedOpenPullRequestTitles = ["#1 Open", "#2 Draft"];
+    private static readonly string[] ExpectedClosedPullRequestTitles = ["#3 Closed"];
+    private static readonly string[] ExpectedMergedPullRequestTitles = ["#4 Merged"];
 
     [TestMethod]
     public async Task Open_ShowsBranchSubtitleAuthorAndOpenBadge()
@@ -80,6 +85,48 @@ public sealed class RepositoryPullRequestsPageTests
 
         page.SearchText = "mona";
         Assert.AreEqual("#2 Fix docs", page.GetItems().Single().Title);
+    }
+
+    [TestMethod]
+    public async Task Filters_SelectOpenClosedAndMergedPullRequests()
+    {
+        var client = new Mock<IPullRequestsClient>();
+        client.Setup(c => c.GetPullRequestsAsync(Account, "octo/tool", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PullRequestsPageResult(
+            [
+                CreatePullRequest(1, "Open", SubjectState.Open, null, "open", "main", []),
+                CreatePullRequest(2, "Draft", SubjectState.Draft, null, "draft", "main", []),
+                CreatePullRequest(3, "Closed", SubjectState.Closed, null, "closed", "main", []),
+                CreatePullRequest(4, "Merged", SubjectState.Merged, null, "merged", "main", []),
+            ],
+            null));
+        using var page = CreatePage(client.Object);
+        page.Open("octo/tool");
+        await page.CurrentLoad;
+
+        var filters = Assert.IsInstanceOfType<PullRequestFilters>(page.Filters);
+        CollectionAssert.AreEqual(
+            ExpectedPullRequestFilters,
+            filters.GetFilters().Cast<Filter>().Select(filter => filter.Name).ToArray());
+        Assert.AreEqual(PullRequestFilters.All, filters.CurrentFilterId);
+        CollectionAssert.AreEqual(
+            ExpectedAllPullRequestTitles,
+            page.GetItems().Select(item => item.Title).ToArray());
+
+        filters.CurrentFilterId = PullRequestFilters.Open;
+        CollectionAssert.AreEqual(
+            ExpectedOpenPullRequestTitles,
+            page.GetItems().Select(item => item.Title).ToArray());
+
+        filters.CurrentFilterId = PullRequestFilters.Closed;
+        CollectionAssert.AreEqual(
+            ExpectedClosedPullRequestTitles,
+            page.GetItems().Select(item => item.Title).ToArray());
+
+        filters.CurrentFilterId = PullRequestFilters.Merged;
+        CollectionAssert.AreEqual(
+            ExpectedMergedPullRequestTitles,
+            page.GetItems().Select(item => item.Title).ToArray());
     }
 
     [TestMethod]
