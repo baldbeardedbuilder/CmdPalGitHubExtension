@@ -210,7 +210,7 @@ public class NotificationsPageTests
     }
 
     [TestMethod]
-    public async Task Issue_DoesNotHavePullRequestDetails()
+    public async Task Issue_WithoutSubjectUrlShowsUnavailableDetails()
     {
         var client = new Mock<INotificationsClient>();
         client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
@@ -219,7 +219,43 @@ public class NotificationsPageTests
         page.GetItems();
         await page.CurrentLoad;
 
-        Assert.IsNull(page.GetItems().Single().Details);
+        Assert.AreEqual("No issue details are available. Open it on GitHub to learn more.", page.GetItems().Single().Details!.Body);
+    }
+
+    [TestMethod]
+    public async Task Issue_PreviewLoadsDetailsFromSubject()
+    {
+        var api = new Uri("https://api.github.com/repos/o/r/issues/9");
+        using var json = System.Text.Json.JsonDocument.Parse("""
+            {
+              "number": 9,
+              "title": "Fix the thing",
+              "body": "Issue description",
+              "state": "open",
+              "html_url": "https://github.com/o/r/issues/9",
+              "created_at": "2025-01-02T03:04:05Z",
+              "user": { "login": "octocat" },
+              "assignees": [{ "login": "mona" }],
+              "labels": [{ "name": "bug" }],
+              "comments": 2
+            }
+            """);
+        var subject = NotificationsClient.ParseSubject(json.RootElement);
+        var client = new Mock<INotificationsClient>();
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationsPageResult([NotificationParsingTests.Notification("1", "Issue", api)], null));
+        client.Setup(c => c.GetSubjectAsync(Account, api, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subject);
+        var page = CreatePage(client.Object, out _);
+
+        page.GetItems();
+        await page.CurrentLoad;
+
+        var details = page.GetItems().Single().Details!;
+        Assert.AreEqual("#9 Fix the thing", details.Title);
+        Assert.AreEqual("Issue description", details.Body);
+        Assert.AreEqual("o/r", ((DetailsLink)details.Metadata.Single(m => m.Key == "Repository").Data).Text);
+        Assert.AreEqual("@octocat", ((DetailsLink)details.Metadata.Single(m => m.Key == "Author").Data).Text);
     }
 
     [TestMethod]
