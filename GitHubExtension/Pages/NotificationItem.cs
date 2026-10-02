@@ -4,6 +4,7 @@
 
 using BaldBeardedBuilder.CmdPal.GitHub.Commands;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
+using BaldBeardedBuilder.CmdPal.GitHub.PullRequests;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 
@@ -24,6 +25,13 @@ internal sealed partial class NotificationItem : ListItem
         Command = new OpenNotificationCommand(page, this);
         Title = notification.Title;
         Subtitle = $"{notification.RepositoryFullName} \u00B7 {NotificationFormatting.RelativeTime(notification.UpdatedAt, now)}";
+        if (notification.SubjectType == "PullRequest")
+        {
+            Details = notification.SubjectApiUrl is null
+                ? PullRequestDetails.Unavailable(notification.Title, "No pull request details are available. Open it on GitHub to learn more.")
+                : PullRequestDetails.Loading(notification.Title);
+        }
+
         Refresh();
     }
 
@@ -61,7 +69,22 @@ internal sealed partial class NotificationItem : ListItem
             WebUrl = url;
         }
 
+        if (Notification.SubjectType == "PullRequest")
+        {
+            Details = subject.PullRequest is { } pullRequest
+                ? new PullRequestDetails(pullRequest)
+                : PullRequestDetails.Unavailable(Notification.Title, "Couldn't load pull request details. Try refreshing notifications or open it on GitHub.");
+        }
+
         Refresh();
+    }
+
+    public void SetSubjectError(string message)
+    {
+        if (Notification.SubjectType == "PullRequest")
+        {
+            Details = PullRequestDetails.Unavailable(Notification.Title, message);
+        }
     }
 
     private void Refresh()
