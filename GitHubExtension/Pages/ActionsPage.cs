@@ -17,6 +17,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     private readonly IBrowserLauncher _browser;
     private readonly TimeProvider _time;
     private readonly PageEmptyContent _emptyContent;
+    private readonly ActionFilters _filters = new();
     private readonly Lock _lock = new();
     private readonly List<WorkflowRunItem> _items = [];
     private string? _repository;
@@ -39,6 +40,9 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         Title = "Actions";
         Icon = Icons.Actions;
         PlaceholderText = "Filter workflow runs...";
+        _filters.CurrentFilterId = ActionFilters.Running;
+        _filters.PropChanged += (_, _) => RaiseItemsChanged();
+        Filters = _filters;
         _auth.AccountChanged += OnAccountChanged;
     }
 
@@ -94,6 +98,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         lock (_lock)
         {
             var terms = SearchText.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var filter = _filters.CurrentFilterId;
             empty = _auth.CurrentAccount is null
                 ? Empty("Sign in to view workflow runs", "Open GitHub to sign in")
                 : _error is not null
@@ -102,8 +107,11 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
                         ? Empty("Loading workflow runs...", _repository ?? string.Empty)
                         : terms.Length > 0
                             ? Empty("No workflow runs found", $"Nothing matches \"{SearchText.Trim()}\"", refresh: true)
-                            : Empty("No workflow runs yet", "Refresh to check for new runs", refresh: true);
-            var matches = _items.Where(i => terms.All(t => i.SearchText.Contains(t, StringComparison.OrdinalIgnoreCase))).Cast<IListItem>().ToList();
+                            : Empty("No workflow runs found", $"No {filter} workflow runs. Refresh to check for new runs", refresh: true);
+            var matches = _items
+                .Where(i => ActionFilters.Matches(i.Run, filter))
+                .Where(i => terms.All(t => i.SearchText.Contains(t, StringComparison.OrdinalIgnoreCase)))
+                .Cast<IListItem>().ToList();
             if (_error is not null && _items.Count > 0)
             {
                 matches.Add(new ListItem(new RefreshActionsCommand(this))
@@ -261,4 +269,26 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         _fetching = false;
         _error = null;
     }
+}
+
+internal sealed partial class ActionFilters : Filters
+{
+    internal const string Running = "running";
+    internal const string Succeeded = "succeeded";
+    internal const string Failed = "failed";
+
+    public override IFilterItem[] GetFilters() =>
+    [
+        new Filter { Id = Running, Name = "Running", Icon = Icons.RunInProgress },
+        new Filter { Id = Succeeded, Name = "Succeeded", Icon = Icons.RunSuccess },
+        new Filter { Id = Failed, Name = "Failed", Icon = Icons.RunFailure },
+    ];
+
+    internal static bool Matches(GitHubWorkflowRun run, string filter) => filter switch
+    {
+        Running => run.Status is "in_progress" or "queued" or "requested" or "waiting" or "pending",
+        Succeeded => run.Status == "completed" && run.Conclusion == "success",
+        Failed => run.Status == "completed" && run.Conclusion != "success",
+        _ => false,
+    };
 }
