@@ -148,6 +148,26 @@ public sealed class AgentsClientTests
     }
 
     [TestMethod]
+    public async Task GetTasksAsync_InvalidRepositoryKeepsTaskAndShowsError()
+    {
+        var payload = TaskJson.Replace("\"id\": 4000000000", "\"id\": \"bad\"", StringComparison.Ordinal);
+        using var handler = Handler(tasks: $"{{\"tasks\":[{payload}]}}");
+        using var http = new HttpClient(handler);
+
+        var task = (await new AgentsClient(http).GetTasksAsync(Account, null, TestContext.CancellationToken)).Tasks.Single();
+
+        Assert.AreEqual("Fix token expiry", task.Title);
+        Assert.IsNull(task.RepositoryId);
+        Assert.IsNull(task.RepositoryFullName);
+        Assert.AreEqual("claude-sonnet-5", task.Model);
+        Assert.Contains("Couldn't load the repository.", task.DetailsError!);
+        Assert.Contains("invalid repository", task.DetailsError!);
+        Assert.AreEqual(
+            "Repository unavailable · claude-sonnet-5 · 12h ago · Couldn't load the repository. GitHub sent back an agent task with an invalid repository.",
+            AgentFormatting.Subtitle(task, new DateTimeOffset(2026, 10, 2, 23, 48, 0, TimeSpan.Zero)));
+    }
+
+    [TestMethod]
     [DataRow(HttpStatusCode.Unauthorized, "Sign out")]
     [DataRow(HttpStatusCode.Forbidden, "Agent tasks: read")]
     [DataRow(HttpStatusCode.NotFound, "isn't available")]
@@ -319,13 +339,15 @@ public sealed class AgentsClientTests
     }
 
     [TestMethod]
-    public void ParseTasks_InvalidRepositoryShowsAnError()
+    public void ParseTasks_InvalidRepositoryKeepsTaskAndReportsRepositoryError()
     {
         using var json = JsonDocument.Parse($"{{\"tasks\":[{TaskJson.Replace("4000000000", "\"bad\"", StringComparison.Ordinal)}]}}");
 
-        var error = Assert.ThrowsExactly<GitHubApiException>(() => AgentsClient.ParseTasks(json.RootElement, Account.Host));
+        var task = AgentsClient.ParseTasks(json.RootElement, Account.Host).Single();
 
-        Assert.Contains("invalid repository", error.Message);
+        Assert.AreEqual("task-1", task.Id);
+        Assert.IsNull(task.RepositoryId);
+        Assert.Contains("invalid repository", task.RepositoryError!);
     }
 
     [TestMethod]

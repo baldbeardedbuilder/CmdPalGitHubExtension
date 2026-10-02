@@ -39,7 +39,9 @@ internal static class AgentFormatting
     {
         var parts = new List<string>
         {
-            task.RepositoryFullName ?? (task.RepositoryId is null ? "No repository" : "Repository unavailable"),
+            task.RepositoryFullName ?? (task.RepositoryId is null && task.RepositoryError is null
+                ? "No repository"
+                : "Repository unavailable"),
         };
         if (!string.IsNullOrWhiteSpace(task.Model))
         {
