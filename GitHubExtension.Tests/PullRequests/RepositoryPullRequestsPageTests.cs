@@ -17,11 +17,9 @@ public sealed class RepositoryPullRequestsPageTests
     private static readonly DateTimeOffset Now = new(2025, 6, 1, 12, 0, 0, TimeSpan.Zero);
     private static readonly string[] ExpectedStateTags = ["Draft", "Merged", "Closed"];
     private static readonly string[] ExpectedPagedTitles = ["#1 First", "#2 Second"];
-    private static readonly string[] ExpectedPullRequestFilters = ["All", "Open", "Closed", "Merged"];
-    private static readonly string[] ExpectedAllPullRequestTitles = ["#1 Open", "#2 Draft", "#3 Closed", "#4 Merged"];
+    private static readonly string[] ExpectedPullRequestFilters = ["Open", "Closed"];
     private static readonly string[] ExpectedOpenPullRequestTitles = ["#1 Open", "#2 Draft"];
     private static readonly string[] ExpectedClosedPullRequestTitles = ["#3 Closed"];
-    private static readonly string[] ExpectedMergedPullRequestTitles = ["#4 Merged"];
 
     [TestMethod]
     public async Task Open_ShowsBranchSubtitleAuthorAndOpenBadge()
@@ -44,23 +42,17 @@ public sealed class RepositoryPullRequestsPageTests
     }
 
     [TestMethod]
-    public async Task Open_ShowsDraftMergedAndClosedBadges()
+    public void PullRequestItems_ShowStateBadges()
     {
-        var client = new Mock<IPullRequestsClient>();
-        client.Setup(c => c.GetPullRequestsAsync(Account, "octo/tool", null, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new PullRequestsPageResult(
-            [
-                CreatePullRequest(1, "Draft", SubjectState.Draft, null, "draft", "main", []),
-                CreatePullRequest(2, "Merged", SubjectState.Merged, null, "merged", "main", []),
-                CreatePullRequest(3, "Closed", SubjectState.Closed, null, "closed", "main", []),
-                CreatePullRequest(4, "Unknown", SubjectState.Unknown, null, "unknown", "main", []),
-            ],
-            null));
-        using var page = CreatePage(client.Object);
-        page.Open("octo/tool");
-        await page.CurrentLoad;
+        var browser = new FakeBrowser(_ => null);
+        var items = new[]
+        {
+            new RepositoryPullRequestItem(CreatePullRequest(1, "Draft", SubjectState.Draft, null, "draft", "main", []), browser, Now),
+            new RepositoryPullRequestItem(CreatePullRequest(2, "Merged", SubjectState.Merged, null, "merged", "main", []), browser, Now),
+            new RepositoryPullRequestItem(CreatePullRequest(3, "Closed", SubjectState.Closed, null, "closed", "main", []), browser, Now),
+            new RepositoryPullRequestItem(CreatePullRequest(4, "Unknown", SubjectState.Unknown, null, "unknown", "main", []), browser, Now),
+        };
 
-        var items = page.GetItems().Cast<RepositoryPullRequestItem>().ToArray();
         CollectionAssert.AreEqual(ExpectedStateTags, items.Take(3).Select(item => item.Tags.Single().Text).ToArray());
         Assert.IsEmpty(items[3].Tags);
     }
@@ -83,12 +75,13 @@ public sealed class RepositoryPullRequestsPageTests
         page.SearchText = "feature enhancement";
         Assert.AreEqual("#1 Add feature", page.GetItems().Single().Title);
 
+        page.Filters!.CurrentFilterId = PullRequestFilters.Closed;
         page.SearchText = "mona";
         Assert.AreEqual("#2 Fix docs", page.GetItems().Single().Title);
     }
 
     [TestMethod]
-    public async Task Filters_SelectOpenClosedAndMergedPullRequests()
+    public async Task Filters_SelectOpenOrClosedPullRequestsAndDefaultToOpen()
     {
         var client = new Mock<IPullRequestsClient>();
         client.Setup(c => c.GetPullRequestsAsync(Account, "octo/tool", null, It.IsAny<CancellationToken>()))
@@ -105,15 +98,13 @@ public sealed class RepositoryPullRequestsPageTests
         await page.CurrentLoad;
 
         var filters = Assert.IsInstanceOfType<PullRequestFilters>(page.Filters);
+        var filterItems = filters.GetFilters().Cast<Filter>().ToArray();
         CollectionAssert.AreEqual(
             ExpectedPullRequestFilters,
-            filters.GetFilters().Cast<Filter>().Select(filter => filter.Name).ToArray());
-        Assert.AreEqual(PullRequestFilters.All, filters.CurrentFilterId);
-        CollectionAssert.AreEqual(
-            ExpectedAllPullRequestTitles,
-            page.GetItems().Select(item => item.Title).ToArray());
-
-        filters.CurrentFilterId = PullRequestFilters.Open;
+            filterItems.Select(filter => filter.Name).ToArray());
+        Assert.IsNotNull(filterItems[0].Icon);
+        Assert.IsNotNull(filterItems[1].Icon);
+        Assert.AreEqual(PullRequestFilters.Open, filters.CurrentFilterId);
         CollectionAssert.AreEqual(
             ExpectedOpenPullRequestTitles,
             page.GetItems().Select(item => item.Title).ToArray());
@@ -121,11 +112,6 @@ public sealed class RepositoryPullRequestsPageTests
         filters.CurrentFilterId = PullRequestFilters.Closed;
         CollectionAssert.AreEqual(
             ExpectedClosedPullRequestTitles,
-            page.GetItems().Select(item => item.Title).ToArray());
-
-        filters.CurrentFilterId = PullRequestFilters.Merged;
-        CollectionAssert.AreEqual(
-            ExpectedMergedPullRequestTitles,
             page.GetItems().Select(item => item.Title).ToArray());
     }
 
@@ -140,7 +126,7 @@ public sealed class RepositoryPullRequestsPageTests
                 next));
         client.Setup(c => c.GetPullRequestsAsync(Account, "octo/tool", next, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new PullRequestsPageResult(
-                [CreatePullRequest(2, "Second", SubjectState.Merged, null, "second", "main", [])],
+                [CreatePullRequest(2, "Second", SubjectState.Open, null, "second", "main", [])],
                 null));
         using var page = CreatePage(client.Object);
         page.Open("octo/tool");
@@ -170,8 +156,8 @@ public sealed class RepositoryPullRequestsPageTests
         await page.CurrentLoad;
 
         Assert.IsEmpty(page.GetItems());
-        Assert.AreEqual("No pull requests found", page.EmptyContent!.Title);
-        Assert.AreEqual("octo/tool doesn't have any pull requests", page.EmptyContent.Subtitle);
+        Assert.AreEqual("No matching pull requests", page.EmptyContent!.Title);
+        Assert.AreEqual("octo/tool doesn't have any open pull requests", page.EmptyContent.Subtitle);
     }
 
     [TestMethod]
