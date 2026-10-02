@@ -5,6 +5,7 @@
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
 using BaldBeardedBuilder.CmdPal.GitHub.Tests.PullRequests;
+using Microsoft.CommandPalette.Extensions;
 using Microsoft.CommandPalette.Extensions.Toolkit;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Tests.Notifications;
@@ -87,11 +88,33 @@ public class NotificationsPageTests
         await page.CurrentLoad;
         var item = (NotificationItem)page.GetItems().Single();
 
-        ((InvokableCommand)item.Command!).Invoke();
+        var result = ((InvokableCommand)item.Command!).Invoke();
 
         Assert.AreEqual(new Uri("https://github.com/o/r/issues/3"), browser.LastOpened);
+        Assert.AreEqual(CommandResultKind.Dismiss, result.Kind);
         Assert.IsFalse(item.Unread);
         await WaitFor(() => client.Invocations.Any(i => i.Method.Name == nameof(INotificationsClient.MarkAsReadAsync)));
+    }
+
+    [TestMethod]
+    public async Task OpenRepositoryContextAction_LaunchesBrowserAndDismissesPalette()
+    {
+        var client = new Mock<INotificationsClient>();
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationsPageResult([NotificationParsingTests.Notification("1")], null));
+        var page = CreatePage(client.Object, out var browser);
+        page.GetItems();
+        await page.CurrentLoad;
+        var item = (NotificationItem)page.GetItems().Single();
+        var command = item.MoreCommands
+            .OfType<CommandContextItem>()
+            .Single(context => context.Command?.Name == "Open repository")
+            .Command;
+
+        var result = ((InvokableCommand)command!).Invoke();
+
+        Assert.AreEqual(new Uri("https://github.com/o/r"), browser.LastOpened);
+        Assert.AreEqual(CommandResultKind.Dismiss, result.Kind);
     }
 
     [TestMethod]
