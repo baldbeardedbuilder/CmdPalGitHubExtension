@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
+using BaldBeardedBuilder.CmdPal.GitHub.Issues;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
 using BaldBeardedBuilder.CmdPal.GitHub.Repositories;
@@ -14,6 +15,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
     private readonly AuthService _auth;
     private readonly SignInPage _signInPage;
     private readonly NotificationsPage _notificationsPage;
+    private readonly IssueDetailsPage _issueDetailsPage;
     private readonly ReposPage _reposPage;
     private readonly HomePage _homePage;
     private readonly CommandItem _topLevel;
@@ -28,14 +30,16 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         Func<string>? logoProvider = null,
         INotificationsClient? notificationsClient = null,
         IBrowserLauncher? browser = null,
-        IRepositoriesClient? repositoriesClient = null)
+        IRepositoriesClient? repositoriesClient = null,
+        IIssuesClient? issuesClient = null)
     {
         _auth = auth;
         browser ??= new ShellBrowserLauncher();
         HttpClient? http = null;
         HttpClient Http() => http ??= new HttpClient();
         _signInPage = new SignInPage(auth, logoProvider);
-        _notificationsPage = new NotificationsPage(auth, notificationsClient ?? new NotificationsClient(Http()), browser);
+        _issueDetailsPage = new IssueDetailsPage(auth, issuesClient ?? new IssuesClient(Http()), browser);
+        _notificationsPage = new NotificationsPage(auth, notificationsClient ?? new NotificationsClient(Http()), browser, issueDetails: _issueDetailsPage);
         _reposPage = new ReposPage(auth, repositoriesClient ?? new RepositoriesClient(Http()), browser);
         _homePage = new HomePage(auth, _notificationsPage, _reposPage);
 
@@ -62,6 +66,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         SignInPage.PageId => _signInPage,
         HomePage.PageId => _homePage,
         NotificationsPage.PageId => _notificationsPage,
+        IssueDetailsPage.PageId => _issueDetailsPage,
         ReposPage.PageId => _reposPage,
         _ => null,
     };

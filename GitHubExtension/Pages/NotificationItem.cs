@@ -2,6 +2,7 @@
 // Bald Bearded Builder LLC licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using BaldBeardedBuilder.CmdPal.GitHub.Commands;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 
@@ -13,11 +14,13 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 internal sealed partial class NotificationItem : ListItem
 {
     private readonly NotificationsPage _page;
+    private readonly IBrowserLauncher _browser;
     private SubjectDetails? _subject;
 
-    public NotificationItem(NotificationsPage page, GitHubNotification notification, Uri webUrl, DateTimeOffset now)
+    public NotificationItem(NotificationsPage page, GitHubNotification notification, Uri webUrl, IBrowserLauncher browser, DateTimeOffset now)
     {
         _page = page;
+        _browser = browser;
         Notification = notification;
         Unread = notification.Unread;
         WebUrl = webUrl;
@@ -70,6 +73,11 @@ internal sealed partial class NotificationItem : ListItem
         Tags = NotificationFormatting.StateTag(Notification.SubjectType, _subject?.State ?? SubjectState.Unknown) is { } tag ? [tag] : [];
 
         var more = new List<IContextItem>();
+        more.Add(new CommandContextItem(new OpenInBrowserCommand(
+            _browser,
+            WebUrl,
+            "Open in browser",
+            Icons.NotificationIcon(NotificationFormatting.Glyph(Notification.SubjectType), unread: false))));
         if (Unread)
         {
             more.Add(new CommandContextItem(new MarkNotificationReadCommand(_page, this)));
