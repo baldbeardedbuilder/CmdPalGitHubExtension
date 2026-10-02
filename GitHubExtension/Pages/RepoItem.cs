@@ -16,7 +16,7 @@ internal sealed partial class RepoItem : ListItem
     public RepoItem(ReposPage page, GitHubRepository repository, IBrowserLauncher browser, DateTimeOffset now)
     {
         Repository = repository;
-        Command = new OpenInBrowserCommand(browser, repository.WebUrl, "Open", Icons.Repos);
+        Command = new OpenRepositoryCommand(page.RepositoryPage, repository);
         Title = repository.FullName;
         Subtitle = RepoFormatting.Subtitle(repository, now);
         Icon = Icons.Repos;
@@ -25,6 +25,7 @@ internal sealed partial class RepoItem : ListItem
         var repoBase = repository.WebUrl.AbsoluteUri.TrimEnd('/') + "/";
         var more = new List<IContextItem>
         {
+            new CommandContextItem(new OpenInBrowserCommand(browser, repository.WebUrl, "Open on GitHub", Icons.Repos)),
             new CommandContextItem(new OpenInBrowserCommand(browser, new Uri(repoBase + "issues"), "Open issues", Icons.Issues)),
             new CommandContextItem(new OpenInBrowserCommand(browser, new Uri(repoBase + "pulls"), "Open pull requests", Icons.PullRequests)),
         };

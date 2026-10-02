@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
+using BaldBeardedBuilder.CmdPal.GitHub.Commands;
 using BaldBeardedBuilder.CmdPal.GitHub.Repositories;
 using Microsoft.CommandPalette.Extensions.Toolkit;
 
@@ -13,6 +14,7 @@ public class ReposPageTests
 {
     private static readonly GitHubAccount Account = new(GitHubHost.GitHubDotCom, "octocat", "t");
     private static readonly string[] LocalThenRemote = ["octocat/power-tools", "microsoft/PowerToys"];
+    private static readonly string[] RepositorySections = ["o/a", "Issues", "Pull Requests", "Actions", "Discussions"];
 
     [TestMethod]
     public async Task GetItems_LoadsYourRepos()
@@ -109,7 +111,7 @@ public class ReposPageTests
     }
 
     [TestMethod]
-    public async Task Open_LaunchesTheRepoInTheBrowser()
+    public async Task Open_ShowsRepositoryMenuWithoutLaunchingBrowser()
     {
         using var page = CreatePage(Client([RepoFormattingTests.Repo("o/a")]).Object, out var browser);
         page.GetItems();
@@ -117,7 +119,83 @@ public class ReposPageTests
 
         ((InvokableCommand)page.GetItems().Single().Command!).Invoke();
 
+        Assert.IsNull(browser.LastOpened);
+        Assert.AreEqual("o/a", page.RepositoryPage.Title);
+        Assert.AreEqual("Search in o/a...", page.RepositoryPage.PlaceholderText);
+        CollectionAssert.AreEqual(
+            RepositorySections,
+            page.RepositoryPage.GetItems().Select(i => i.Title).ToArray());
+    }
+
+    [TestMethod]
+    public async Task RepoMoreMenu_StillOpensRepositoryInBrowser()
+    {
+        using var page = CreatePage(Client([RepoFormattingTests.Repo("o/a")]).Object, out var browser);
+        page.GetItems();
+        await page.CurrentLoad;
+        var command = page.GetItems().Single().MoreCommands.OfType<CommandContextItem>()
+            .Single(c => c.Command is OpenInBrowserCommand open && open.Url.AbsolutePath == "/o/a");
+
+        ((InvokableCommand)command.Command!).Invoke();
+
         Assert.AreEqual(new Uri("https://github.com/o/a"), browser.LastOpened);
+    }
+
+    [TestMethod]
+    [DataRow("Issues", "issues")]
+    [DataRow("Pull Requests", "pulls")]
+    [DataRow("Discussions", "discussions")]
+    [DataRow("Actions", "actions")]
+    public void RepositoryMenu_OpensSectionOnRepositoryHost(string section, string path)
+    {
+        var browser = new FakeBrowser(_ => null);
+        var page = new RepositoryPage(browser, null);
+        var repository = RepoFormattingTests.Repo("o/a") with { WebUrl = new Uri("https://github.example.com/o/a/") };
+        page.OpenRepository(repository);
+
+        ((InvokableCommand)page.GetItems().Single(i => i.Title == section).Command!).Invoke();
+
+        Assert.AreEqual(new Uri($"https://github.example.com/o/a/{path}"), browser.LastOpened);
+    }
+
+    [TestMethod]
+    public void RepositoryMenu_SwitchingRepositoriesReplacesContextAndClearsSearch()
+    {
+        var browser = new FakeBrowser(_ => null);
+        var page = new RepositoryPage(browser, null);
+        page.OpenRepository(RepoFormattingTests.Repo("o/a"));
+        page.SearchText = "issues";
+        page.OpenRepository(RepoFormattingTests.Repo("o/b", description: "Another repo"));
+
+        Assert.AreEqual(string.Empty, page.SearchText);
+        Assert.AreEqual("o/b", page.Title);
+        var overview = page.GetItems()[0];
+        Assert.AreEqual("o/b", overview.Title);
+        Assert.AreEqual("Another repo", overview.Subtitle);
+        ((InvokableCommand)overview.Command!).Invoke();
+        Assert.AreEqual(new Uri("https://github.com/o/b"), browser.LastOpened);
+        foreach (var item in page.GetItems())
+        {
+            var open = item.MoreCommands.OfType<CommandContextItem>()
+                .Select(c => c.Command).OfType<OpenInBrowserCommand>().Single();
+            Assert.AreEqual(new Uri("https://github.com/o/b"), open.Url);
+        }
+    }
+
+    [TestMethod]
+    public async Task SearchResult_OpensRepositoryMenu()
+    {
+        var client = Client([]);
+        client.Setup(c => c.SearchAsync(Account, "remote", It.IsAny<CancellationToken>()))
+            .ReturnsAsync([RepoFormattingTests.Repo("o/remote")]);
+        using var page = await LoadedPage(client.Object);
+        page.SearchText = "remote";
+        await page.CurrentSearch;
+
+        ((InvokableCommand)page.GetItems().Single().Command!).Invoke();
+
+        Assert.AreEqual("o/remote", page.RepositoryPage.Title);
+        Assert.AreEqual("o/remote", page.RepositoryPage.GetItems()[0].Title);
     }
 
     [TestMethod]

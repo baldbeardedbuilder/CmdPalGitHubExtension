@@ -49,6 +49,8 @@ internal static class Icons
 
     internal static IconInfo Issues { get; } = Themed("issue-opened");
 
+    internal static IconInfo Discussions { get; } = new("\uE8F2");
+
     internal static IconInfo PullRequests { get; } = Themed("git-pull-request");
 
     internal static IconInfo StateOpenIssue { get; } = Octicon("state-issue-opened.svg");
