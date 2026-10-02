@@ -45,7 +45,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         Title = "Pull requests";
         Icon = Icons.PullRequests;
         PlaceholderText = "Filter pull requests...";
-        _filters.CurrentFilterId = PullRequestFilters.All;
+        _filters.CurrentFilterId = PullRequestFilters.Open;
         _filters.PropChanged += (_, _) => RaiseItemsChanged();
         Filters = _filters;
         _auth.AccountChanged += OnAccountChanged;
@@ -127,7 +127,6 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         {
             PullRequestFilters.Open => "open",
             PullRequestFilters.Closed => "closed",
-            PullRequestFilters.Merged => "merged",
             _ => null,
         };
 
@@ -200,7 +199,6 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         {
             PullRequestFilters.Open => state is SubjectState.Open or SubjectState.Draft,
             PullRequestFilters.Closed => state is SubjectState.Closed,
-            PullRequestFilters.Merged => state is SubjectState.Merged,
             _ => true,
         };
 
@@ -325,17 +323,13 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
 
 internal sealed partial class PullRequestFilters : Filters
 {
-    internal const string All = "all";
     internal const string Open = "open";
     internal const string Closed = "closed";
-    internal const string Merged = "merged";
 
     public override IFilterItem[] GetFilters() =>
     [
-        new Filter { Id = All, Name = "All" },
-        new Filter { Id = Open, Name = "Open" },
-        new Filter { Id = Closed, Name = "Closed" },
-        new Filter { Id = Merged, Name = "Merged" },
+        new Filter { Id = Open, Name = "Open", Icon = Icons.StateOpenPullRequest },
+        new Filter { Id = Closed, Name = "Closed", Icon = Icons.StateClosedPullRequest },
     ];
 }
 
