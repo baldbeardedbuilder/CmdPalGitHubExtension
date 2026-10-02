@@ -2,6 +2,7 @@
 // Bald Bearded Builder LLC licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using BaldBeardedBuilder.CmdPal.GitHub.Agents;
 using BaldBeardedBuilder.CmdPal.GitHub.Commands;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
@@ -78,8 +79,9 @@ public class GitHubCommandsProviderTests
             items.Select(i => i.Title).ToArray());
         Assert.IsInstanceOfType<NotificationsPage>(items[0].Command);
         Assert.IsInstanceOfType<ReposPage>(items[2].Command);
+        Assert.IsInstanceOfType<AgentsPage>(items[3].Command);
         Assert.IsInstanceOfType<CodespacesPage>(items[4].Command);
-        Assert.IsTrue(items.Where((_, i) => i is 1 or 3).All(i => i.Command is NoOpCommand));
+        Assert.IsInstanceOfType<NoOpCommand>(items[1].Command);
         Assert.IsTrue(items.All(i => i.MoreCommands.OfType<CommandContextItem>().Any(c => c.Command is SignOutCommand)));
     }
 
@@ -91,6 +93,7 @@ public class GitHubCommandsProviderTests
         Assert.IsInstanceOfType<NotificationsPage>(provider.GetCommand(NotificationsPage.PageId));
         Assert.IsInstanceOfType<IssueDetailsPage>(provider.GetCommand(IssueDetailsPage.PageId));
         Assert.IsInstanceOfType<ReposPage>(provider.GetCommand(ReposPage.PageId));
+        Assert.IsInstanceOfType<AgentsPage>(provider.GetCommand(AgentsPage.PageId));
         Assert.IsInstanceOfType<CodespacesPage>(provider.GetCommand(CodespacesPage.PageId));
     }
 
@@ -99,6 +102,6 @@ public class GitHubCommandsProviderTests
         var client = new Mock<IGitHubAuthClient>();
         client.Setup(c => c.GetLoginAsync(It.IsAny<GitHubHost>(), It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync("mona");
         auth = new AuthService(store, client.Object, new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
-        return new GitHubCommandsProvider(auth, () => string.Empty, Mock.Of<INotificationsClient>(), new FakeBrowser(_ => null), Mock.Of<IRepositoriesClient>());
+        return new GitHubCommandsProvider(auth, () => string.Empty, Mock.Of<INotificationsClient>(), new FakeBrowser(_ => null), Mock.Of<IRepositoriesClient>(), agentsClient: Mock.Of<IAgentsClient>());
     }
 }

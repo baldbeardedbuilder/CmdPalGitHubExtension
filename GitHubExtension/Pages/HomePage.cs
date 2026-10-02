@@ -17,14 +17,16 @@ internal sealed partial class HomePage : ListPage
     private readonly AuthService _auth;
     private readonly NotificationsPage _notifications;
     private readonly ReposPage _repos;
+    private readonly AgentsPage _agents;
     private readonly CodespacesPage _codespaces;
     private readonly SignOutCommand _signOut;
 
-    public HomePage(AuthService auth, NotificationsPage notifications, ReposPage repos, CodespacesPage codespaces)
+    public HomePage(AuthService auth, NotificationsPage notifications, ReposPage repos, AgentsPage agents, CodespacesPage codespaces)
     {
         _auth = auth;
         _notifications = notifications;
         _repos = repos;
+        _agents = agents;
         _codespaces = codespaces;
         _signOut = new SignOutCommand(auth);
         Id = PageId;
@@ -54,7 +56,7 @@ internal sealed partial class HomePage : ListPage
             new ListItem(_notifications) { Title = "Notifications", Subtitle = "Your GitHub inbox", Icon = Icons.Notifications, MoreCommands = accountCommands },
             ComingSoon("Saved Queries", Icons.SavedQueries, accountCommands),
             new ListItem(_repos) { Title = "Repos", Subtitle = "Find and open repositories", Icon = Icons.Repos, MoreCommands = accountCommands },
-            ComingSoon("Agents", Icons.Agents, accountCommands),
+            new ListItem(_agents) { Title = "Agents", Subtitle = "Check your Copilot agent tasks", Icon = Icons.Agents, MoreCommands = accountCommands },
             new ListItem(_codespaces) { Title = "Codespaces", Subtitle = "Find and open your codespaces", Icon = Icons.Codespaces, MoreCommands = accountCommands },
         ];
     }
