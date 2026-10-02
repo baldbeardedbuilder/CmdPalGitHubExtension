@@ -20,6 +20,8 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     private readonly AuthService _auth;
     private readonly IRepositoriesClient _client;
     private readonly IBrowserLauncher _browser;
+    private readonly RepositoryIssuesPage _repositoryIssuesPage;
+    private readonly RepositoryPullRequestsPage _repositoryPullRequestsPage;
     private readonly TimeProvider _time;
     private readonly TimeSpan _searchDelay;
     private readonly Lock _lock = new();
@@ -38,15 +40,25 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     private bool _searching;
     private Task _currentSearch = Task.CompletedTask;
 
-    public ReposPage(AuthService auth, IRepositoriesClient client, IBrowserLauncher browser, TimeProvider? time = null, TimeSpan? searchDelay = null, ActionsPage? actions = null)
+    public ReposPage(
+        AuthService auth,
+        IRepositoriesClient client,
+        IBrowserLauncher browser,
+        RepositoryIssuesPage repositoryIssuesPage,
+        RepositoryPullRequestsPage repositoryPullRequestsPage,
+        TimeProvider? time = null,
+        TimeSpan? searchDelay = null,
+        ActionsPage? actions = null)
     {
         _auth = auth;
         _client = client;
         _browser = browser;
+        _repositoryIssuesPage = repositoryIssuesPage;
+        _repositoryPullRequestsPage = repositoryPullRequestsPage;
         _time = time ?? TimeProvider.System;
         _searchDelay = searchDelay ?? DefaultSearchDelay;
         Actions = actions;
-        RepositoryPage = new RepositoryPage(browser, actions);
+        RepositoryPage = new RepositoryPage(browser, actions, repositoryIssuesPage, repositoryPullRequestsPage);
         Id = PageId;
         Name = "Open";
         Title = "Repos";

@@ -28,6 +28,10 @@ internal sealed record GitHubPullRequest
 
     public string? BaseBranch { get; init; }
 
+    public string? HeadRef { get; init; }
+
+    public string? BaseRef { get; init; }
+
     public string[] Labels { get; init; } = [];
 
     public DateTimeOffset CreatedAt { get; init; }
@@ -68,6 +72,8 @@ internal sealed record GitHubPullRequest
             Author = Text(Object(element, "user"), "login"),
             HeadBranch = Text(head, "label") ?? Text(head, "ref"),
             BaseBranch = Text(target, "label") ?? Text(target, "ref"),
+            HeadRef = Text(head, "ref"),
+            BaseRef = Text(target, "ref"),
             Labels = labels,
             CreatedAt = GetDate(element, "created_at"),
             UpdatedAt = GetDate(element, "updated_at"),

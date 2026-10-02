@@ -1,0 +1,313 @@
+// Copyright (c) Bald Bearded Builder LLC
+// Bald Bearded Builder LLC licenses this file to you under the MIT license.
+// See the LICENSE file in the project root for more information.
+
+using BaldBeardedBuilder.CmdPal.GitHub.Auth;
+using BaldBeardedBuilder.CmdPal.GitHub.Commands;
+using BaldBeardedBuilder.CmdPal.GitHub.Issues;
+using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
+
+namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
+
+internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposable
+{
+    public const string PageId = "com.baldbeardedbuilder.cmdpal.github.repository-issues";
+
+    private readonly AuthService _auth;
+    private readonly IIssuesClient _client;
+    private readonly IBrowserLauncher _browser;
+    private readonly TimeProvider _time;
+    private readonly Lock _lock = new();
+    private readonly List<RepositoryIssueItem> _items = [];
+    private string? _repository;
+    private Uri? _nextPage;
+    private bool _loaded;
+    private bool _fetching;
+    private string? _error;
+    private int _generation;
+    private Task _currentLoad = Task.CompletedTask;
+
+    public RepositoryIssuesPage(AuthService auth, IIssuesClient client, IBrowserLauncher browser, TimeProvider? time = null)
+    {
+        _auth = auth;
+        _client = client;
+        _browser = browser;
+        _time = time ?? TimeProvider.System;
+        Id = PageId;
+        Name = "Issues";
+        Title = "Issues";
+        Icon = Icons.Issues;
+        PlaceholderText = "Filter issues...";
+        _auth.AccountChanged += OnAccountChanged;
+    }
+
+    internal Task CurrentLoad
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _currentLoad;
+            }
+        }
+    }
+
+    internal ICommandResult Open(string repository)
+    {
+        lock (_lock)
+        {
+            _generation++;
+            _repository = repository;
+            _nextPage = null;
+            _loaded = false;
+            _fetching = false;
+            _error = null;
+            _items.Clear();
+        }
+
+        Title = $"{repository} issues";
+        SearchText = string.Empty;
+        HasMoreItems = false;
+        StartLoad(reset: true);
+        RaiseItemsChanged();
+        return CommandResult.GoToPage(new GoToPageArgs { PageId = PageId });
+    }
+
+    public override IListItem[] GetItems()
+    {
+        bool needsLoad;
+        RepositoryIssueItem[] snapshot;
+        string? repository;
+        string? error;
+        lock (_lock)
+        {
+            needsLoad = _repository is not null && !_loaded && !_fetching;
+            snapshot = [.. _items];
+            repository = _repository;
+            error = _error;
+        }
+
+        if (needsLoad)
+        {
+            StartLoad(reset: true);
+        }
+
+        if (repository is null)
+        {
+            EmptyContent = Empty("Choose a repository", "Open a repository's issues from the Repos list");
+            return [];
+        }
+
+        var terms = SearchText.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var matches = terms.Length == 0
+            ? snapshot
+            : [.. snapshot.Where(item => item.Matches(terms))];
+
+        EmptyContent = error is not null
+            ? new CommandItem(new RefreshRepositoryItemsCommand(RefreshAsync, Icons.Issues))
+            {
+                Title = "Couldn't load issues",
+                Subtitle = error,
+                Icon = Icons.Issues,
+            }
+            : matches.Length == 0
+                ? Empty(terms.Length == 0 ? "No issues found" : "No matching issues", terms.Length == 0
+                    ? $"{repository} doesn't have any issues"
+                    : $"Nothing matches \"{SearchText.Trim()}\"")
+                : Empty("No issues found", $"{repository} doesn't have any issues");
+
+        return matches;
+    }
+
+    public override void UpdateSearchText(string oldSearch, string newSearch)
+    {
+        lock (_lock)
+        {
+            HasMoreItems = newSearch.Trim().Length == 0 && _nextPage is not null;
+        }
+
+        RaiseItemsChanged();
+    }
+
+    public override void LoadMore()
+    {
+        if (SearchText.Trim().Length == 0)
+        {
+            StartLoad(reset: false);
+        }
+    }
+
+    internal Task RefreshAsync()
+    {
+        lock (_lock)
+        {
+            if (_repository is null)
+            {
+                return _currentLoad;
+            }
+
+            _generation++;
+            _fetching = false;
+            _loaded = false;
+            _nextPage = null;
+            _error = null;
+            _items.Clear();
+        }
+
+        HasMoreItems = false;
+        return StartLoad(reset: true);
+    }
+
+    public void Dispose()
+    {
+        _auth.AccountChanged -= OnAccountChanged;
+    }
+
+    private static CommandItem Empty(string title, string subtitle) =>
+        new(new NoOpCommand()) { Title = title, Subtitle = subtitle, Icon = Icons.Issues };
+
+    private Task StartLoad(bool reset)
+    {
+        GitHubAccount? account;
+        string? repository;
+        Uri? page;
+        int generation;
+        lock (_lock)
+        {
+            account = _auth.CurrentAccount;
+            repository = _repository;
+            if (account is null || repository is null || _fetching || (!reset && _nextPage is null))
+            {
+                return _currentLoad;
+            }
+
+            _fetching = true;
+            page = reset ? null : _nextPage;
+            generation = _generation;
+            _currentLoad = Task.Run(() => LoadAsync(account, repository, page, reset, generation));
+        }
+
+        IsLoading = true;
+        return _currentLoad;
+    }
+
+    private async Task LoadAsync(GitHubAccount account, string repository, Uri? page, bool reset, int generation)
+    {
+        try
+        {
+            var result = await _client.GetIssuesAsync(account, repository, page, CancellationToken.None).ConfigureAwait(false);
+            var now = _time.GetUtcNow();
+
+            lock (_lock)
+            {
+                if (generation != _generation)
+                {
+                    return;
+                }
+
+                if (reset)
+                {
+                    _items.Clear();
+                }
+
+                var known = _items.Select(item => item.Issue.Number).ToHashSet();
+                _items.AddRange(result.Issues
+                    .Where(issue => known.Add(issue.Number))
+                    .Select(issue => new RepositoryIssueItem(issue, repository, _browser, now)));
+                _nextPage = result.NextPage;
+                _loaded = true;
+                _error = null;
+                HasMoreItems = result.NextPage is not null && SearchText.Trim().Length == 0;
+            }
+        }
+        catch (GitHubApiException ex)
+        {
+            lock (_lock)
+            {
+                if (generation != _generation)
+                {
+                    return;
+                }
+
+                _error = ex.Message;
+                _loaded = true;
+            }
+        }
+        finally
+        {
+            bool current;
+            lock (_lock)
+            {
+                current = generation == _generation;
+                if (current)
+                {
+                    _fetching = false;
+                }
+            }
+
+            if (current)
+            {
+                IsLoading = false;
+                RaiseItemsChanged();
+            }
+        }
+    }
+
+    private void Reset()
+    {
+        lock (_lock)
+        {
+            _generation++;
+            _repository = null;
+            _items.Clear();
+            _nextPage = null;
+            _loaded = false;
+            _fetching = false;
+            _error = null;
+        }
+
+        HasMoreItems = false;
+        IsLoading = false;
+        RaiseItemsChanged();
+    }
+
+    private void OnAccountChanged(object? sender, EventArgs e) => Reset();
+}
+
+internal sealed partial class RepositoryIssueItem : ListItem
+{
+    public RepositoryIssueItem(GitHubIssue issue, string repository, IBrowserLauncher browser, DateTimeOffset now)
+    {
+        Issue = issue;
+        Command = new OpenInBrowserCommand(browser, issue.WebUrl, "Open in browser", Icons.Issues);
+        Title = $"#{issue.Number} {issue.Title}";
+        var opened = $"opened {NotificationFormatting.RelativeTime(issue.CreatedAt, now)}";
+        if (!string.IsNullOrWhiteSpace(issue.Author))
+        {
+            opened += $" by {issue.Author}";
+        }
+
+        Subtitle = $"{opened} · {issue.Comments} {(issue.Comments == 1 ? "comment" : "comments")}";
+        Icon = issue.State switch
+        {
+            SubjectState.Open => Icons.StateOpenIssue,
+            SubjectState.Closed => Icons.StateClosedIssue,
+            SubjectState.NotPlanned => Icons.StateNotPlanned,
+            _ => Icons.Issues,
+        };
+        Tags = [.. issue.Labels.Select(label => new Tag(label))];
+        MoreCommands =
+        [
+            new CommandContextItem(new OpenInBrowserCommand(browser, issue.WebUrl, "Open in browser", Icons.Issues)),
+            new CommandContextItem(new CopyTextCommand(issue.WebUrl.AbsoluteUri) { Name = "Copy link", Icon = Icons.Copy }),
+        ];
+    }
+
+    public GitHubIssue Issue { get; }
+
+    public bool Matches(string[] terms)
+    {
+        var searchable = string.Join(' ', Title, Subtitle, string.Join(' ', Issue.Assignees), string.Join(' ', Issue.Labels));
+        return terms.All(term => searchable.Contains(term, StringComparison.OrdinalIgnoreCase));
+    }
+}

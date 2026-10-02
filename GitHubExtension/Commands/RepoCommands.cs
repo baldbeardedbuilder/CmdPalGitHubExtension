@@ -65,3 +65,53 @@ internal sealed partial class RefreshReposCommand : InvokableCommand
         return CommandResult.KeepOpen();
     }
 }
+
+internal sealed partial class BrowseRepositoryIssuesCommand : InvokableCommand
+{
+    private readonly RepositoryIssuesPage _page;
+    private readonly string _repository;
+
+    public BrowseRepositoryIssuesCommand(RepositoryIssuesPage page, string repository)
+    {
+        _page = page;
+        _repository = repository;
+        Name = "Browse issues";
+        Icon = Icons.Issues;
+    }
+
+    public override ICommandResult Invoke() => _page.Open(_repository);
+}
+
+internal sealed partial class BrowseRepositoryPullRequestsCommand : InvokableCommand
+{
+    private readonly RepositoryPullRequestsPage _page;
+    private readonly string _repository;
+
+    public BrowseRepositoryPullRequestsCommand(RepositoryPullRequestsPage page, string repository)
+    {
+        _page = page;
+        _repository = repository;
+        Name = "Browse pull requests";
+        Icon = Icons.PullRequests;
+    }
+
+    public override ICommandResult Invoke() => _page.Open(_repository);
+}
+
+internal sealed partial class RefreshRepositoryItemsCommand : InvokableCommand
+{
+    private readonly Func<Task> _refresh;
+
+    public RefreshRepositoryItemsCommand(Func<Task> refresh, IconInfo icon)
+    {
+        _refresh = refresh;
+        Name = "Refresh";
+        Icon = icon;
+    }
+
+    public override ICommandResult Invoke()
+    {
+        _ = _refresh();
+        return CommandResult.KeepOpen();
+    }
+}
