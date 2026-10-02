@@ -25,6 +25,8 @@ Agents uses GitHub's [Agent Tasks API](https://docs.github.com/en/rest/agent-tas
 
 Only non-archived tasks are listed. More tasks load as you scroll, and **Refresh** checks for new activity. GitHub Enterprise Server hosts without this API show an availability error instead of an empty list. Repository or model lookup failures stay visible in the task's subtitle, and you can still open the task.
 
+Tasks still appear when the preview API leaves out their web links. The extension builds those links from the task IDs so you can open them on GitHub.
+
 ## Install
 
 Releases aren't published yet. Until they are, build it yourself using the steps in [CONTRIBUTING.md](CONTRIBUTING.md).

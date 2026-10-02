@@ -91,8 +91,15 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
         {
             if (element.ValueKind != JsonValueKind.Object
                 || GetString(element, "id") is not { Length: > 0 } id
-                || GetString(element, "state") is not { Length: > 0 } state
-                || GetUri(element, "html_url") is not { } webUrl
+                || GetString(element, "state") is not { Length: > 0 } state)
+            {
+                throw new GitHubApiException("GitHub sent back an agent task we couldn't read.");
+            }
+
+            var webUrl = element.TryGetProperty("html_url", out var url) && url.ValueKind != JsonValueKind.Null
+                ? GetUri(element, "html_url")
+                : new Uri(host.WebUrl, $"copilot/tasks/{Uri.EscapeDataString(id)}");
+            if (webUrl is null
                 || webUrl.Scheme != Uri.UriSchemeHttps
                 || !string.Equals(webUrl.Authority, host.WebUrl.Authority, StringComparison.OrdinalIgnoreCase)
                 || !string.IsNullOrEmpty(webUrl.UserInfo))
