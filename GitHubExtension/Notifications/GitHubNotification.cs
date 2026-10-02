@@ -2,6 +2,8 @@
 // Bald Bearded Builder LLC licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using BaldBeardedBuilder.CmdPal.GitHub.PullRequests;
+
 namespace BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 
 /// <summary>
@@ -29,8 +31,8 @@ internal enum SubjectState
 }
 
 /// <summary>
-/// The bits of an issue or pull request we need to draw a state badge and open it in the browser.
+/// The state badge, browser link, and any pull request details from the subject lookup.
 /// </summary>
-internal sealed record SubjectDetails(SubjectState State, Uri? WebUrl);
+internal sealed record SubjectDetails(SubjectState State, Uri? WebUrl, GitHubPullRequest? PullRequest = null);
 
 internal sealed record NotificationsPageResult(IReadOnlyList<GitHubNotification> Notifications, Uri? NextPage);

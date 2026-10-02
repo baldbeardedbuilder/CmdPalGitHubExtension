@@ -4,6 +4,7 @@
 
 using System.Text.Json;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
+using BaldBeardedBuilder.CmdPal.GitHub.PullRequests;
 using static BaldBeardedBuilder.CmdPal.GitHub.Api.GitHubRest;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Notifications;
@@ -110,6 +111,9 @@ internal sealed class NotificationsClient(HttpClient httpClient) : INotification
             _ => SubjectState.Unknown,
         };
 
-        return new SubjectDetails(subjectState, GetUri(element, "html_url"));
+        var pullRequest = element.TryGetProperty("head", out _) && element.TryGetProperty("base", out _)
+            ? GitHubPullRequest.Parse(element, subjectState)
+            : null;
+        return new SubjectDetails(subjectState, GetUri(element, "html_url"), pullRequest);
     }
 }

@@ -44,6 +44,7 @@ internal sealed partial class NotificationsPage : DynamicListPage
         Title = "Notifications";
         Icon = Icons.Notifications;
         PlaceholderText = "Filter notifications...";
+        ShowDetails = true;
         _auth.AccountChanged += (_, _) => Reset();
     }
 
@@ -259,10 +260,10 @@ internal sealed partial class NotificationsPage : DynamicListPage
             RaiseItemsChanged();
         }
 
-        await LoadSubjectsAsync(account, added).ConfigureAwait(false);
+        await LoadSubjectsAsync(account, added, generation).ConfigureAwait(false);
     }
 
-    private async Task LoadSubjectsAsync(GitHubAccount account, List<NotificationItem> items)
+    private async Task LoadSubjectsAsync(GitHubAccount account, List<NotificationItem> items, int generation)
     {
         using var throttle = new SemaphoreSlim(MaxConcurrentSubjectRequests);
         await Task.WhenAll(items
@@ -272,18 +273,37 @@ internal sealed partial class NotificationsPage : DynamicListPage
                 await throttle.WaitAsync().ConfigureAwait(false);
                 try
                 {
-                    if (await _client.GetSubjectAsync(account, item.Notification.SubjectApiUrl!, CancellationToken.None).ConfigureAwait(false) is { } details)
+                    var details = await _client.GetSubjectAsync(account, item.Notification.SubjectApiUrl!, CancellationToken.None).ConfigureAwait(false);
+                    lock (_lock)
                     {
-                        item.ApplySubject(details);
-                        lock (_lock)
+                        if (generation != _generation)
                         {
-                            _subjectCache[item.Notification.Id] = (item.Notification.UpdatedAt, details);
+                            return;
+                        }
+
+                        if (details is not null)
+                        {
+                            item.ApplySubject(details);
+                            if (item.Notification.SubjectType != "PullRequest" || details.PullRequest is not null)
+                            {
+                                _subjectCache[item.Notification.Id] = (item.Notification.UpdatedAt, details);
+                            }
+                        }
+                        else
+                        {
+                            item.SetSubjectError("Couldn't load pull request details. Try refreshing notifications or open it on GitHub.");
                         }
                     }
                 }
-                catch (GitHubApiException)
+                catch (GitHubApiException ex)
                 {
-                    // A missing badge isn't worth interrupting anyone over.
+                    lock (_lock)
+                    {
+                        if (generation == _generation)
+                        {
+                            item.SetSubjectError(ex.Message);
+                        }
+                    }
                 }
                 finally
                 {

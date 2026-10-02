@@ -4,6 +4,7 @@
 
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
+using BaldBeardedBuilder.CmdPal.GitHub.Tests.PullRequests;
 using Microsoft.CommandPalette.Extensions.Toolkit;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Tests.Notifications;
@@ -121,6 +122,147 @@ public class NotificationsPageTests
 
         Assert.IsEmpty(page.GetItems());
         Assert.AreEqual("nope", page.EmptyContent!.Subtitle);
+    }
+
+    [TestMethod]
+    public async Task PullRequest_PreviewLoadsWithoutChangingOpenBehavior()
+    {
+        var api = new Uri("https://api.github.com/repos/o/r/pulls/7");
+        using var json = System.Text.Json.JsonDocument.Parse(PullRequestDetailsTests.Payload);
+        var subject = NotificationsClient.ParseSubject(json.RootElement);
+        var pending = new TaskCompletionSource<SubjectDetails?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new Mock<INotificationsClient>();
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationsPageResult([NotificationParsingTests.Notification("1", "PullRequest", api)], null));
+        client.Setup(c => c.GetSubjectAsync(Account, api, It.IsAny<CancellationToken>())).Returns(pending.Task);
+        var page = CreatePage(client.Object, out var browser);
+        page.GetItems();
+        var load = page.CurrentLoad;
+        await WaitFor(() => client.Invocations.Any(i => i.Method.Name == nameof(INotificationsClient.GetSubjectAsync)));
+        var item = (NotificationItem)page.GetItems().Single();
+        Assert.IsTrue(page.ShowDetails);
+        Assert.AreEqual("Loading pull request details...", item.Details!.Body);
+        Assert.IsTrue(item.Unread);
+        Assert.IsNull(browser.LastOpened);
+
+        pending.SetResult(subject);
+        await load;
+
+        Assert.AreEqual("#7 Fix login", item.Details.Title);
+        Assert.AreEqual(subject.PullRequest!.Body, item.Details.Body);
+        ((InvokableCommand)item.Command!).Invoke();
+        Assert.AreEqual(subject.WebUrl, browser.LastOpened);
+        Assert.IsFalse(item.Unread);
+        await WaitFor(() => client.Invocations.Any(i => i.Method.Name == nameof(INotificationsClient.MarkAsReadAsync)));
+        await page.RefreshAsync();
+        Assert.AreEqual("#7 Fix login", page.GetItems().Single().Details!.Title);
+        client.Verify(c => c.GetSubjectAsync(Account, api, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task PullRequest_SubjectFailureShowsDetailsError(bool throws)
+    {
+        var api = new Uri("https://api.github.com/repos/o/r/pulls/7");
+        var client = new Mock<INotificationsClient>();
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationsPageResult([NotificationParsingTests.Notification("1", "PullRequest", api)], null));
+        var lookup = client.Setup(c => c.GetSubjectAsync(Account, api, It.IsAny<CancellationToken>()));
+        if (throws)
+        {
+            lookup.ThrowsAsync(new GitHubApiException("Couldn't reach GitHub."));
+        }
+        else
+        {
+            lookup.ReturnsAsync((SubjectDetails?)null);
+        }
+
+        var page = CreatePage(client.Object, out _);
+        page.GetItems();
+        await page.CurrentLoad;
+
+        var item = page.GetItems().Single();
+        Assert.AreEqual("Title", item.Details!.Title);
+        Assert.AreEqual(throws ? "Couldn't reach GitHub." : "Couldn't load pull request details. Try refreshing notifications or open it on GitHub.", item.Details.Body);
+    }
+
+    [TestMethod]
+    public async Task Issue_DoesNotHavePullRequestDetails()
+    {
+        var client = new Mock<INotificationsClient>();
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationsPageResult([NotificationParsingTests.Notification("1")], null));
+        var page = CreatePage(client.Object, out _);
+        page.GetItems();
+        await page.CurrentLoad;
+
+        Assert.IsNull(page.GetItems().Single().Details);
+    }
+
+    [TestMethod]
+    public async Task PullRequest_WithoutSubjectUrlShowsUnavailableDetails()
+    {
+        var client = new Mock<INotificationsClient>();
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationsPageResult([NotificationParsingTests.Notification("1", "PullRequest")], null));
+        var page = CreatePage(client.Object, out _);
+        page.GetItems();
+        await page.CurrentLoad;
+
+        Assert.AreEqual("No pull request details are available. Open it on GitHub to learn more.", page.GetItems().Single().Details!.Body);
+        client.Verify(c => c.GetSubjectAsync(It.IsAny<GitHubAccount>(), It.IsAny<Uri>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task PullRequest_RefreshIgnoresStaleSubjectDetails()
+    {
+        var api = new Uri("https://api.github.com/repos/o/r/pulls/7");
+        using var json = System.Text.Json.JsonDocument.Parse(PullRequestDetailsTests.Payload);
+        var original = NotificationsClient.ParseSubject(json.RootElement);
+        var updated = original with { PullRequest = original.PullRequest! with { Title = "Updated title" } };
+        var pending = new TaskCompletionSource<SubjectDetails?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new Mock<INotificationsClient>();
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationsPageResult([NotificationParsingTests.Notification("1", "PullRequest", api)], null));
+        client.SetupSequence(c => c.GetSubjectAsync(Account, api, It.IsAny<CancellationToken>()))
+            .Returns(pending.Task)
+            .ReturnsAsync(updated);
+        var page = CreatePage(client.Object, out _);
+        page.GetItems();
+        var oldLoad = page.CurrentLoad;
+        await WaitFor(() => client.Invocations.Any(i => i.Method.Name == nameof(INotificationsClient.GetSubjectAsync)));
+
+        await page.RefreshAsync();
+        pending.SetResult(original);
+        await oldLoad;
+        await page.RefreshAsync();
+
+        Assert.AreEqual("#7 Updated title", page.GetItems().Single().Details!.Title);
+        client.Verify(c => c.GetSubjectAsync(Account, api, It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    [TestMethod]
+    public async Task PullRequest_RefreshRetriesMissingDetails()
+    {
+        var api = new Uri("https://api.github.com/repos/o/r/pulls/7");
+        using var json = System.Text.Json.JsonDocument.Parse(PullRequestDetailsTests.Payload);
+        var subject = NotificationsClient.ParseSubject(json.RootElement);
+        var client = new Mock<INotificationsClient>();
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationsPageResult([NotificationParsingTests.Notification("1", "PullRequest", api)], null));
+        client.SetupSequence(c => c.GetSubjectAsync(Account, api, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subject with { PullRequest = null })
+            .ReturnsAsync(subject);
+        var page = CreatePage(client.Object, out _);
+        page.GetItems();
+        await page.CurrentLoad;
+        Assert.AreEqual("Couldn't load pull request details. Try refreshing notifications or open it on GitHub.", page.GetItems().Single().Details!.Body);
+
+        await page.RefreshAsync();
+
+        Assert.AreEqual("#7 Fix login", page.GetItems().Single().Details!.Title);
+        client.Verify(c => c.GetSubjectAsync(Account, api, It.IsAny<CancellationToken>()), Times.Exactly(2));
     }
 
     private static NotificationsPage CreatePage(INotificationsClient client, out FakeBrowser browser)
