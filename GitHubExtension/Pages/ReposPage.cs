@@ -58,7 +58,6 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         _time = time ?? TimeProvider.System;
         _searchDelay = searchDelay ?? DefaultSearchDelay;
         Actions = actions;
-        RepositoryPage = new RepositoryPage(browser, actions, repositoryIssuesPage, repositoryPullRequestsPage);
         Id = PageId;
         Name = "Open";
         Title = "Repos";
@@ -68,8 +67,6 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     }
 
     internal ActionsPage? Actions { get; }
-
-    internal RepositoryPage RepositoryPage { get; }
 
     /// <summary>
     /// The in flight load of your repos. Handy for tests.
@@ -238,6 +235,9 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     private static CommandItem Empty(string title, string subtitle) =>
         new(new NoOpCommand()) { Title = title, Subtitle = subtitle, Icon = Icons.Repos };
 
+    internal RepositoryPage CreateRepositoryPage(GitHubRepository repository) =>
+        new(_browser, Actions, repository, _repositoryIssuesPage, _repositoryPullRequestsPage);
+
     private async Task SearchAsync(GitHubAccount account, string query, CancellationToken cancellationToken)
     {
         try
@@ -392,9 +392,10 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
 
     private void Reset()
     {
-        RepositoryPage.Reset();
+        RepositoryPage[] repositoryPages;
         lock (_lock)
         {
+            repositoryPages = [.. _mine.Concat(_searchResults).Select(i => i.RepositoryPage).Distinct()];
             _generation++;
             _mine.Clear();
             _nextPage = null;
@@ -408,6 +409,11 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
             _searchQuery = string.Empty;
             _searchResults = [];
             _searchError = null;
+        }
+
+        foreach (var repositoryPage in repositoryPages)
+        {
+            repositoryPage.Reset();
         }
 
         HasMoreItems = false;

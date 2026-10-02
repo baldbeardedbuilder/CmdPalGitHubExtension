@@ -27,7 +27,7 @@ public class ActionsViewTests
     public TestContext TestContext { get; set; } = null!;
 
     [TestMethod]
-    public async Task RepoMenu_OpensRegisteredRepositoryAndActionsPages()
+    public async Task RepoMenu_OpensRepositoryAndActionsPages()
     {
         var auth = Auth();
         var repos = new Mock<IRepositoriesClient>();
@@ -41,8 +41,7 @@ public class ActionsViewTests
         page.GetItems();
         await page.CurrentLoad;
         var item = page.GetItems().Single();
-        Assert.IsInstanceOfType<OpenRepositoryCommand>(item.Command).Invoke();
-        var repository = Assert.IsInstanceOfType<RepositoryPage>(provider.GetCommand(RepositoryPage.PageId));
+        var repository = Assert.IsInstanceOfType<RepositoryPage>(item.Command);
         Assert.AreEqual("o/r", repository.Title);
         Assert.IsNull(browser.LastOpened);
         CollectionAssert.AreEqual(RepositorySections, repository.GetItems().Select(section => section.Title).ToArray());
