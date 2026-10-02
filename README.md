@@ -3,7 +3,7 @@
 Your notifications, repos, agents, codespaces, and saved queries, one keystroke away. This extension brings GitHub into [Microsoft Command Palette](https://learn.microsoft.com/windows/powertoys/command-palette/overview) so you can check on your work without opening a browser tab you'll forget to close.
 
 > [!NOTE]
-> This is early. Sign in, then check your notifications. Repos, agents, codespaces, and saved queries land next.
+> This is early. Sign in, then check your notifications, repos, and agents. Codespaces and saved queries land next.
 
 ## What works today
 
@@ -13,6 +13,13 @@ Your notifications, repos, agents, codespaces, and saved queries, one keystroke 
 - Browse your notifications with issue and PR state, open issue details in Command Palette, filter as you type, and mark them read or done.
 - Preview a pull request's description, branches, labels, and change counts beside its notification. Enter still opens it on GitHub.
 - Find repos fast. Yours filter instantly, and pausing on a search checks all of GitHub too. Qualifiers like `user:` and `language:` work.
+- Check your Copilot cloud agent tasks, newest activity first, with repository names, models, and status badges. Filter by title, repo, model, or status, press Enter to open a task, or use More to copy its URL and refresh.
+
+### Agents access
+
+Agents uses GitHub's [Agent Tasks API](https://docs.github.com/en/rest/agent-tasks/agent-tasks), which is in public preview. You need Copilot cloud agent access. Fine-grained tokens need **Agent tasks: read** on the repositories you want to see. OAuth user tokens are supported too.
+
+Only non-archived tasks are listed. More tasks load as you scroll, and **Refresh** checks for new activity. GitHub Enterprise Server hosts without this API show an availability error instead of an empty list. Repository or model lookup failures stay visible in the task's subtitle, and you can still open the task.
 
 ## Install
 

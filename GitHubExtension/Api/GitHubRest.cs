@@ -25,7 +25,8 @@ internal static class GitHubRest
         HttpMethod method,
         Uri uri,
         CancellationToken cancellationToken,
-        bool throwOnError = true)
+        bool throwOnError = true,
+        string apiVersion = "2022-11-28")
     {
         EnsureSameHost(account, uri);
 
@@ -33,7 +34,7 @@ internal static class GitHubRest
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", account.Token);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
         request.Headers.UserAgent.Add(UserAgent);
-        request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
+        request.Headers.Add("X-GitHub-Api-Version", apiVersion);
 
         HttpResponseMessage response;
         try
