@@ -29,7 +29,7 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
         _client = client;
         _browser = browser;
         Id = PageId;
-        Name = "Create";
+        Name = "Create Codespace";
         Title = "Create Codespace";
         Icon = Icons.Codespaces;
         _form = new CreateCodespaceForm(this, CreateCodespaceCards.Form(null, null, null));
@@ -53,19 +53,6 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
         {
             return [_form];
         }
-    }
-
-    internal ICommandResult Open()
-    {
-        lock (_lock)
-        {
-            CancelCreate();
-            _createdCodespace = null;
-            _form = new CreateCodespaceForm(this, CreateCodespaceCards.Form(null, null, null));
-        }
-
-        IsLoading = false;
-        return CommandResult.GoToPage(new GoToPageArgs { PageId = PageId });
     }
 
     internal ICommandResult HandleSubmit(string inputs, string data)

@@ -26,7 +26,7 @@ internal sealed partial class CodespaceItem : ListItem
         };
         if (page.CreatePage is { } createPage)
         {
-            more.Add(new CommandContextItem(new CreateCodespaceCommand(createPage)));
+            more.Add(new CommandContextItem(createPage));
         }
 
         more.Add(new CommandContextItem(new RefreshCodespacesCommand(page)));

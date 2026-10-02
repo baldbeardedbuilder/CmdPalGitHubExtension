@@ -108,14 +108,56 @@ public class CodespacesPageTests
     {
         var client = Client([Codespace("one")]);
         using var page = CreatePage(client.Object, out _, out _, createCodespacePage: true);
+        using var createPage = page.CreatePage!;
         page.GetItems();
         await page.CurrentLoad;
 
         var item = (CodespaceItem)page.GetItems().Single();
 
-        Assert.IsTrue(item.MoreCommands.OfType<CommandContextItem>()
-            .Any(context => context.Command is CreateCodespaceCommand));
-        page.CreatePage!.Dispose();
+        var create = item.MoreCommands.OfType<CommandContextItem>()
+            .Single(context => context.Command is CreateCodespacePage);
+        Assert.AreSame(createPage, create.Command);
+        Assert.AreEqual("Create Codespace", create.Command!.Name);
+    }
+
+    [TestMethod]
+    [DataRow("")]
+    [DataRow("missing")]
+    public async Task EmptyMoreMenu_OffersCreateCodespaceWithoutRows(string search)
+    {
+        using var page = CreatePage(Client([]).Object, out _, out _, createCodespacePage: true);
+        using var createPage = page.CreatePage!;
+        page.GetItems();
+        await page.CurrentLoad;
+        page.SearchText = search;
+
+        Assert.IsEmpty(page.GetItems());
+        var empty = page.EmptyContent!;
+        var create = empty.MoreCommands.OfType<CommandContextItem>().Single();
+        Assert.AreSame(createPage, create.Command);
+        Assert.AreEqual("Create Codespace", create.Command!.Name);
+        Assert.IsInstanceOfType<RefreshCodespacesCommand>(empty.Command);
+        var commands = empty.MoreCommands;
+        page.GetItems();
+        Assert.AreSame(empty, page.EmptyContent);
+        Assert.AreSame(commands, page.EmptyContent!.MoreCommands);
+    }
+
+    [TestMethod]
+    public async Task LoadFailureMoreMenu_OffersCreateCodespaceAndRetry()
+    {
+        var client = Client([]);
+        client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new GitHubApiException("rate limited"));
+        using var page = CreatePage(client.Object, out _, out _, createCodespacePage: true);
+        using var createPage = page.CreatePage!;
+        page.GetItems();
+        await page.CurrentLoad;
+
+        Assert.IsEmpty(page.GetItems());
+        Assert.AreEqual("Couldn't load codespaces", page.EmptyContent!.Title);
+        Assert.AreSame(createPage, page.EmptyContent.MoreCommands.OfType<CommandContextItem>().Single().Command);
+        Assert.IsInstanceOfType<RefreshCodespacesCommand>(page.EmptyContent.Command);
     }
 
     [TestMethod]

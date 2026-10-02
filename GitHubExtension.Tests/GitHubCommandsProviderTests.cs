@@ -81,7 +81,10 @@ public class GitHubCommandsProviderTests
         Assert.IsInstanceOfType<ReposPage>(items[2].Command);
         Assert.IsInstanceOfType<AgentsPage>(items[3].Command);
         Assert.IsInstanceOfType<CodespacesPage>(items[4].Command);
-        Assert.IsTrue(items[4].MoreCommands.OfType<CommandContextItem>().Any(c => c.Command is CreateCodespaceCommand));
+        var create = items[4].MoreCommands.OfType<CommandContextItem>()
+            .Single(c => c.Command is CreateCodespacePage);
+        Assert.AreSame(provider.GetCommand(CreateCodespacePage.PageId), create.Command);
+        Assert.AreEqual("Create Codespace", create.Command!.Name);
         Assert.IsInstanceOfType<NoOpCommand>(items[1].Command);
         Assert.IsTrue(items.All(i => i.MoreCommands.OfType<CommandContextItem>().Any(c => c.Command is SignOutCommand)));
     }
