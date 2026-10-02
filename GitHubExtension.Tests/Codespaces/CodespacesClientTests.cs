@@ -119,6 +119,60 @@ public class CodespacesClientTests
     }
 
     [TestMethod]
+    public async Task CreateCodespaceAsync_ResolvesRepositoryAndPostsRepositoryIdAndBranch()
+    {
+        using var handler = new CreateCodespaceHandler(
+            (HttpStatusCode.OK, """{"id":12345}"""),
+            (HttpStatusCode.Created, CodespaceJson));
+        using var http = new HttpClient(handler);
+
+        var codespace = await new CodespacesClient(http).CreateCodespaceAsync(
+            Account,
+            "octocat/hello",
+            "feature/codespaces",
+            TestContext.CancellationToken);
+
+        Assert.AreEqual("octocat-hello-abc", codespace.Name);
+        Assert.HasCount(2, handler.Requests);
+        Assert.AreEqual(new Uri("https://api.github.com/repos/octocat/hello"), handler.Requests[0].Url);
+        Assert.AreEqual(HttpMethod.Get, handler.Requests[0].Method);
+        Assert.AreEqual(new Uri("https://api.github.com/user/codespaces"), handler.Requests[1].Url);
+        Assert.AreEqual(HttpMethod.Post, handler.Requests[1].Method);
+        using var body = JsonDocument.Parse(handler.Requests[1].Body!);
+        Assert.AreEqual(12345, body.RootElement.GetProperty("repository_id").GetInt64());
+        Assert.AreEqual("feature/codespaces", body.RootElement.GetProperty("ref").GetString());
+    }
+
+    [TestMethod]
+    public async Task CreateCodespaceAsync_RejectsInvalidRepositoryBeforeSendingRequest()
+    {
+        using var handler = new CreateCodespaceHandler((HttpStatusCode.OK, """{"id":12345}"""));
+        using var http = new HttpClient(handler);
+
+        await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            new CodespacesClient(http).CreateCodespaceAsync(Account, "not-a-repository", null, TestContext.CancellationToken));
+
+        Assert.IsEmpty(handler.Requests);
+    }
+
+    [TestMethod]
+    public async Task CreateCodespaceAsync_EnterpriseServerDoesNotMakeARequest()
+    {
+        Assert.IsTrue(GitHubHost.TryParse("github.example.com", out var host));
+        using var handler = new CreateCodespaceHandler((HttpStatusCode.OK, """{"id":12345}"""));
+        using var http = new HttpClient(handler);
+
+        await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            new CodespacesClient(http).CreateCodespaceAsync(
+                new GitHubAccount(host!, "mona", "t"),
+                "octocat/hello",
+                null,
+                TestContext.CancellationToken));
+
+        Assert.IsEmpty(handler.Requests);
+    }
+
+    [TestMethod]
     [DataRow(HttpStatusCode.Unauthorized, "GitHub didn't accept your token.")]
     [DataRow(HttpStatusCode.Forbidden, "GitHub said no.")]
     [DataRow(HttpStatusCode.TooManyRequests, "GitHub said no.")]
@@ -212,5 +266,30 @@ public class CodespacesClientTests
 
             return Task.FromResult(response);
         }
+
     }
+
+    private sealed class CreateCodespaceHandler(params (HttpStatusCode Status, string Body)[] responses) : HttpMessageHandler
+    {
+        private int _nextResponse;
+
+        public List<CapturedRequest> Requests { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
+            Requests.Add(new CapturedRequest(
+                request.RequestUri,
+                request.Method,
+                request.Headers.Authorization?.ToString(),
+                body));
+            var response = responses[_nextResponse++];
+            return new HttpResponseMessage(response.Status)
+            {
+                Content = new StringContent(response.Body, Encoding.UTF8, "application/json"),
+            };
+        }
+    }
+
+    private sealed record CapturedRequest(Uri? Url, HttpMethod Method, string? Authorization, string? Body);
 }

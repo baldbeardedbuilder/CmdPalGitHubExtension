@@ -19,15 +19,23 @@ internal sealed partial class HomePage : ListPage
     private readonly ReposPage _repos;
     private readonly AgentsPage _agents;
     private readonly CodespacesPage _codespaces;
+    private readonly CreateCodespacePage _createCodespace;
     private readonly SignOutCommand _signOut;
 
-    public HomePage(AuthService auth, NotificationsPage notifications, ReposPage repos, AgentsPage agents, CodespacesPage codespaces)
+    public HomePage(
+        AuthService auth,
+        NotificationsPage notifications,
+        ReposPage repos,
+        AgentsPage agents,
+        CodespacesPage codespaces,
+        CreateCodespacePage createCodespace)
     {
         _auth = auth;
         _notifications = notifications;
         _repos = repos;
         _agents = agents;
         _codespaces = codespaces;
+        _createCodespace = createCodespace;
         _signOut = new SignOutCommand(auth);
         Id = PageId;
         Name = "Open";
@@ -57,7 +65,13 @@ internal sealed partial class HomePage : ListPage
             ComingSoon("Saved Queries", Icons.SavedQueries, accountCommands),
             new ListItem(_repos) { Title = "Repos", Subtitle = "Find and open repositories", Icon = Icons.Repos, MoreCommands = accountCommands },
             new ListItem(_agents) { Title = "Agents", Subtitle = "Check your Copilot agent tasks", Icon = Icons.Agents, MoreCommands = accountCommands },
-            new ListItem(_codespaces) { Title = "Codespaces", Subtitle = "Find and open your codespaces", Icon = Icons.Codespaces, MoreCommands = accountCommands },
+            new ListItem(_codespaces)
+            {
+                Title = "Codespaces",
+                Subtitle = "Find and open your codespaces",
+                Icon = Icons.Codespaces,
+                MoreCommands = [.. accountCommands, new CommandContextItem(new CreateCodespaceCommand(_createCodespace))],
+            },
         ];
     }
 

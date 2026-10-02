@@ -81,6 +81,7 @@ public class GitHubCommandsProviderTests
         Assert.IsInstanceOfType<ReposPage>(items[2].Command);
         Assert.IsInstanceOfType<AgentsPage>(items[3].Command);
         Assert.IsInstanceOfType<CodespacesPage>(items[4].Command);
+        Assert.IsTrue(items[4].MoreCommands.OfType<CommandContextItem>().Any(c => c.Command is CreateCodespaceCommand));
         Assert.IsInstanceOfType<NoOpCommand>(items[1].Command);
         Assert.IsTrue(items.All(i => i.MoreCommands.OfType<CommandContextItem>().Any(c => c.Command is SignOutCommand)));
     }
@@ -97,6 +98,7 @@ public class GitHubCommandsProviderTests
         Assert.IsInstanceOfType<ReposPage>(provider.GetCommand(ReposPage.PageId));
         Assert.IsInstanceOfType<AgentsPage>(provider.GetCommand(AgentsPage.PageId));
         Assert.IsInstanceOfType<CodespacesPage>(provider.GetCommand(CodespacesPage.PageId));
+        Assert.IsInstanceOfType<CreateCodespacePage>(provider.GetCommand(CreateCodespacePage.PageId));
     }
 
     private static GitHubCommandsProvider CreateProvider(InMemoryAccountStore store, out AuthService auth)

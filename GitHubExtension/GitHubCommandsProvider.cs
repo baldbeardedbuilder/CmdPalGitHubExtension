@@ -26,6 +26,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
     private readonly AgentsPage _agentsPage;
     private readonly ActionsPage _actionsPage;
     private readonly CodespacesPage _codespacesPage;
+    private readonly CreateCodespacePage _createCodespacePage;
     private readonly HomePage _homePage;
     private readonly CommandItem _topLevel;
 
@@ -65,8 +66,10 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
             _repositoryIssuesPage,
             _repositoryPullRequestsPage,
             actions: _actionsPage);
-        _codespacesPage = new CodespacesPage(auth, codespacesClient ?? new CodespacesClient(Http()), browser);
-        _homePage = new HomePage(auth, _notificationsPage, _reposPage, _agentsPage, _codespacesPage);
+        codespacesClient ??= new CodespacesClient(Http());
+        _createCodespacePage = new CreateCodespacePage(auth, codespacesClient, browser);
+        _codespacesPage = new CodespacesPage(auth, codespacesClient, browser, createPage: _createCodespacePage);
+        _homePage = new HomePage(auth, _notificationsPage, _reposPage, _agentsPage, _codespacesPage, _createCodespacePage);
 
         Id = "com.baldbeardedbuilder.cmdpal.github";
         DisplayName = "GitHub";
@@ -98,6 +101,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         AgentsPage.PageId => _agentsPage,
         ActionsPage.PageId => _actionsPage,
         CodespacesPage.PageId => _codespacesPage,
+        CreateCodespacePage.PageId => _createCodespacePage,
         _ => null,
     };
 
@@ -108,6 +112,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         _agentsPage.Dispose();
         _actionsPage.Dispose();
         _codespacesPage.Dispose();
+        _createCodespacePage.Dispose();
         _repositoryIssuesPage.Dispose();
         _repositoryPullRequestsPage.Dispose();
         base.Dispose();
