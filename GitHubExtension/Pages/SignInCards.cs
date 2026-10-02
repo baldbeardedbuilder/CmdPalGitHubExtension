@@ -18,15 +18,22 @@ internal static class SignInCards
         Logo(logo),
         $$"""{ "type": "TextBlock", "text": {{Str(SignInPage.Message)}}, "wrap": true, "horizontalAlignment": "Center", "spacing": "Large" }""",
         Error(error),
-        $$"""
-        { "type": "ActionSet", "horizontalAlignment": "Center", "spacing": "Large", "actions": [
-            { "type": "Action.Submit", "id": "github", "title": "Sign in with GitHub", "style": "positive", "data": { "action": "{{SignInActions.GitHub}}" } }
+        CenteredAction($$"""
+        { "type": "ActionSet", "actions": [
+            { "type": "Action.Submit", "id": "github", "title": "Sign in with GitHub", "style": "positive", {{ActionIcon(logo)}}"data": { "action": "{{SignInActions.GitHub}}" } }
         ] }
-        """,
+        """),
         $$"""
-        { "type": "ActionSet", "horizontalAlignment": "Center", "actions": [
-            { "type": "Action.Submit", "id": "showEnterprise", "title": "Sign in with GitHub Enterprise account", "data": { "action": "{{SignInActions.ShowEnterprise}}" } }
-        ] }
+        {
+            "type": "Container",
+            "spacing": "ExtraLarge",
+            "selectAction": { "type": "Action.Submit", "data": { "action": "{{SignInActions.ShowEnterprise}}" } },
+            "items": [
+                { "type": "RichTextBlock", "horizontalAlignment": "Center", "inlines": [
+                    { "type": "TextRun", "text": "Sign in with GitHub Enterprise account", "size": "Small", "isSubtle": true, "underline": true }
+                ] }
+            ]
+        }
         """);
 
     public static string Waiting(string logo, string message) => Card(
@@ -66,6 +73,22 @@ internal static class SignInCards
     private static string Logo(string logo) => string.IsNullOrEmpty(logo)
         ? string.Empty
         : $$"""{ "type": "Image", "url": {{Str(logo)}}, "altText": "GitHub", "horizontalAlignment": "Center", "width": "64px", "height": "64px" }""";
+
+    private static string CenteredAction(string actionSet) => $$"""
+        {
+            "type": "ColumnSet",
+            "spacing": "ExtraLarge",
+            "columns": [
+                { "type": "Column", "width": "stretch", "items": [] },
+                { "type": "Column", "width": "auto", "items": [ {{actionSet}} ] },
+                { "type": "Column", "width": "stretch", "items": [] }
+            ]
+        }
+        """;
+
+    private static string ActionIcon(string logo) => string.IsNullOrEmpty(logo)
+        ? string.Empty
+        : $"\"iconUrl\": {Str(logo)}, ";
 
     private static string Error(string? error) => string.IsNullOrEmpty(error)
         ? string.Empty

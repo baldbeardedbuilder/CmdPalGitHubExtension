@@ -29,6 +29,24 @@ public class SignInPageTests
     }
 
     [TestMethod]
+    public void StartCard_CentersPositiveGitHubActionAndKeepsEnterpriseLinkAction()
+    {
+        using var json = JsonDocument.Parse(SignInCards.Start(Logo, null));
+        var body = json.RootElement.GetProperty("body");
+        var actionLayout = body.EnumerateArray().Single(element => element.GetProperty("type").GetString() == "ColumnSet");
+        var columns = actionLayout.GetProperty("columns");
+        Assert.AreEqual(3, columns.GetArrayLength());
+
+        var action = columns[1].GetProperty("items")[0].GetProperty("actions")[0];
+        Assert.AreEqual("positive", action.GetProperty("style").GetString());
+        Assert.AreEqual(Logo, action.GetProperty("iconUrl").GetString());
+
+        var enterpriseLink = body.EnumerateArray().Single(element => element.GetProperty("type").GetString() == "Container");
+        Assert.AreEqual(SignInActions.ShowEnterprise, enterpriseLink.GetProperty("selectAction").GetProperty("data").GetProperty("action").GetString());
+        Assert.IsTrue(enterpriseLink.GetRawText().Contains("\"underline\": true", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void AllCards_AreValidJson()
     {
         var account = new GitHubAccount(GitHubHost.GitHubDotCom, "octo\"cat", "t");
@@ -93,21 +111,24 @@ public class SignInPageTests
     }
 
     [TestMethod]
-    public async Task GitHubSubmit_WithoutOAuthConfig_ShowsError()
+    public void GitHubSubmit_WithoutOAuthConfig_ShowsToastAndStaysOnStart()
     {
-        var page = CreatePage(out _, new OAuthOptions(null, null));
+        string? toast = null;
+        var page = CreatePage(out _, new OAuthOptions(null, null), message => toast = message);
 
         Submit(page, SignInActions.GitHub);
 
-        await WaitForAsync(() => page.CurrentView == SignInView.Start && page.ErrorMessage is not null);
-        Assert.Contains("OAuth", page.ErrorMessage!);
+        Assert.AreEqual(AuthService.OAuthNotConfiguredMessage, toast);
+        Assert.AreEqual(SignInView.Start, page.CurrentView);
+        Assert.IsNull(page.ErrorMessage);
+        Assert.DoesNotContain("OAuth", CurrentTemplate(page));
     }
 
-    private static SignInPage CreatePage(out Mock<IGitHubAuthClient> client, OAuthOptions? options = null)
+    private static SignInPage CreatePage(out Mock<IGitHubAuthClient> client, OAuthOptions? options = null, Action<string>? showError = null)
     {
         client = new Mock<IGitHubAuthClient>();
         var auth = new AuthService(new InMemoryAccountStore(), client.Object, new FakeBrowser(_ => null), options ?? new OAuthOptions("id", "secret"));
-        return new SignInPage(auth, () => Logo);
+        return new SignInPage(auth, () => Logo, showError ?? (_ => { }));
     }
 
     private static ICommandResult Submit(SignInPage page, string action, string inputs = "{}") =>

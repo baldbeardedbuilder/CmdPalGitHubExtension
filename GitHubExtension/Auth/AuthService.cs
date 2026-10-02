@@ -16,6 +16,8 @@ internal sealed class AuthService
     private readonly Lock _lock = new();
     private GitHubAccount? _currentAccount;
 
+    internal const string OAuthNotConfiguredMessage = "This build doesn't have a GitHub OAuth app configured. See CONTRIBUTING.md to set one up.";
+
     public AuthService(
         IAccountStore store,
         IGitHubAuthClient client,
@@ -76,7 +78,7 @@ internal sealed class AuthService
     {
         if (!_options.IsConfigured)
         {
-            throw new GitHubAuthException("This build doesn't have a GitHub OAuth app configured. See CONTRIBUTING.md to set one up.");
+            throw new GitHubAuthException(OAuthNotConfiguredMessage);
         }
 
         var host = GitHubHost.GitHubDotCom;

@@ -19,14 +19,16 @@ internal sealed partial class SignInPage : ContentPage
 
     private readonly AuthService _auth;
     private readonly Func<string> _logoProvider;
+    private readonly Action<string> _showError;
     private readonly Lock _lock = new();
     private SignInForm _form;
     private CancellationTokenSource? _signInCancellation;
 
-    public SignInPage(AuthService auth, Func<string>? logoProvider = null)
+    public SignInPage(AuthService auth, Func<string>? logoProvider = null, Action<string>? showError = null)
     {
         _auth = auth;
         _logoProvider = logoProvider ?? Icons.GetGitHubMarkDataUri;
+        _showError = showError ?? ShowErrorToast;
         Id = PageId;
         Name = "Sign in";
         Title = "Sign in to GitHub";
@@ -51,6 +53,12 @@ internal sealed partial class SignInPage : ContentPage
         switch (action)
         {
             case SignInActions.GitHub:
+                if (!_auth.IsOAuthConfigured)
+                {
+                    _showError(AuthService.OAuthNotConfiguredMessage);
+                    break;
+                }
+
                 StartSignIn(ct => _auth.SignInWithGitHubAsync(ct), SignInView.WaitingForBrowser);
                 break;
 
@@ -141,6 +149,9 @@ internal sealed partial class SignInPage : ContentPage
 
         return new SignInForm(this, template);
     }
+
+    private static void ShowErrorToast(string message) =>
+        new ToastStatusMessage(new StatusMessage { Message = message, State = MessageState.Error }).Show();
 
     private static (string? ServerUrl, string? Token) ReadEnterpriseInputs(string inputs)
     {
