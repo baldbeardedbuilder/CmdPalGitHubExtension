@@ -5,6 +5,7 @@
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
+using BaldBeardedBuilder.CmdPal.GitHub.Repositories;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub;
 
@@ -13,6 +14,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
     private readonly AuthService _auth;
     private readonly SignInPage _signInPage;
     private readonly NotificationsPage _notificationsPage;
+    private readonly ReposPage _reposPage;
     private readonly HomePage _homePage;
     private readonly CommandItem _topLevel;
 
@@ -25,15 +27,17 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         AuthService auth,
         Func<string>? logoProvider = null,
         INotificationsClient? notificationsClient = null,
-        IBrowserLauncher? browser = null)
+        IBrowserLauncher? browser = null,
+        IRepositoriesClient? repositoriesClient = null)
     {
         _auth = auth;
+        browser ??= new ShellBrowserLauncher();
+        HttpClient? http = null;
+        HttpClient Http() => http ??= new HttpClient();
         _signInPage = new SignInPage(auth, logoProvider);
-        _notificationsPage = new NotificationsPage(
-            auth,
-            notificationsClient ?? new NotificationsClient(new HttpClient()),
-            browser ?? new ShellBrowserLauncher());
-        _homePage = new HomePage(auth, _notificationsPage);
+        _notificationsPage = new NotificationsPage(auth, notificationsClient ?? new NotificationsClient(Http()), browser);
+        _reposPage = new ReposPage(auth, repositoriesClient ?? new RepositoriesClient(Http()), browser);
+        _homePage = new HomePage(auth, _notificationsPage, _reposPage);
 
         Id = "com.baldbeardedbuilder.cmdpal.github";
         DisplayName = "GitHub";
@@ -58,12 +62,14 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         SignInPage.PageId => _signInPage,
         HomePage.PageId => _homePage,
         NotificationsPage.PageId => _notificationsPage,
+        ReposPage.PageId => _reposPage,
         _ => null,
     };
 
     public override void Dispose()
     {
         _auth.AccountChanged -= OnAccountChanged;
+        _reposPage.Dispose();
         base.Dispose();
         GC.SuppressFinalize(this);
     }

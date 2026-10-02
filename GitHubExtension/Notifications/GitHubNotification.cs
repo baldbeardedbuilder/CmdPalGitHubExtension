@@ -34,5 +34,3 @@ internal enum SubjectState
 internal sealed record SubjectDetails(SubjectState State, Uri? WebUrl);
 
 internal sealed record NotificationsPageResult(IReadOnlyList<GitHubNotification> Notifications, Uri? NextPage);
-
-internal sealed class GitHubApiException(string message, Exception? innerException = null) : Exception(message, innerException);

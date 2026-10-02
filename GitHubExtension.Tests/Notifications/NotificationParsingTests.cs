@@ -59,9 +59,9 @@ public class NotificationParsingTests
     public void ParseNextLink_FindsNext()
     {
         var header = "<https://api.github.com/notifications?page=3>; rel=\"last\", <https://api.github.com/notifications?page=2>; rel=\"next\"";
-        Assert.AreEqual(new Uri("https://api.github.com/notifications?page=2"), NotificationsClient.ParseNextLink(header));
-        Assert.IsNull(NotificationsClient.ParseNextLink("<https://api.github.com/notifications?page=1>; rel=\"prev\""));
-        Assert.IsNull(NotificationsClient.ParseNextLink(null));
+        Assert.AreEqual(new Uri("https://api.github.com/notifications?page=2"), GitHubRest.ParseNextLink(header));
+        Assert.IsNull(GitHubRest.ParseNextLink("<https://api.github.com/notifications?page=1>; rel=\"prev\""));
+        Assert.IsNull(GitHubRest.ParseNextLink(null));
     }
 
     [TestMethod]

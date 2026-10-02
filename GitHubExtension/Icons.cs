@@ -37,6 +37,10 @@ internal static class Icons
 
     internal static IconInfo Codespaces { get; } = Themed("codespaces");
 
+    internal static IconInfo Issues { get; } = Themed("issue-opened");
+
+    internal static IconInfo PullRequests { get; } = Themed("git-pull-request");
+
     internal static IconInfo StateOpenIssue { get; } = Octicon("state-issue-opened.svg");
 
     internal static IconInfo StateOpenPullRequest { get; } = Octicon("state-git-pull-request.svg");

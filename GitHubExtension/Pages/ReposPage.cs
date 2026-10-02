@@ -1,0 +1,374 @@
+// Copyright (c) Bald Bearded Builder LLC
+// Bald Bearded Builder LLC licenses this file to you under the MIT license.
+// See the LICENSE file in the project root for more information.
+
+using BaldBeardedBuilder.CmdPal.GitHub.Auth;
+using BaldBeardedBuilder.CmdPal.GitHub.Commands;
+using BaldBeardedBuilder.CmdPal.GitHub.Repositories;
+
+namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
+
+/// <summary>
+/// Your repos, most recently pushed first. Typing filters them instantly, then searches all of GitHub once you pause.
+/// </summary>
+internal sealed partial class ReposPage : DynamicListPage, IDisposable
+{
+    public const string PageId = "com.baldbeardedbuilder.cmdpal.github.repos";
+
+    internal static readonly TimeSpan DefaultSearchDelay = TimeSpan.FromMilliseconds(300);
+
+    private readonly AuthService _auth;
+    private readonly IRepositoriesClient _client;
+    private readonly IBrowserLauncher _browser;
+    private readonly TimeProvider _time;
+    private readonly TimeSpan _searchDelay;
+    private readonly Lock _lock = new();
+    private readonly List<RepoItem> _mine = [];
+    private Uri? _nextPage;
+    private bool _loaded;
+    private bool _fetching;
+    private string? _error;
+    private int _generation;
+    private Task _currentLoad = Task.CompletedTask;
+
+    private CancellationTokenSource? _searchCts;
+    private string _searchQuery = string.Empty;
+    private List<RepoItem> _searchResults = [];
+    private string? _searchError;
+    private bool _searching;
+    private Task _currentSearch = Task.CompletedTask;
+
+    public ReposPage(AuthService auth, IRepositoriesClient client, IBrowserLauncher browser, TimeProvider? time = null, TimeSpan? searchDelay = null)
+    {
+        _auth = auth;
+        _client = client;
+        _browser = browser;
+        _time = time ?? TimeProvider.System;
+        _searchDelay = searchDelay ?? DefaultSearchDelay;
+        Id = PageId;
+        Name = "Open";
+        Title = "Repos";
+        Icon = Icons.Repos;
+        PlaceholderText = "Filter repos...";
+        _auth.AccountChanged += (_, _) => Reset();
+    }
+
+    /// <summary>
+    /// The in flight load of your repos. Handy for tests.
+    /// </summary>
+    internal Task CurrentLoad
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _currentLoad;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The in flight GitHub search. Handy for tests.
+    /// </summary>
+    internal Task CurrentSearch
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _currentSearch;
+            }
+        }
+    }
+
+    public override IListItem[] GetItems()
+    {
+        bool needsLoad;
+        RepoItem[] mine;
+        RepoItem[] remote;
+        string? error;
+        string? searchError;
+        bool searching;
+        string searchQuery;
+        lock (_lock)
+        {
+            needsLoad = !_loaded && !_fetching;
+            mine = [.. _mine];
+            remote = [.. _searchResults];
+            error = _error;
+            searchError = _searchError;
+            searching = _searching;
+            searchQuery = _searchQuery;
+        }
+
+        if (needsLoad)
+        {
+            StartLoad(reset: true);
+        }
+
+        var query = SearchText.Trim();
+        if (query.Length == 0)
+        {
+            EmptyContent = error is not null
+                ? Empty("Couldn't load your repos", error)
+                : Empty("No repos yet", "Repos you own or collaborate on show up here");
+            return mine;
+        }
+
+        var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var local = mine.Where(i => i.Matches(terms)).ToList();
+        if (searchQuery == query)
+        {
+            var seen = local.Select(i => i.Repository.FullName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            local.AddRange(remote.Where(i => seen.Add(i.Repository.FullName)));
+        }
+
+        EmptyContent = searching
+            ? new CommandItem(new NoOpCommand()) { Title = "Searching GitHub...", Icon = Icons.Repos }
+            : searchError is not null
+                ? Empty("Couldn't search GitHub", searchError)
+                : Empty("No repos found", $"Nothing matches \"{query}\"");
+
+        return [.. local];
+    }
+
+    public override void UpdateSearchText(string oldSearch, string newSearch)
+    {
+        var query = newSearch.Trim();
+        if (query == oldSearch.Trim())
+        {
+            return;
+        }
+
+        GitHubAccount? account;
+        CancellationTokenSource? cts = null;
+        bool hasMore;
+        bool fetching;
+        lock (_lock)
+        {
+            _searchCts?.Cancel();
+            _searchCts?.Dispose();
+            _searchCts = null;
+            _searchError = null;
+            account = _auth.CurrentAccount;
+            hasMore = _nextPage is not null;
+            fetching = _fetching;
+
+            if (query.Length == 0 || account is null)
+            {
+                _searching = false;
+                _searchQuery = string.Empty;
+                _searchResults = [];
+            }
+            else
+            {
+                cts = _searchCts = new CancellationTokenSource();
+                _searching = true;
+                var token = cts.Token;
+                _currentSearch = Task.Run(() => SearchAsync(account, query, token));
+            }
+        }
+
+        // Only your own list pages; search results come back in one shot.
+        HasMoreItems = cts is null && hasMore;
+        IsLoading = cts is not null || fetching;
+        RaiseItemsChanged();
+    }
+
+    public override void LoadMore()
+    {
+        if (SearchText.Trim().Length == 0)
+        {
+            StartLoad(reset: false);
+        }
+    }
+
+    public Task RefreshAsync()
+    {
+        lock (_lock)
+        {
+            _generation++;
+            _fetching = false;
+        }
+
+        var query = SearchText;
+        UpdateSearchText(string.Empty, query);
+        return StartLoad(reset: true);
+    }
+
+    public void Dispose()
+    {
+        lock (_lock)
+        {
+            _searchCts?.Cancel();
+            _searchCts?.Dispose();
+            _searchCts = null;
+        }
+    }
+
+    private static CommandItem Empty(string title, string subtitle) =>
+        new(new NoOpCommand()) { Title = title, Subtitle = subtitle, Icon = Icons.Repos };
+
+    private async Task SearchAsync(GitHubAccount account, string query, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(_searchDelay, cancellationToken).ConfigureAwait(false);
+            var results = await _client.SearchAsync(account, query, cancellationToken).ConfigureAwait(false);
+            var now = _time.GetUtcNow();
+
+            lock (_lock)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                _searchQuery = query;
+                _searchResults = [.. results.Select(r => new RepoItem(this, r, _browser, now))];
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (GitHubApiException ex)
+        {
+            lock (_lock)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                _searchQuery = query;
+                _searchResults = [];
+                _searchError = ex.Message;
+            }
+        }
+
+        bool fetching;
+        lock (_lock)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+
+            _searching = false;
+            fetching = _fetching;
+        }
+
+        IsLoading = fetching;
+        RaiseItemsChanged();
+    }
+
+    private Task StartLoad(bool reset)
+    {
+        GitHubAccount? account;
+        Uri? page;
+        int generation;
+        lock (_lock)
+        {
+            account = _auth.CurrentAccount;
+            if (account is null || _fetching || (!reset && _nextPage is null))
+            {
+                return _currentLoad;
+            }
+
+            _fetching = true;
+            page = reset ? null : _nextPage;
+            generation = _generation;
+            _currentLoad = Task.Run(() => LoadAsync(account, page, reset, generation));
+        }
+
+        IsLoading = true;
+        return _currentLoad;
+    }
+
+    private async Task LoadAsync(GitHubAccount account, Uri? page, bool reset, int generation)
+    {
+        try
+        {
+            var result = await _client.GetMyRepositoriesAsync(account, page, CancellationToken.None).ConfigureAwait(false);
+            var now = _time.GetUtcNow();
+
+            lock (_lock)
+            {
+                if (generation != _generation)
+                {
+                    return;
+                }
+
+                if (reset)
+                {
+                    _mine.Clear();
+                }
+
+                var known = _mine.Select(i => i.Repository.FullName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                _mine.AddRange(result.Repositories
+                    .Where(r => known.Add(r.FullName))
+                    .Select(r => new RepoItem(this, r, _browser, now)));
+
+                _nextPage = result.NextPage;
+                _loaded = true;
+                _error = null;
+            }
+
+            HasMoreItems = result.NextPage is not null && SearchText.Trim().Length == 0;
+        }
+        catch (GitHubApiException ex)
+        {
+            lock (_lock)
+            {
+                if (generation != _generation)
+                {
+                    return;
+                }
+
+                _error = ex.Message;
+                _loaded = true;
+            }
+        }
+        finally
+        {
+            bool searching;
+            lock (_lock)
+            {
+                if (generation == _generation)
+                {
+                    _fetching = false;
+                }
+
+                searching = _searching;
+            }
+
+            IsLoading = searching;
+            RaiseItemsChanged();
+        }
+    }
+
+    private void Reset()
+    {
+        lock (_lock)
+        {
+            _generation++;
+            _mine.Clear();
+            _nextPage = null;
+            _loaded = false;
+            _fetching = false;
+            _error = null;
+            _searchCts?.Cancel();
+            _searchCts?.Dispose();
+            _searchCts = null;
+            _searching = false;
+            _searchQuery = string.Empty;
+            _searchResults = [];
+            _searchError = null;
+        }
+
+        HasMoreItems = false;
+        IsLoading = false;
+        RaiseItemsChanged();
+    }
+}

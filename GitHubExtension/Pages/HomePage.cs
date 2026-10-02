@@ -16,12 +16,14 @@ internal sealed partial class HomePage : ListPage
 
     private readonly AuthService _auth;
     private readonly NotificationsPage _notifications;
+    private readonly ReposPage _repos;
     private readonly SignOutCommand _signOut;
 
-    public HomePage(AuthService auth, NotificationsPage notifications)
+    public HomePage(AuthService auth, NotificationsPage notifications, ReposPage repos)
     {
         _auth = auth;
         _notifications = notifications;
+        _repos = repos;
         _signOut = new SignOutCommand(auth);
         Id = PageId;
         Name = "Open";
@@ -49,7 +51,7 @@ internal sealed partial class HomePage : ListPage
         [
             new ListItem(_notifications) { Title = "Notifications", Subtitle = "Your GitHub inbox", Icon = Icons.Notifications, MoreCommands = accountCommands },
             ComingSoon("Saved Queries", Icons.SavedQueries, accountCommands),
-            ComingSoon("Repos", Icons.Repos, accountCommands),
+            new ListItem(_repos) { Title = "Repos", Subtitle = "Find and open repositories", Icon = Icons.Repos, MoreCommands = accountCommands },
             ComingSoon("Agents", Icons.Agents, accountCommands),
             ComingSoon("Codespaces", Icons.Codespaces, accountCommands),
         ];

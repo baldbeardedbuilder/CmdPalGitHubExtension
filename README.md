@@ -11,6 +11,7 @@ Your notifications, repos, agents, codespaces, and saved queries, one keystroke 
 - Sign in to GitHub Enterprise Server with your server URL and a personal access token.
 - Your token lives in Windows Credential Locker, not in a file on disk.
 - Browse your notifications with issue and PR state, filter as you type, and mark them read or done.
+- Find repos fast. Yours filter instantly, and pausing on a search checks all of GitHub too. Qualifiers like `user:` and `language:` work.
 
 ## Install
 
