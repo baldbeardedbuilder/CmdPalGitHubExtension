@@ -3,7 +3,7 @@
 Your notifications, repos, agents, codespaces, and saved queries, one keystroke away. This extension brings GitHub into [Microsoft Command Palette](https://learn.microsoft.com/windows/powertoys/command-palette/overview) so you can check on your work without opening a browser tab you'll forget to close.
 
 > [!NOTE]
-> This is early. Sign in, then check your notifications. Repos, agents, codespaces, and saved queries land next.
+> This is early. Sign in, then check your notifications, repos, and codespaces. Agents and saved queries land next.
 
 ## What works today
 
@@ -13,6 +13,9 @@ Your notifications, repos, agents, codespaces, and saved queries, one keystroke 
 - Browse your notifications with issue and PR state, open issue details in Command Palette, filter as you type, and mark them read or done.
 - Preview a pull request's description, branches, labels, and change counts beside its notification. Enter still opens it on GitHub.
 - Find repos fast. Yours filter instantly, and pausing on a search checks all of GitHub too. Qualifiers like `user:` and `language:` work.
+- Browse your codespaces with repository names, branches, last-used times, and status badges. Filter as you type, open one in your browser, or use **More** to copy its URL or name and refresh the list.
+
+Codespaces requires a github.com account and the `codespace` token scope. It isn't available on GitHub Enterprise Server. Opening a stopped codespace takes you to GitHub's browser editor, where it can start the environment.
 
 ## Install
 
