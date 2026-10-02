@@ -19,6 +19,8 @@ Your notifications, repos, agents, codespaces, and saved queries, one keystroke 
 - Pick **Actions** from the repository menu or a repo's **More** menu to browse workflow runs. Filter by workflow, run title, actor, or status, refresh the list, and open a run on GitHub.
 - Browse your codespaces with repository names, branches, last-used times, and status badges. Filter as you type, open one in your browser, or use **More** to copy its URL or name and refresh the list. Use the Codespaces section's **More > Create Codespace** action to create one from a repository and optional branch.
 
+Repository issue lists start with **Open** selected. Switch to **Closed** to see completed and not-planned issues. Text search narrows the selected state, and more results load as you scroll.
+
 Codespaces requires a github.com account and the `codespace` token scope. It isn't available on GitHub Enterprise Server. Opening a stopped codespace takes you to GitHub's browser editor, where it can start the environment.
 
 ### Agents access
