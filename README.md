@@ -3,7 +3,7 @@
 Your notifications, repos, agents, codespaces, and saved queries, one keystroke away. This extension brings GitHub into [Microsoft Command Palette](https://learn.microsoft.com/windows/powertoys/command-palette/overview) so you can check on your work without opening a browser tab you'll forget to close.
 
 > [!NOTE]
-> This is early. Sign in, then check your notifications. Repos, agents, codespaces, and saved queries land next.
+> This is early. Sign in, then check your notifications and repos. Agents, codespaces, and saved queries land next.
 
 ## What works today
 
@@ -13,6 +13,7 @@ Your notifications, repos, agents, codespaces, and saved queries, one keystroke 
 - Browse your notifications with issue and PR state, open issue details in Command Palette, filter as you type, and mark them read or done.
 - Preview a pull request's description, branches, labels, and change counts beside its notification. Enter still opens it on GitHub.
 - Find repos fast. Yours filter instantly, and pausing on a search checks all of GitHub too. Qualifiers like `user:` and `language:` work.
+- Pick **Actions** from a repo's **More** menu to browse workflow runs. Filter by workflow, run title, actor, or status, refresh the list, and open a run on GitHub.
 
 ## Install
 

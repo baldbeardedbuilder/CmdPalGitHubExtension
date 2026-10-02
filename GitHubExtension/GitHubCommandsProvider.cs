@@ -2,6 +2,7 @@
 // Bald Bearded Builder LLC licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using BaldBeardedBuilder.CmdPal.GitHub.Actions;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using BaldBeardedBuilder.CmdPal.GitHub.Issues;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
@@ -17,6 +18,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
     private readonly NotificationsPage _notificationsPage;
     private readonly IssueDetailsPage _issueDetailsPage;
     private readonly ReposPage _reposPage;
+    private readonly ActionsPage _actionsPage;
     private readonly HomePage _homePage;
     private readonly CommandItem _topLevel;
 
@@ -31,7 +33,8 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         INotificationsClient? notificationsClient = null,
         IBrowserLauncher? browser = null,
         IRepositoriesClient? repositoriesClient = null,
-        IIssuesClient? issuesClient = null)
+        IIssuesClient? issuesClient = null,
+        IActionsClient? actionsClient = null)
     {
         _auth = auth;
         browser ??= new ShellBrowserLauncher();
@@ -40,7 +43,8 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         _signInPage = new SignInPage(auth, logoProvider);
         _issueDetailsPage = new IssueDetailsPage(auth, issuesClient ?? new IssuesClient(Http()), browser);
         _notificationsPage = new NotificationsPage(auth, notificationsClient ?? new NotificationsClient(Http()), browser, issueDetails: _issueDetailsPage);
-        _reposPage = new ReposPage(auth, repositoriesClient ?? new RepositoriesClient(Http()), browser);
+        _actionsPage = new ActionsPage(auth, actionsClient ?? new ActionsClient(Http()), browser);
+        _reposPage = new ReposPage(auth, repositoriesClient ?? new RepositoriesClient(Http()), browser, actions: _actionsPage);
         _homePage = new HomePage(auth, _notificationsPage, _reposPage);
 
         Id = "com.baldbeardedbuilder.cmdpal.github";
@@ -68,6 +72,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         NotificationsPage.PageId => _notificationsPage,
         IssueDetailsPage.PageId => _issueDetailsPage,
         ReposPage.PageId => _reposPage,
+        ActionsPage.PageId => _actionsPage,
         _ => null,
     };
 
@@ -75,6 +80,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
     {
         _auth.AccountChanged -= OnAccountChanged;
         _reposPage.Dispose();
+        _actionsPage.Dispose();
         base.Dispose();
         GC.SuppressFinalize(this);
     }
