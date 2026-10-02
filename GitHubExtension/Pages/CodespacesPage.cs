@@ -25,6 +25,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
     private bool _fetching;
     private bool _disposed;
     private string? _error;
+    private string _errorTitle = "Couldn't load codespaces";
     private int _generation;
     private CancellationTokenSource? _loadCts;
     private Task _currentLoad = Task.CompletedTask;
@@ -97,10 +98,10 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
             {
                 var error = new ListItem(refresh)
                 {
-                    Title = "Couldn't load codespaces", Subtitle = _error, Icon = Icons.Codespaces,
+                    Title = _errorTitle, Subtitle = _error, Icon = Icons.Codespaces,
                     MoreCommands = _createCommands,
                 };
-                empty = Empty("Couldn't load codespaces", _error, refresh: true);
+                empty = Empty(_errorTitle, _error, refresh: true);
                 if (items.Count > 0)
                 {
                     items.Add(error);
@@ -136,6 +137,41 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         }
 
         return StartLoad(reset: true);
+    }
+
+    internal Task CloseAsync(CodespaceItem item)
+    {
+        GitHubAccount account;
+        CancellationToken token;
+        int generation;
+        lock (_lock)
+        {
+            if (_disposed || _fetching || !_items.Contains(item) || item.Codespace.State != "Available"
+                || _auth.CurrentAccount is not { Host.IsGitHubDotCom: true } currentAccount)
+            {
+                return _currentLoad;
+            }
+
+            _loadCts?.Dispose();
+            _loadCts = new CancellationTokenSource();
+            token = _loadCts.Token;
+            account = currentAccount;
+            generation = _generation;
+            _fetching = true;
+            _error = null;
+        }
+
+        IsLoading = true;
+        lock (_lock)
+        {
+            if (generation != _generation || _disposed)
+            {
+                return _currentLoad;
+            }
+
+            _currentLoad = Task.Run(() => CloseCoreAsync(account, item, generation, token));
+            return _currentLoad;
+        }
     }
 
     public void Dispose()
@@ -183,6 +219,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
             generation = _generation;
             _fetching = true;
             _error = null;
+            _errorTitle = "Couldn't load codespaces";
         }
 
         IsLoading = true;
@@ -245,21 +282,67 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         }
         finally
         {
-            bool publish;
+            CompleteOperation(generation);
+        }
+    }
+
+    private async Task CloseCoreAsync(GitHubAccount account, CodespaceItem item, int generation, CancellationToken token)
+    {
+        try
+        {
+            var codespace = await _client.StopCodespaceAsync(account, item.Codespace.Name, token).ConfigureAwait(false);
             lock (_lock)
             {
-                publish = generation == _generation;
-                if (publish)
+                if (generation != _generation)
                 {
-                    _fetching = false;
+                    return;
+                }
+
+                var index = _items.IndexOf(item);
+                if (index >= 0)
+                {
+                    _items[index] = new CodespaceItem(this, codespace, _browser, _time.GetUtcNow());
                 }
             }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+        }
+        catch (GitHubApiException ex)
+        {
+            lock (_lock)
+            {
+                if (generation != _generation)
+                {
+                    return;
+                }
 
+                _error = ex.Message;
+                _errorTitle = "Couldn't close codespace";
+            }
+        }
+        finally
+        {
+            CompleteOperation(generation);
+        }
+    }
+
+    private void CompleteOperation(int generation)
+    {
+        bool publish;
+        lock (_lock)
+        {
+            publish = generation == _generation;
             if (publish)
             {
-                IsLoading = false;
-                RaiseItemsChanged();
+                _fetching = false;
             }
+        }
+
+        if (publish)
+        {
+            IsLoading = false;
+            RaiseItemsChanged();
         }
     }
 

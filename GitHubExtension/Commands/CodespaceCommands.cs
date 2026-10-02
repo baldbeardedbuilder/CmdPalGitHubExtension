@@ -23,3 +23,23 @@ internal sealed partial class RefreshCodespacesCommand : InvokableCommand
         return CommandResult.KeepOpen();
     }
 }
+
+internal sealed partial class CloseCodespaceCommand : InvokableCommand
+{
+    private readonly CodespacesPage _page;
+    private readonly CodespaceItem _item;
+
+    public CloseCodespaceCommand(CodespacesPage page, CodespaceItem item)
+    {
+        _page = page;
+        _item = item;
+        Name = "Close Codespace";
+        Icon = Icons.Stop;
+    }
+
+    public override ICommandResult Invoke()
+    {
+        _ = _page.CloseAsync(_item);
+        return CommandResult.KeepOpen();
+    }
+}

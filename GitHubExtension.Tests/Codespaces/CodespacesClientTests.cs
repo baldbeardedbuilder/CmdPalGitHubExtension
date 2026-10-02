@@ -6,6 +6,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using BaldBeardedBuilder.CmdPal.GitHub.Codespaces;
+using Moq.Protected;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Tests.Codespaces;
 
@@ -116,6 +117,84 @@ public class CodespacesClientTests
         await client.GetCodespacesAsync(Account, result.NextPage, TestContext.CancellationToken);
         Assert.AreEqual(next, handler.Url);
         Assert.AreEqual(2, handler.RequestCount);
+    }
+
+    [TestMethod]
+    public async Task StopCodespaceAsync_PostsAuthenticatedStopEndpointAndReadsState()
+    {
+        using var handler = new StubHandler(HttpStatusCode.OK, CodespaceJson.Replace("Available", "ShuttingDown", StringComparison.Ordinal));
+        using var http = new HttpClient(handler);
+
+        var codespace = await new CodespacesClient(http).StopCodespaceAsync(Account, "workspace/name", TestContext.CancellationToken);
+
+        Assert.AreEqual(new Uri("https://api.github.com/user/codespaces/workspace%2Fname/stop"), handler.Url);
+        Assert.AreEqual(HttpMethod.Post, handler.Method);
+        Assert.AreEqual("Bearer " + Account.Token, handler.Authorization);
+        Assert.AreEqual("application/vnd.github+json", handler.Accept);
+        Assert.AreEqual("2022-11-28", handler.ApiVersion);
+        Assert.AreEqual("octocat-hello-abc", codespace.Name);
+        Assert.AreEqual("ShuttingDown", codespace.State);
+        Assert.AreEqual(1, handler.RequestCount);
+    }
+
+    [TestMethod]
+    [DataRow(HttpStatusCode.Unauthorized, "GitHub didn't accept your token.")]
+    [DataRow(HttpStatusCode.Forbidden, "GitHub said no.")]
+    [DataRow(HttpStatusCode.NotFound, "github.com returned 404")]
+    [DataRow(HttpStatusCode.InternalServerError, "github.com returned 500")]
+    public async Task StopCodespaceAsync_SurfacesApiErrors(HttpStatusCode status, string message)
+    {
+        using var handler = new StubHandler(status, "{}");
+        using var http = new HttpClient(handler);
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            new CodespacesClient(http).StopCodespaceAsync(Account, "one", TestContext.CancellationToken));
+
+        Assert.StartsWith(message, error.Message);
+        Assert.AreEqual(HttpMethod.Post, handler.Method);
+        Assert.AreEqual(1, handler.RequestCount);
+    }
+
+    [TestMethod]
+    [DataRow("not JSON", "GitHub sent back something we couldn't read.")]
+    [DataRow("{}", "GitHub sent back a codespace we couldn't read.")]
+    public async Task StopCodespaceAsync_InvalidResponseShowsAnError(string body, string message)
+    {
+        using var http = new HttpClient(new StubHandler(HttpStatusCode.OK, body));
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            new CodespacesClient(http).StopCodespaceAsync(Account, "one", TestContext.CancellationToken));
+
+        Assert.AreEqual(message, error.Message);
+    }
+
+    [TestMethod]
+    public async Task StopCodespaceAsync_EnterpriseServerDoesNotMakeARequest()
+    {
+        Assert.IsTrue(GitHubHost.TryParse("github.example.com", out var host));
+        using var handler = new StubHandler(HttpStatusCode.OK, CodespaceJson);
+        using var http = new HttpClient(handler);
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            new CodespacesClient(http).StopCodespaceAsync(new GitHubAccount(host!, "mona", "t"), "one", TestContext.CancellationToken));
+
+        Assert.Contains("isn't available on GitHub Enterprise Server", error.Message);
+        Assert.AreEqual(0, handler.RequestCount);
+    }
+
+    [TestMethod]
+    public async Task StopCodespaceAsync_TimeoutShowsAnError()
+    {
+        var handler = new Mock<HttpMessageHandler>();
+        handler.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync", ItExpr.IsAny<HttpRequestMessage>(), ItExpr.IsAny<CancellationToken>())
+            .ThrowsAsync(new TaskCanceledException());
+        using var http = new HttpClient(handler.Object);
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            new CodespacesClient(http).StopCodespaceAsync(Account, "one", TestContext.CancellationToken));
+
+        Assert.StartsWith("GitHub took too long to close this codespace.", error.Message);
     }
 
     [TestMethod]

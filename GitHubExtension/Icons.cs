@@ -21,6 +21,8 @@ internal static class Icons
 
     internal static IconInfo Refresh { get; } = new("\uE72C");
 
+    internal static IconInfo Stop { get; } = new("\uE71A");
+
     internal static IconInfo MarkRead { get; } = new("\uE8C3");
 
     internal static IconInfo Done { get; } = new("\uE73E");
