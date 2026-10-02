@@ -27,6 +27,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     private readonly TimeSpan _searchDelay;
     private readonly Lock _lock = new();
     private readonly List<RepoItem> _mine = [];
+    private readonly List<RepositoryPage> _repositoryPages = [];
     private Uri? _nextPage;
     private bool _loaded;
     private bool _fetching;
@@ -65,7 +66,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         Title = "Repos";
         Icon = Icons.Repos;
         PlaceholderText = "Filter repos...";
-        _auth.AccountChanged += (_, _) => Reset();
+        _auth.AccountChanged += OnAccountChanged;
     }
 
     internal ActionsPage? Actions { get; }
@@ -226,19 +227,36 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
 
     public void Dispose()
     {
+        _auth.AccountChanged -= OnAccountChanged;
+        RepositoryPage[] repositoryPages;
         lock (_lock)
         {
             _searchCts?.Cancel();
             _searchCts?.Dispose();
             _searchCts = null;
+            repositoryPages = [.. _repositoryPages];
+            _repositoryPages.Clear();
+        }
+
+        foreach (var page in repositoryPages)
+        {
+            page.Dispose();
         }
     }
 
     private CommandItem Empty(string title, string subtitle, bool refresh = false) =>
         _emptyContent.Get(title, subtitle, refresh);
 
-    internal RepositoryPage CreateRepositoryPage(GitHubRepository repository) =>
-        new(_browser, Actions, repository, _repositoryIssuesPage, _repositoryPullRequestsPage);
+    internal RepositoryPage CreateRepositoryPage(GitHubRepository repository)
+    {
+        var page = new RepositoryPage(_browser, Actions, repository, _repositoryIssuesPage, _repositoryPullRequestsPage);
+        lock (_lock)
+        {
+            _repositoryPages.Add(page);
+        }
+
+        return page;
+    }
 
     private async Task SearchAsync(GitHubAccount account, string query, CancellationToken cancellationToken)
     {
@@ -392,12 +410,15 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         }
     }
 
+    private void OnAccountChanged(object? sender, EventArgs e) => Reset();
+
     private void Reset()
     {
         RepositoryPage[] repositoryPages;
         lock (_lock)
         {
-            repositoryPages = [.. _mine.Concat(_searchResults).Select(i => i.RepositoryPage).Distinct()];
+            repositoryPages = [.. _repositoryPages];
+            _repositoryPages.Clear();
             _generation++;
             _mine.Clear();
             _nextPage = null;

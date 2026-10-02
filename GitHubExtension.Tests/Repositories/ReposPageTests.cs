@@ -2,6 +2,7 @@
 // Bald Bearded Builder LLC licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using BaldBeardedBuilder.CmdPal.GitHub.Actions;
 using BaldBeardedBuilder.CmdPal.GitHub.Commands;
 using BaldBeardedBuilder.CmdPal.GitHub.Issues;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
@@ -191,8 +192,8 @@ public class ReposPageTests
             out _,
             issuesClient.Object,
             pullRequestsClient.Object,
-            out var issuesPage,
-            out var pullRequestsPage);
+            out _,
+            out _);
         page.GetItems();
         await page.CurrentLoad;
         var repositoryPage = Assert.IsInstanceOfType<RepositoryPage>(page.GetItems().Single().Command);
@@ -203,17 +204,86 @@ public class ReposPageTests
             RepositorySectionsForToolkit,
             sections.Select(area => area.Title).ToArray());
 
-        ((InvokableCommand)sections.Single(item => item.Title == "Issues").Command!).Invoke();
+        var issuesPage = Assert.IsInstanceOfType<RepositoryIssuesPage>(sections.Single(item => item.Title == "Issues").Command);
+        issuesPage.GetItems();
         await issuesPage.CurrentLoad;
         Assert.AreEqual("octocat/toolkit issues", issuesPage.Title);
         Assert.AreEqual("#1 Bug", issuesPage.GetItems().Single().Title);
         issuesClient.Verify(c => c.GetIssuesAsync(Account, "octocat/toolkit", null, It.IsAny<CancellationToken>()), Times.Once);
 
-        ((InvokableCommand)sections.Single(item => item.Title == "Pull Requests").Command!).Invoke();
+        var pullRequestsPage = Assert.IsInstanceOfType<RepositoryPullRequestsPage>(sections.Single(item => item.Title == "Pull Requests").Command);
+        pullRequestsPage.GetItems();
         await pullRequestsPage.CurrentLoad;
         Assert.AreEqual("octocat/toolkit pull requests", pullRequestsPage.Title);
         Assert.AreEqual("#2 Feature", pullRequestsPage.GetItems().Single().Title);
         pullRequestsClient.Verify(c => c.GetPullRequestsAsync(Account, "octocat/toolkit", null, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    [DataRow("Issues")]
+    [DataRow("Pull Requests")]
+    [DataRow("Actions")]
+    public async Task RepositorySections_KeepTheirOwnListsWhenSwitchingRepositories(string section)
+    {
+        var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(), new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
+        var browser = new FakeBrowser(_ => null);
+        var issues = new Mock<IIssuesClient>();
+        issues.Setup(c => c.GetIssuesAsync(Account, It.IsAny<string>(), null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new IssuesPageResult([], null));
+        var pulls = new Mock<IPullRequestsClient>();
+        pulls.Setup(c => c.GetPullRequestsAsync(Account, It.IsAny<string>(), null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PullRequestsPageResult([], null));
+        var runs = new Mock<IActionsClient>();
+        runs.Setup(c => c.GetRunsAsync(Account, It.IsAny<string>(), null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new WorkflowRunsPageResult([], null));
+        using var issuesTemplate = new RepositoryIssuesPage(auth, issues.Object, browser);
+        using var pullsTemplate = new RepositoryPullRequestsPage(auth, pulls.Object, browser);
+        using var actionsTemplate = new ActionsPage(auth, runs.Object, browser);
+        using var first = new RepositoryPage(browser, actionsTemplate, RepoFormattingTests.Repo("o/a"), issuesTemplate, pullsTemplate);
+        using var second = new RepositoryPage(browser, actionsTemplate, RepoFormattingTests.Repo("o/b"), issuesTemplate, pullsTemplate);
+        var firstList = Assert.IsInstanceOfType<DynamicListPage>(first.GetItems().Single(i => i.Title == section).Command);
+        var secondList = Assert.IsInstanceOfType<DynamicListPage>(second.GetItems().Single(i => i.Title == section).Command);
+
+        Assert.AreNotSame(firstList, secondList);
+        Assert.AreNotEqual(firstList.Id, secondList.Id);
+        issues.VerifyNoOtherCalls();
+        pulls.VerifyNoOtherCalls();
+        runs.VerifyNoOtherCalls();
+        firstList.GetItems();
+        await Load(firstList);
+        firstList.SearchText = "keep my filter";
+        secondList.GetItems();
+        await Load(secondList);
+        firstList.GetItems();
+
+        Assert.AreEqual("keep my filter", firstList.SearchText);
+        Assert.AreEqual(string.Empty, secondList.SearchText);
+        Assert.StartsWith("o/a ", firstList.Title);
+        Assert.StartsWith("o/b ", secondList.Title);
+        Assert.IsNull(browser.LastOpened);
+        foreach (var repository in new[] { "o/a", "o/b" })
+        {
+            switch (section)
+            {
+                case "Issues":
+                    issues.Verify(c => c.GetIssuesAsync(Account, repository, null, It.IsAny<CancellationToken>()), Times.Once);
+                    break;
+                case "Pull Requests":
+                    pulls.Verify(c => c.GetPullRequestsAsync(Account, repository, null, It.IsAny<CancellationToken>()), Times.Once);
+                    break;
+                case "Actions":
+                    runs.Verify(c => c.GetRunsAsync(Account, repository, null, It.IsAny<CancellationToken>()), Times.Once);
+                    break;
+            }
+        }
+
+        static Task Load(DynamicListPage page) => page switch
+        {
+            RepositoryIssuesPage issuesPage => issuesPage.CurrentLoad,
+            RepositoryPullRequestsPage pullsPage => pullsPage.CurrentLoad,
+            ActionsPage actionsPage => actionsPage.CurrentLoad,
+            _ => throw new InvalidOperationException("Unexpected repository section"),
+        };
     }
 
     [TestMethod]

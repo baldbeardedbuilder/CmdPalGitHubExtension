@@ -47,15 +47,14 @@ public class ActionsViewTests
         CollectionAssert.AreEqual(RepositorySections, repository.GetItems().Select(section => section.Title).ToArray());
         var command = repository.GetItems().Single(i => i.Title == "Actions").Command;
 
-        Assert.IsInstanceOfType<OpenActionsCommand>(command).Invoke();
-        var actions = (ActionsPage)provider.GetCommand(ActionsPage.PageId)!;
+        var actions = Assert.IsInstanceOfType<ActionsPage>(command);
         actions.GetItems();
         await actions.CurrentLoad;
 
         Assert.AreEqual("CI", actions.GetItems().Single().Title);
         client.Verify(c => c.GetRunsAsync(Account, "o/r", null, It.IsAny<CancellationToken>()), Times.Once);
-        Assert.IsInstanceOfType<OpenActionsCommand>(item.MoreCommands.OfType<CommandContextItem>()
-            .Single(c => c.Command is OpenActionsCommand).Command);
+        Assert.AreSame(actions, item.MoreCommands.OfType<CommandContextItem>()
+            .Single(c => c.Command is ActionsPage).Command);
         auth.SignOut();
         Assert.IsEmpty(repository.GetItems());
         Assert.AreEqual("Repository", repository.Title);

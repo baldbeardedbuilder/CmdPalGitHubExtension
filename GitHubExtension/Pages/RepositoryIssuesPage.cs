@@ -54,6 +54,14 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         }
     }
 
+    internal RepositoryIssuesPage ForRepository(string repository) =>
+        new(_auth, _client, _browser, _time)
+        {
+            Id = $"{PageId}.{Uri.EscapeDataString(repository)}",
+            Title = $"{repository} issues",
+            _repository = repository,
+        };
+
     internal ICommandResult Open(string repository)
     {
         lock (_lock)
