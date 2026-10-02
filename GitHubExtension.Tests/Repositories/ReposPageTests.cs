@@ -2,8 +2,11 @@
 // Bald Bearded Builder LLC licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using BaldBeardedBuilder.CmdPal.GitHub.Pages;
 using BaldBeardedBuilder.CmdPal.GitHub.Commands;
+using BaldBeardedBuilder.CmdPal.GitHub.Issues;
+using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
+using BaldBeardedBuilder.CmdPal.GitHub.Pages;
+using BaldBeardedBuilder.CmdPal.GitHub.PullRequests;
 using BaldBeardedBuilder.CmdPal.GitHub.Repositories;
 using Microsoft.CommandPalette.Extensions.Toolkit;
 
@@ -15,6 +18,8 @@ public class ReposPageTests
     private static readonly GitHubAccount Account = new(GitHubHost.GitHubDotCom, "octocat", "t");
     private static readonly string[] LocalThenRemote = ["octocat/power-tools", "microsoft/PowerToys"];
     private static readonly string[] RepositorySections = ["o/a", "Issues", "Pull Requests", "Actions", "Discussions"];
+    private static readonly string[] RepositorySectionsForToolkit = ["octocat/toolkit", "Issues", "Pull Requests", "Actions", "Discussions"];
+    private static readonly string[] RepositoryBrowserActions = ["Open issues", "Open pull requests"];
 
     [TestMethod]
     public async Task GetItems_LoadsYourRepos()
@@ -122,9 +127,7 @@ public class ReposPageTests
         Assert.IsNull(browser.LastOpened);
         Assert.AreEqual("o/a", page.RepositoryPage.Title);
         Assert.AreEqual("Search in o/a...", page.RepositoryPage.PlaceholderText);
-        CollectionAssert.AreEqual(
-            RepositorySections,
-            page.RepositoryPage.GetItems().Select(i => i.Title).ToArray());
+        CollectionAssert.AreEqual(RepositorySections, page.RepositoryPage.GetItems().Select(i => i.Title).ToArray());
     }
 
     [TestMethod]
@@ -139,6 +142,79 @@ public class ReposPageTests
         ((InvokableCommand)command.Command!).Invoke();
 
         Assert.AreEqual(new Uri("https://github.com/o/a"), browser.LastOpened);
+    }
+
+    [TestMethod]
+    public async Task RepositoryContextActions_PreserveBrowserLinksForIssuesAndPullRequests()
+    {
+        using var page = CreatePage(Client([RepoFormattingTests.Repo("octocat/toolkit")]).Object, out var browser);
+        page.GetItems();
+        await page.CurrentLoad;
+
+        var item = Assert.IsInstanceOfType<RepoItem>(page.GetItems().Single());
+        var browseCommands = item.MoreCommands
+            .OfType<CommandContextItem>()
+            .Select(context => context.Command)
+            .OfType<OpenInBrowserCommand>()
+            .Where(command => command.Name is "Open issues" or "Open pull requests")
+            .ToArray();
+
+        CollectionAssert.AreEqual(RepositoryBrowserActions, browseCommands.Select(command => command.Name).ToArray());
+        browseCommands[0].Invoke();
+        Assert.AreEqual(new Uri("https://github.com/octocat/toolkit/issues"), browser.LastOpened);
+        browseCommands[1].Invoke();
+        Assert.AreEqual(new Uri("https://github.com/octocat/toolkit/pulls"), browser.LastOpened);
+    }
+
+    [TestMethod]
+    public async Task RepositoryMenu_IssueAndPullRequestSectionsOpenTheirCommandPaletteLists()
+    {
+        var issue = new GitHubIssue(1, "Bug", null, SubjectState.Open, new Uri("https://github.com/octocat/toolkit/issues/1"), DateTimeOffset.UtcNow, "octocat", [], ["bug"], 0);
+        var pullRequest = new GitHubPullRequest
+        {
+            Number = 2,
+            Title = "Feature",
+            WebUrl = new Uri("https://github.com/octocat/toolkit/pull/2"),
+            State = SubjectState.Open,
+            HeadBranch = "feature",
+            BaseBranch = "main",
+        };
+        var issuesClient = new Mock<IIssuesClient>();
+        issuesClient.Setup(c => c.GetIssuesAsync(Account, "octocat/toolkit", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new IssuesPageResult([issue], null));
+        var pullRequestsClient = new Mock<IPullRequestsClient>();
+        pullRequestsClient.Setup(c => c.GetPullRequestsAsync(Account, "octocat/toolkit", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PullRequestsPageResult([pullRequest], null));
+        var repositoriesClient = Client([RepoFormattingTests.Repo("octocat/toolkit")]);
+        using var page = CreatePage(
+            repositoriesClient.Object,
+            out _,
+            issuesClient.Object,
+            pullRequestsClient.Object,
+            out var issuesPage,
+            out var pullRequestsPage,
+            out var repositoryPage);
+        page.GetItems();
+        await page.CurrentLoad;
+        ((InvokableCommand)page.GetItems().Single().Command!).Invoke();
+
+        Assert.AreEqual("octocat/toolkit", repositoryPage.Title);
+        var sections = repositoryPage.GetItems();
+        CollectionAssert.AreEqual(
+            RepositorySectionsForToolkit,
+            sections.Select(area => area.Title).ToArray());
+
+        ((InvokableCommand)sections.Single(item => item.Title == "Issues").Command!).Invoke();
+        await issuesPage.CurrentLoad;
+        Assert.AreEqual("octocat/toolkit issues", issuesPage.Title);
+        Assert.AreEqual("#1 Bug", issuesPage.GetItems().Single().Title);
+        issuesClient.Verify(c => c.GetIssuesAsync(Account, "octocat/toolkit", null, It.IsAny<CancellationToken>()), Times.Once);
+
+        ((InvokableCommand)sections.Single(item => item.Title == "Pull Requests").Command!).Invoke();
+        await pullRequestsPage.CurrentLoad;
+        Assert.AreEqual("octocat/toolkit pull requests", pullRequestsPage.Title);
+        Assert.AreEqual("#2 Feature", pullRequestsPage.GetItems().Single().Title);
+        pullRequestsClient.Verify(c => c.GetPullRequestsAsync(Account, "octocat/toolkit", null, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]
@@ -227,11 +303,41 @@ public class ReposPageTests
     }
 
     private static ReposPage CreatePage(IRepositoriesClient client, out FakeBrowser browser)
+        => CreatePage(
+            client,
+            out browser,
+            Mock.Of<IIssuesClient>(),
+            Mock.Of<IPullRequestsClient>(),
+            out _,
+            out _,
+            out _);
+
+    private static ReposPage CreatePage(
+        IRepositoriesClient client,
+        out FakeBrowser browser,
+        IIssuesClient issuesClient,
+        IPullRequestsClient pullRequestsClient,
+        out RepositoryIssuesPage issuesPage,
+        out RepositoryPullRequestsPage pullRequestsPage,
+        out RepositoryPage repositoryPage)
     {
         var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(), new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
         browser = new FakeBrowser(_ => null);
         var time = new Mock<TimeProvider>();
         time.Setup(t => t.GetUtcNow()).Returns(new DateTimeOffset(2025, 6, 1, 12, 0, 0, TimeSpan.Zero));
-        return new ReposPage(auth, client, browser, time.Object, TimeSpan.Zero);
+        issuesPage = new RepositoryIssuesPage(auth, issuesClient, browser, time.Object);
+        pullRequestsPage = new RepositoryPullRequestsPage(auth, pullRequestsClient, browser, time.Object);
+        var page = new ReposPage(auth, client, browser, issuesPage, pullRequestsPage, time.Object, TimeSpan.Zero);
+        repositoryPage = page.RepositoryPage;
+        return page;
     }
+
+    private static ReposPage CreatePage(
+        IRepositoriesClient client,
+        out FakeBrowser browser,
+        IIssuesClient issuesClient,
+        IPullRequestsClient pullRequestsClient,
+        out RepositoryIssuesPage issuesPage,
+        out RepositoryPullRequestsPage pullRequestsPage)
+        => CreatePage(client, out browser, issuesClient, pullRequestsClient, out issuesPage, out pullRequestsPage, out _);
 }

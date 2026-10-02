@@ -11,16 +11,56 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Issues;
 
 internal interface IIssuesClient
 {
+    Task<IssuesPageResult> GetIssuesAsync(GitHubAccount account, string repository, Uri? page, CancellationToken cancellationToken);
+
     Task<GitHubIssue> GetIssueAsync(GitHubAccount account, Uri issueApiUrl, CancellationToken cancellationToken);
 }
 
 internal sealed class IssuesClient(HttpClient httpClient) : IIssuesClient
 {
+    internal const int PageSize = 100;
+
+    public async Task<IssuesPageResult> GetIssuesAsync(
+        GitHubAccount account,
+        string repository,
+        Uri? page,
+        CancellationToken cancellationToken)
+    {
+        var uri = page ?? RepositoryIssuesUri(account, repository);
+        using var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken).ConfigureAwait(false);
+        using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
+        return new IssuesPageResult(ParseIssues(json.RootElement), NextPage(response));
+    }
+
     public async Task<GitHubIssue> GetIssueAsync(GitHubAccount account, Uri issueApiUrl, CancellationToken cancellationToken)
     {
         using var response = await SendAsync(httpClient, account, HttpMethod.Get, issueApiUrl, cancellationToken).ConfigureAwait(false);
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
         return ParseIssue(json.RootElement);
+    }
+
+    internal static List<GitHubIssue> ParseIssues(JsonElement array)
+    {
+        if (array.ValueKind != JsonValueKind.Array)
+        {
+            throw new GitHubApiException("GitHub sent back an issue list we couldn't read.");
+        }
+
+        var issues = new List<GitHubIssue>();
+        foreach (var element in array.EnumerateArray())
+        {
+            if (element.ValueKind != JsonValueKind.Object)
+            {
+                throw new GitHubApiException("GitHub sent back an issue we couldn't read.");
+            }
+
+            if (!element.TryGetProperty("pull_request", out _))
+            {
+                issues.Add(ParseIssue(element));
+            }
+        }
+
+        return issues;
     }
 
     internal static GitHubIssue ParseIssue(JsonElement element)
@@ -47,6 +87,19 @@ internal sealed class IssuesClient(HttpClient httpClient) : IIssuesClient
             GetInt(element, "comments"));
     }
 
+    private static Uri RepositoryIssuesUri(GitHubAccount account, string repository)
+    {
+        var parts = repository.Split('/');
+        if (parts.Length != 2 || parts.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new GitHubApiException("The repository name must be in owner/name format.");
+        }
+
+        return new Uri(
+            account.Host.ApiUrl,
+            $"repos/{Uri.EscapeDataString(parts[0])}/{Uri.EscapeDataString(parts[1])}/issues?state=all&sort=created&direction=desc&per_page={PageSize}");
+    }
+
     private static string[] GetNames(JsonElement element, string propertyName, string valueName)
     {
         if (!element.TryGetProperty(propertyName, out var values) || values.ValueKind != JsonValueKind.Array)
@@ -61,3 +114,5 @@ internal sealed class IssuesClient(HttpClient httpClient) : IIssuesClient
             .ToArray();
     }
 }
+
+internal sealed record IssuesPageResult(IReadOnlyList<GitHubIssue> Issues, Uri? NextPage);

@@ -14,12 +14,20 @@ internal sealed partial class RepositoryPage : ListPage
 
     private readonly IBrowserLauncher _browser;
     private readonly ActionsPage? _actions;
+    private readonly RepositoryIssuesPage? _issuesPage;
+    private readonly RepositoryPullRequestsPage? _pullRequestsPage;
     private IListItem[] _items = [];
 
-    public RepositoryPage(IBrowserLauncher browser, ActionsPage? actions)
+    public RepositoryPage(
+        IBrowserLauncher browser,
+        ActionsPage? actions,
+        RepositoryIssuesPage? issuesPage = null,
+        RepositoryPullRequestsPage? pullRequestsPage = null)
     {
         _browser = browser;
         _actions = actions;
+        _issuesPage = issuesPage;
+        _pullRequestsPage = pullRequestsPage;
         Id = PageId;
         Name = "Open";
         Title = "Repository";
@@ -46,13 +54,21 @@ internal sealed partial class RepositoryPage : ListPage
         _items =
         [
             new ListItem(open) { Title = repository.FullName, Subtitle = repository.Description ?? string.Empty, Icon = Icons.Repos, MoreCommands = more },
-            new ListItem(new OpenInBrowserCommand(_browser, new Uri(repoBase + "issues"), "Open on GitHub", Icons.Issues))
+            new ListItem(_issuesPage is null
+                ? new OpenInBrowserCommand(_browser, new Uri(repoBase + "issues"), "Open on GitHub", Icons.Issues)
+                : new BrowseRepositoryIssuesCommand(_issuesPage, repository.FullName))
             {
-                Title = "Issues", Subtitle = "Open issues on GitHub", Icon = Icons.Issues, MoreCommands = more,
+                Title = "Issues", Subtitle = _issuesPage is null ? "Open issues on GitHub" : $"Browse issues in {repository.FullName}",
+                Icon = Icons.Issues, MoreCommands = more,
             },
-            new ListItem(new OpenInBrowserCommand(_browser, new Uri(repoBase + "pulls"), "Open on GitHub", Icons.PullRequests))
+            new ListItem(_pullRequestsPage is null
+                ? new OpenInBrowserCommand(_browser, new Uri(repoBase + "pulls"), "Open on GitHub", Icons.PullRequests)
+                : new BrowseRepositoryPullRequestsCommand(_pullRequestsPage, repository.FullName))
             {
-                Title = "Pull Requests", Subtitle = "Open pull requests on GitHub", Icon = Icons.PullRequests, MoreCommands = more,
+                Title = "Pull Requests", Subtitle = _pullRequestsPage is null
+                    ? "Open pull requests on GitHub"
+                    : $"Browse pull requests in {repository.FullName}",
+                Icon = Icons.PullRequests, MoreCommands = more,
             },
             new ListItem(actions)
             {

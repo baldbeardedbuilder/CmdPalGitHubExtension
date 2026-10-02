@@ -9,6 +9,7 @@ using BaldBeardedBuilder.CmdPal.GitHub.Codespaces;
 using BaldBeardedBuilder.CmdPal.GitHub.Issues;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
+using BaldBeardedBuilder.CmdPal.GitHub.PullRequests;
 using BaldBeardedBuilder.CmdPal.GitHub.Repositories;
 using Microsoft.CommandPalette.Extensions.Toolkit;
 
@@ -202,7 +203,9 @@ public sealed class PageNotificationTests
                     .ReturnsAsync(new RepositoriesPageResult([new GitHubRepository("o/r", WebUrl, "Test repo", false, false, false, "C#", 0, 0, Now, null)], NextPage));
                 repos.Setup(c => c.SearchAsync(Account, It.IsAny<string>(), It.IsAny<CancellationToken>()))
                     .ReturnsAsync([]);
-                var reposPage = new ReposPage(auth, repos.Object, browser, searchDelay: TimeSpan.Zero);
+                var issuesPage = new RepositoryIssuesPage(auth, Mock.Of<IIssuesClient>(), browser);
+                var pullRequestsPage = new RepositoryPullRequestsPage(auth, Mock.Of<IPullRequestsClient>(), browser);
+                var reposPage = new ReposPage(auth, repos.Object, browser, issuesPage, pullRequestsPage, searchDelay: TimeSpan.Zero);
                 return (reposPage, () => reposPage.CurrentLoad, reposPage.RefreshAsync);
             case "notifications":
                 var notifications = new Mock<INotificationsClient>();

@@ -9,6 +9,7 @@ using BaldBeardedBuilder.CmdPal.GitHub.Codespaces;
 using BaldBeardedBuilder.CmdPal.GitHub.Issues;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
+using BaldBeardedBuilder.CmdPal.GitHub.PullRequests;
 using BaldBeardedBuilder.CmdPal.GitHub.Repositories;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub;
@@ -19,6 +20,8 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
     private readonly SignInPage _signInPage;
     private readonly NotificationsPage _notificationsPage;
     private readonly IssueDetailsPage _issueDetailsPage;
+    private readonly RepositoryIssuesPage _repositoryIssuesPage;
+    private readonly RepositoryPullRequestsPage _repositoryPullRequestsPage;
     private readonly ReposPage _reposPage;
     private readonly AgentsPage _agentsPage;
     private readonly ActionsPage _actionsPage;
@@ -40,18 +43,28 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         IIssuesClient? issuesClient = null,
         ICodespacesClient? codespacesClient = null,
         IActionsClient? actionsClient = null,
-        IAgentsClient? agentsClient = null)
+        IAgentsClient? agentsClient = null,
+        IPullRequestsClient? pullRequestsClient = null)
     {
         _auth = auth;
         browser ??= new ShellBrowserLauncher();
         HttpClient? http = null;
         HttpClient Http() => http ??= new HttpClient();
         _signInPage = new SignInPage(auth, logoProvider);
-        _issueDetailsPage = new IssueDetailsPage(auth, issuesClient ?? new IssuesClient(Http()), browser);
+        issuesClient ??= new IssuesClient(Http());
+        _issueDetailsPage = new IssueDetailsPage(auth, issuesClient, browser);
+        _repositoryIssuesPage = new RepositoryIssuesPage(auth, issuesClient, browser);
+        _repositoryPullRequestsPage = new RepositoryPullRequestsPage(auth, pullRequestsClient ?? new PullRequestsClient(Http()), browser);
         _notificationsPage = new NotificationsPage(auth, notificationsClient ?? new NotificationsClient(Http()), browser, issueDetails: _issueDetailsPage);
         _agentsPage = new AgentsPage(auth, agentsClient ?? new AgentsClient(Http()), browser);
         _actionsPage = new ActionsPage(auth, actionsClient ?? new ActionsClient(Http()), browser);
-        _reposPage = new ReposPage(auth, repositoriesClient ?? new RepositoriesClient(Http()), browser, actions: _actionsPage);
+        _reposPage = new ReposPage(
+            auth,
+            repositoriesClient ?? new RepositoriesClient(Http()),
+            browser,
+            _repositoryIssuesPage,
+            _repositoryPullRequestsPage,
+            actions: _actionsPage);
         _codespacesPage = new CodespacesPage(auth, codespacesClient ?? new CodespacesClient(Http()), browser);
         _homePage = new HomePage(auth, _notificationsPage, _reposPage, _agentsPage, _codespacesPage);
 
@@ -79,6 +92,8 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         HomePage.PageId => _homePage,
         NotificationsPage.PageId => _notificationsPage,
         IssueDetailsPage.PageId => _issueDetailsPage,
+        RepositoryIssuesPage.PageId => _repositoryIssuesPage,
+        RepositoryPullRequestsPage.PageId => _repositoryPullRequestsPage,
         ReposPage.PageId => _reposPage,
         RepositoryPage.PageId => _reposPage.RepositoryPage,
         AgentsPage.PageId => _agentsPage,
@@ -94,6 +109,8 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         _agentsPage.Dispose();
         _actionsPage.Dispose();
         _codespacesPage.Dispose();
+        _repositoryIssuesPage.Dispose();
+        _repositoryPullRequestsPage.Dispose();
         base.Dispose();
         GC.SuppressFinalize(this);
     }

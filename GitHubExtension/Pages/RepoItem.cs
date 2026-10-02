@@ -13,7 +13,11 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 /// </summary>
 internal sealed partial class RepoItem : ListItem
 {
-    public RepoItem(ReposPage page, GitHubRepository repository, IBrowserLauncher browser, DateTimeOffset now)
+    public RepoItem(
+        ReposPage page,
+        GitHubRepository repository,
+        IBrowserLauncher browser,
+        DateTimeOffset now)
     {
         Repository = repository;
         Command = new OpenRepositoryCommand(page.RepositoryPage, repository);
