@@ -21,6 +21,7 @@ internal sealed partial class RepositoryPage : ListPage
     public RepositoryPage(
         IBrowserLauncher browser,
         ActionsPage? actions,
+        GitHubRepository repository,
         RepositoryIssuesPage? issuesPage = null,
         RepositoryPullRequestsPage? pullRequestsPage = null)
     {
@@ -28,14 +29,13 @@ internal sealed partial class RepositoryPage : ListPage
         _actions = actions;
         _issuesPage = issuesPage;
         _pullRequestsPage = pullRequestsPage;
-        Id = PageId;
+        Id = $"{PageId}.{Uri.EscapeDataString(repository.FullName)}";
         Name = "Open";
-        Title = "Repository";
         Icon = Icons.Repos;
-        PlaceholderText = "Search repository sections...";
+        SetRepository(repository);
     }
 
-    internal ICommandResult OpenRepository(GitHubRepository repository)
+    private void SetRepository(GitHubRepository repository)
     {
         Title = repository.FullName;
         PlaceholderText = $"Search in {repository.FullName}...";
@@ -81,7 +81,6 @@ internal sealed partial class RepositoryPage : ListPage
             },
         ];
         RaiseItemsChanged();
-        return CommandResult.GoToPage(new GoToPageArgs { PageId = PageId });
     }
 
     public override IListItem[] GetItems() => _items;
