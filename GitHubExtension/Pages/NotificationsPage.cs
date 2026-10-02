@@ -326,7 +326,7 @@ internal sealed partial class NotificationsPage : DynamicListPage
                         }
                     }
 
-                    item.SetSubjectError(ex.Message);
+                    item.SetSubjectError(ex.Message, ex.AuthorizeUrl);
                 }
                 finally
                 {

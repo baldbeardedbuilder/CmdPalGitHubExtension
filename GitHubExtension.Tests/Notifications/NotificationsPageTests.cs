@@ -188,6 +188,28 @@ public class NotificationsPageTests
     }
 
     [TestMethod]
+    public async Task PullRequest_SsoFailureOffersAuthorizeLink()
+    {
+        var api = new Uri("https://api.github.com/repos/o/r/pulls/7");
+        var authorize = new Uri("https://github.com/orgs/o/sso?authorization_request=x");
+        var client = new Mock<INotificationsClient>();
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationsPageResult([NotificationParsingTests.Notification("1", "PullRequest", api)], null));
+        client.Setup(c => c.GetSubjectAsync(Account, api, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new GitHubApiException("SSO needed.", authorizeUrl: authorize));
+        var page = CreatePage(client.Object, out _);
+        page.GetItems();
+        await page.CurrentLoad;
+
+        var item = (NotificationItem)page.GetItems().Single();
+        Assert.AreEqual("SSO needed.", item.Details!.Body);
+        var link = (DetailsLink)item.Details.Metadata.Single().Data;
+        Assert.AreEqual(authorize, link.Link);
+        Assert.AreEqual(authorize, item.AuthorizeUrl);
+        Assert.AreEqual("Authorize single sign-on", ((CommandContextItem)item.MoreCommands[0]).Command!.Name);
+    }
+
+    [TestMethod]
     public async Task Issue_DoesNotHavePullRequestDetails()
     {
         var client = new Mock<INotificationsClient>();

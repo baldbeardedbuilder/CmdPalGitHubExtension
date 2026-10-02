@@ -49,6 +49,8 @@ Failed GitHub REST calls write diagnostic messages to Command Palette's logs. Ty
 
 Log entries include the API host and path, HTTP status, GitHub request ID, rate-limit metadata, and whether GitHub sent an SSO header. Network failures and invalid JSON are logged too. Tokens, authorization headers, URL queries, and response bodies aren't logged. API paths can contain private repository names, so review logs before sharing them.
 
+If an organization uses SAML single sign-on and hasn't authorized the extension yet, the pull request preview says so and links to GitHub's authorization page. You can also use **More > Authorize single sign-on**. Approve it, then refresh notifications. If your org restricts OAuth apps, an org owner may need to approve the app first.
+
 ## Building with your own OAuth app
 
 The github.com sign in needs an OAuth app. Official builds have one baked in. Local builds need yours.

@@ -167,7 +167,42 @@ public sealed class GitHubRestTests
         response.Headers.Add("X-GitHub-Request-Id", "test-request");
         response.Headers.Add("X-RateLimit-Remaining", "0");
         response.Headers.Add("X-RateLimit-Reset", "1790975000");
-        response.Headers.Add("X-GitHub-SSO", "required; url=https://github.com/orgs/private/sso?secret-sso");
+        response.Headers.Add("X-GitHub-SSO", "partial-results; organizations=21955855");
+        return response;
+    }
+
+    [TestMethod]
+    public async Task SendAsync_SsoRequiredThrowsAuthorizeUrl()
+    {
+        var authorize = "https://github.com/orgs/microsoft/sso?authorization_request=secret";
+        using var http = new HttpClient(new StubHandler(_ => SsoResponse($"required; url={authorize}")));
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            GitHubRest.SendAsync(http, Account, HttpMethod.Get, Endpoint, TestContext.CancellationToken, logError: _ => { }));
+
+        Assert.AreEqual("The microsoft organization requires SAML single sign-on. Authorize this app for microsoft, then refresh.", error.Message);
+        Assert.AreEqual(new Uri(authorize), error.AuthorizeUrl);
+    }
+
+    [TestMethod]
+    [DataRow("required")]
+    [DataRow("required; url=https://evil.example.com/orgs/microsoft/sso")]
+    [DataRow("required; url=http://github.com/orgs/microsoft/sso")]
+    public async Task SendAsync_SsoRequiredWithoutTrustedUrlHasNoLink(string header)
+    {
+        using var http = new HttpClient(new StubHandler(_ => SsoResponse(header)));
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            GitHubRest.SendAsync(http, Account, HttpMethod.Get, Endpoint, TestContext.CancellationToken, logError: _ => { }));
+
+        Assert.AreEqual("An organization requires SAML single sign-on. Authorize this app for it on GitHub, then refresh.", error.Message);
+        Assert.IsNull(error.AuthorizeUrl);
+    }
+
+    private static HttpResponseMessage SsoResponse(string header)
+    {
+        var response = new HttpResponseMessage(HttpStatusCode.Forbidden);
+        response.Headers.Add("X-GitHub-SSO", header);
         return response;
     }
 

@@ -46,6 +46,8 @@ internal sealed partial class NotificationItem : ListItem
 
     public SubjectDetails? Subject => _subject;
 
+    public Uri? AuthorizeUrl { get; private set; }
+
     public string SearchText => string.Join(
         ' ',
         Notification.Title,
@@ -67,6 +69,7 @@ internal sealed partial class NotificationItem : ListItem
     public void ApplySubject(SubjectDetails subject)
     {
         _subject = subject;
+        AuthorizeUrl = null;
         if (subject.WebUrl is { } url)
         {
             WebUrl = url;
@@ -82,12 +85,15 @@ internal sealed partial class NotificationItem : ListItem
         Refresh();
     }
 
-    public void SetSubjectError(string message)
+    public void SetSubjectError(string message, Uri? authorizeUrl = null)
     {
+        AuthorizeUrl = authorizeUrl;
         if (Notification.SubjectType == "PullRequest")
         {
-            Details = PullRequestDetails.Unavailable(Notification.Title, message);
+            Details = PullRequestDetails.Unavailable(Notification.Title, message, authorizeUrl);
         }
+
+        Refresh();
     }
 
     private void Refresh()
@@ -96,6 +102,11 @@ internal sealed partial class NotificationItem : ListItem
         Tags = NotificationFormatting.StateTag(Notification.SubjectType, _subject?.State ?? SubjectState.Unknown) is { } tag ? [tag] : [];
 
         var more = new List<IContextItem>();
+        if (AuthorizeUrl is { } authorize)
+        {
+            more.Add(new CommandContextItem(new OpenInBrowserCommand(_browser, authorize, "Authorize single sign-on", Icons.Authorize)));
+        }
+
         more.Add(new CommandContextItem(new OpenInBrowserCommand(
             _browser,
             WebUrl,
