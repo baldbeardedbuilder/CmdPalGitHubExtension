@@ -43,6 +43,12 @@ Open Command Palette, type **GitHub**, and pick it.
 
 To sign out, open the extension and pick **Sign out**.
 
+## Troubleshooting
+
+Failed GitHub REST calls write diagnostic messages to Command Palette's logs. Type **logs** in Command Palette to view them. Refresh notifications to retry a failed PR lookup; the preview now shows the API error instead of hiding it behind a generic message.
+
+Log entries include the API host and path, HTTP status, GitHub request ID, rate-limit metadata, and whether GitHub sent an SSO header. Network failures and invalid JSON are logged too. Tokens, authorization headers, URL queries, and response bodies aren't logged. API paths can contain private repository names, so review logs before sharing them.
+
 ## Building with your own OAuth app
 
 The github.com sign in needs an OAuth app. Official builds have one baked in. Local builds need yours.

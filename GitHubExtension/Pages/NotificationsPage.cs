@@ -302,6 +302,11 @@ internal sealed partial class NotificationsPage : DynamicListPage
 
                     if (details is not null)
                     {
+                        if (item.Notification.SubjectType == "PullRequest" && details.PullRequest is null)
+                        {
+                            GitHubRest.LogError($"GitHub API error: pull request details missing; endpoint={GitHubRest.LogEndpoint(item.Notification.SubjectApiUrl)}.");
+                        }
+
                         item.ApplySubject(details);
                     }
                     else

@@ -2,7 +2,7 @@
 
 **GitHub extension for Microsoft Command Palette**
 
-*Last updated: October 1, 2026*
+*Last updated: October 2, 2026*
 
 ## The short version
 
@@ -12,7 +12,9 @@ We don't collect anything. No telemetry, no analytics, no tracking. The extensio
 
 When you sign in, the extension saves your GitHub host, username, and access token in [Windows Credential Locker](https://learn.microsoft.com/windows/apps/develop/security/credential-locker) on your device. It stays there until you sign out, which deletes it.
 
-Nothing is written to plain files, and nothing leaves your machine except requests to GitHub.
+Credentials aren't written to plain files. Failed GitHub REST calls write diagnostic messages to Command Palette's local logs, including API hosts and paths (which can contain private repository names), HTTP status codes, GitHub request IDs, rate-limit metadata, and whether an SSO header was present. Network failures and invalid JSON are logged too. Tokens, authorization headers, URL queries, and response bodies aren't logged.
+
+Nothing leaves your machine except requests to GitHub. Review logs before sharing them.
 
 ## Who the extension talks to
 
