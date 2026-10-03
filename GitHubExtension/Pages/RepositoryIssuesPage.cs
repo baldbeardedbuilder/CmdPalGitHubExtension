@@ -24,6 +24,7 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
     private readonly ListLoadState _load = new();
     private Lock _lock => _load.SyncRoot;
     private readonly List<RepositoryIssueItem> _items = [];
+    private readonly List<IssueDetailsPage> _detailsPages = [];
     private string? _repository;
 
     public RepositoryIssuesPage(AuthService auth, IIssuesClient client, IBrowserLauncher browser, TimeProvider? time = null)
@@ -69,11 +70,19 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
 
     internal ICommandResult Open(string repository)
     {
+        IssueDetailsPage[] retired;
         lock (_lock)
         {
+            retired = [.. _detailsPages];
+            _detailsPages.Clear();
             _load.Invalidate(reset: true);
             _repository = repository;
             _items.Clear();
+        }
+
+        foreach (var page in retired)
+        {
+            page.Dispose();
         }
 
         Title = $"{repository} issues";
@@ -158,6 +167,7 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
 
     internal Task RefreshAsync()
     {
+        IssueDetailsPage[] retired;
         lock (_lock)
         {
             if (_repository is null)
@@ -167,6 +177,13 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
 
             _load.Invalidate(reset: true);
             _items.Clear();
+            retired = [.. _detailsPages];
+            _detailsPages.Clear();
+        }
+
+        foreach (var page in retired)
+        {
+            page.Dispose();
         }
 
         HasMoreItems = false;
@@ -176,7 +193,19 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
     public void Dispose()
     {
         _accountSubscription.Dispose();
-        _load.Dispose();
+        IssueDetailsPage[] retired;
+        lock (_lock)
+        {
+            _load.Dispose();
+            retired = [.. _detailsPages];
+            _detailsPages.Clear();
+        }
+
+        foreach (var page in retired)
+        {
+            page.Dispose();
+        }
+
         IsLoading = false;
     }
 
@@ -222,7 +251,14 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
             var known = _items.Select(item => item.Issue.Number).ToHashSet();
             _items.AddRange(result.Issues
                 .Where(issue => known.Add(issue.Number))
-                .Select(issue => new RepositoryIssueItem(issue, repository, _browser, now)));
+                .Select(issue =>
+                {
+                    var details = IssueDetailsPage.ForIssue(_auth, _client, _browser, account,
+                        IssuesClient.IssueUri(account, repository, issue.Number), repository,
+                        (source, updated) => ApplyIssueUpdate(account, repository, source, updated));
+                    _detailsPages.Add(details);
+                    return new RepositoryIssueItem(issue, repository, _browser, now, details);
+                }));
             _load.Succeed(operation, result.NextPage);
         }
     }
@@ -236,11 +272,19 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
 
     private void Reset()
     {
+        IssueDetailsPage[] retired;
         lock (_lock)
         {
             _load.Invalidate(reset: true);
             _repository = null;
             _items.Clear();
+            retired = [.. _detailsPages];
+            _detailsPages.Clear();
+        }
+
+        foreach (var page in retired)
+        {
+            page.Dispose();
         }
 
         HasMoreItems = false;
@@ -249,6 +293,25 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
     }
 
     private void OnAccountChanged(object? sender, EventArgs e) => Reset();
+
+    private void ApplyIssueUpdate(GitHubAccount account, string repository, IssueDetailsPage source, GitHubIssue updated)
+    {
+        var item = new RepositoryIssueItem(updated, repository, _browser, _time.GetUtcNow(), source);
+        lock (_lock)
+        {
+            var index = _items.FindIndex(item => ReferenceEquals(item.Command, source));
+            if (_load.Disposed || !ReferenceEquals(account, _auth.CurrentAccount) || _repository != repository || index < 0)
+            {
+                return;
+            }
+
+            _load.Invalidate();
+            _items[index] = item;
+        }
+
+        IsLoading = false;
+        RaiseItemsChanged();
+    }
 }
 
 internal sealed partial class IssueFilters : Filters
@@ -265,10 +328,10 @@ internal sealed partial class IssueFilters : Filters
 
 internal sealed partial class RepositoryIssueItem : ListItem
 {
-    public RepositoryIssueItem(GitHubIssue issue, string repository, IBrowserLauncher browser, DateTimeOffset now)
+    public RepositoryIssueItem(GitHubIssue issue, string repository, IBrowserLauncher browser, DateTimeOffset now, IssueDetailsPage? details = null)
     {
         Issue = issue;
-        Command = new OpenInBrowserCommand(browser, issue.WebUrl, "Open in browser", Icons.Issues);
+        Command = details is null ? new OpenInBrowserCommand(browser, issue.WebUrl, "Open in browser", Icons.Issues) : details;
         Title = $"#{issue.Number} {issue.Title}";
         Details = new IssueDetails(issue, repository);
         var opened = $"opened {NotificationFormatting.RelativeTime(issue.CreatedAt, now)}";

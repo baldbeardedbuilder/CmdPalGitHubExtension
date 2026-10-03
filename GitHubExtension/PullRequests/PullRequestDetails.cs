@@ -24,13 +24,12 @@ internal sealed partial class PullRequestDetails : Details
         AddText(metadata, "Author", pullRequest.Author is { Length: > 0 } author ? $"@{author}" : null);
         AddText(metadata, "From", pullRequest.HeadBranch);
         AddText(metadata, "Into", pullRequest.BaseBranch);
+        AddTags(metadata, "Assignees", pullRequest.Assignees.Select(name => $"@{name}"));
+        AddTags(metadata, "Reviewers", pullRequest.RequestedReviewers.Select(name => $"@{name}")
+            .Concat(pullRequest.RequestedTeams.Select(team => $"team:{team}")));
         if (pullRequest.Labels.Length > 0)
         {
-            metadata.Add(new DetailsElement
-            {
-                Key = "Labels",
-                Data = new DetailsTags { Tags = [.. pullRequest.Labels.Select(label => new Tag(label))] },
-            });
+            AddTags(metadata, "Labels", pullRequest.Labels);
         }
 
         AddDate(metadata, "Created", pullRequest.CreatedAt);
@@ -89,6 +88,15 @@ internal sealed partial class PullRequestDetails : Details
         if (count is { } value)
         {
             AddText(metadata, key, value.ToString("N0", CultureInfo.CurrentCulture));
+        }
+    }
+
+    private static void AddTags(List<IDetailsElement> metadata, string key, IEnumerable<string> values)
+    {
+        var tags = values.Select(value => new Tag(value)).ToArray();
+        if (tags.Length > 0)
+        {
+            metadata.Add(new DetailsElement { Key = key, Data = new DetailsTags { Tags = tags } });
         }
     }
 }

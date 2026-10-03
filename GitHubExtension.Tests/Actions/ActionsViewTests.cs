@@ -570,23 +570,40 @@ public class ActionsViewTests
     [TestMethod]
     public async Task ForceCancel_RequiresConfirmationAndUsesForceEndpoint()
     {
+        var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reads = 0;
         var client = Client([Run()]);
-        client.SetupSequence(c => c.GetRunAsync(Account, "o/r", 1, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Run())
-            .ReturnsAsync(Run() with { Status = "completed", Conclusion = "cancelled" });
+        client.Setup(c => c.GetRunAsync(Account, "o/r", 1, It.IsAny<CancellationToken>()))
+            .Returns(async (GitHubAccount _, string _, long _, CancellationToken token) =>
+            {
+                var read = Interlocked.Increment(ref reads);
+                if (read == 3)
+                {
+                    waiting.SetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                }
+
+                return read < 5 ? Run() : Run() with { Status = "completed", Conclusion = "cancelled" };
+            });
+        client.Setup(c => c.CancelRunAsync(Account, "o/r", 1, false, It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
         client.Setup(c => c.CancelRunAsync(Account, "o/r", 1, true, It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
         using var page = await Loaded(client.Object);
         var item = Assert.IsInstanceOfType<WorkflowRunItem>(page.GetItems().Single());
+        Assert.IsFalse(item.MoreCommands.OfType<CommandContextItem>().Any(c => c.Command is ForceCancelWorkflowRunPage));
+        var normal = page.CancelAsync(item);
+        await waiting.Task.WaitAsync(TestContext.CancellationToken);
+        item = Assert.IsInstanceOfType<WorkflowRunItem>(page.GetItems().Single());
         var forcePage = Assert.IsInstanceOfType<ForceCancelWorkflowRunPage>(
             item.MoreCommands.OfType<CommandContextItem>().Single(c => c.Command is ForceCancelWorkflowRunPage).Command);
         var confirmation = Assert.IsInstanceOfType<FormContent>(forcePage.GetContent().Single());
 
-        confirmation.SubmitForm("", """{"action":"keep"}""");
-        client.Verify(c => c.GetRunAsync(Account, "o/r", 1, It.IsAny<CancellationToken>()), Times.Never);
-        confirmation.SubmitForm("", """{"action":"force"}""");
-        await page.CurrentCancellation;
+        confirmation.SubmitForm("", """{"action":"confirm"}""");
+        await forcePage.CurrentSubmission;
+        await normal;
 
+        client.Verify(c => c.CancelRunAsync(Account, "o/r", 1, false, It.IsAny<CancellationToken>()), Times.Once);
         client.Verify(c => c.CancelRunAsync(Account, "o/r", 1, true, It.IsAny<CancellationToken>()), Times.Once);
     }
 

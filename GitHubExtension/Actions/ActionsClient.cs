@@ -18,7 +18,7 @@ internal interface IActionsClient
     Task RerunAsync(GitHubAccount account, string repository, long runId, bool failedOnly, bool debugLogging, CancellationToken cancellationToken);
 }
 
-internal sealed class ActionsClient(HttpClient httpClient) : IActionsClient
+internal sealed partial class ActionsClient(HttpClient httpClient) : IActionsClient, IWorkflowCancellationPermissionsClient
 {
     private const string TimeoutMessage = "GitHub took too long to return workflow runs. Try refreshing.";
 
@@ -67,6 +67,12 @@ internal sealed class ActionsClient(HttpClient httpClient) : IActionsClient
                 new Uri(RunUri(account, repository, runId).AbsoluteUri + $"/{endpoint}"), cancellationToken,
                 timeoutMessage: "The cancellation request timed out. It may have been accepted. Refresh the run before trying again.")
                 .ConfigureAwait(false);
+            if (response.StatusCode != System.Net.HttpStatusCode.Accepted)
+            {
+                throw new GitHubApiException("GitHub didn't confirm the cancellation request. Refresh the run before trying again.",
+                    outcomeUnknown: true);
+            }
+
             return true;
         }, name: DiagnosticEvent.Mutation, outcome: _ => DiagnosticOutcome.Accepted, mutationSent: () => sent,
             cancellationToken: cancellationToken).ConfigureAwait(false);

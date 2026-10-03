@@ -32,7 +32,10 @@ internal sealed partial class WorkflowRunItem : ListItem
         if (run.Status is "in_progress" or "queued" or "requested" or "waiting" or "pending")
         {
             commands.Add(new CommandContextItem(new CancelWorkflowRunCommand(page, this)));
-            commands.Add(new CommandContextItem(new ForceCancelWorkflowRunPage(page, this)));
+            if (page.CanForceCancel(run.Id))
+            {
+                commands.Add(new CommandContextItem(new ForceCancelWorkflowRunPage(page, this)));
+            }
         }
 
         if (run.CanRerun)

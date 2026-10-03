@@ -5,6 +5,22 @@ Your notifications, repos, agents, codespaces, and saved queries, one keystroke 
 > [!NOTE]
 > This is early. Sign in, then check notifications, browse repo issues and pull requests, explore agent tasks and codespaces, and open Actions from a repo. Saved queries land next.
 
+## Issue and pull request updates
+
+From an issue, you can close it as completed or not planned, reopen it, assign or remove yourself, and add or remove existing labels. Pull request actions include close or reopen, reviewer requests, assignees, and labels. Each change is confirmed against the current GitHub state before it is sent. Merged pull requests cannot be reopened or closed from the extension. Use the browser link for anything that needs a richer editor.
+
+## Notifications
+
+The notification menu keeps **Done** separate from issue state and thread subscriptions. You can subscribe to a thread, unsubscribe to return to repository notification rules, or ignore it to stop future notifications from that conversation. Ignoring does not mark a notification read or done. Issue changes from a notification refresh that preview from GitHub.
+
+## Repositories
+
+Open **Starred repositories** from the home page to browse your personal starred list. A repository's **Manage star** action shows your star state and lets you star or unstar it. This is your personal state, not the public star count. The GitHub token needs Starring access for these actions.
+
+## Actions
+
+You can cancel a running workflow from its **More** menu. Force cancel is a separate confirmed action, offered when a normal cancellation was accepted but the run remains active. An accepted request does not mean the run has stopped, so the extension checks GitHub for the final state.
+
 ## Install
 
 Releases aren't published yet. Until they are, build it yourself using the steps in [CONTRIBUTING.md](CONTRIBUTING.md).

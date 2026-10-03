@@ -36,6 +36,12 @@ internal sealed record GitHubPullRequest
 
     public string[] Labels { get; init; } = [];
 
+    public string[] Assignees { get; init; } = [];
+
+    public string[] RequestedReviewers { get; init; } = [];
+
+    public string[] RequestedTeams { get; init; } = [];
+
     public DateTimeOffset CreatedAt { get; init; }
 
     public DateTimeOffset UpdatedAt { get; init; }
@@ -78,6 +84,9 @@ internal sealed record GitHubPullRequest
             HeadRef = Text(head, "ref"),
             BaseRef = Text(target, "ref"),
             Labels = labels,
+            Assignees = Names(element, "assignees", "login"),
+            RequestedReviewers = Names(element, "requested_reviewers", "login"),
+            RequestedTeams = Names(element, "requested_teams", "slug"),
             CreatedAt = GetDate(element, "created_at"),
             UpdatedAt = GetDate(element, "updated_at"),
             Commits = Count(element, "commits"),
@@ -98,4 +107,18 @@ internal sealed record GitHubPullRequest
     private static int? Count(JsonElement element, string name) =>
         element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number
         && value.TryGetInt32(out var count) ? count : null;
+
+    private static string[] Names(JsonElement element, string collection, string property)
+    {
+        if (!element.TryGetProperty(collection, out var values) || values.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        return values.EnumerateArray()
+            .Where(item => item.ValueKind == JsonValueKind.Object)
+            .Select(item => GetString(item, property))
+            .OfType<string>()
+            .ToArray();
+    }
 }

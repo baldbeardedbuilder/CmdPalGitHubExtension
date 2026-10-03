@@ -143,6 +143,15 @@ internal sealed partial class NotificationItem : ListItem
         }
 
         more.Add(new CommandContextItem(new MarkNotificationDoneCommand(_page, this)));
+        if (_page.SubscriptionPage(this) is { } subscriptionPage)
+        {
+            more.Add(new CommandContextItem(subscriptionPage));
+        }
+        if (_page.PullRequestActionsPage(this) is { } pullRequestActionsPage)
+        {
+            more.Add(new CommandContextItem(pullRequestActionsPage));
+        }
+
         if (Notification.RepositoryWebUrl is { } repo)
         {
             more.Add(new CommandContextItem(new OpenInBrowserCommand(_browser, repo, "Open repository", Icons.Repos)));

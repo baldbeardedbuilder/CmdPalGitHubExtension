@@ -17,7 +17,7 @@ internal interface IIssuesClient
     Task<GitHubIssue> GetIssueAsync(GitHubAccount account, Uri issueApiUrl, CancellationToken cancellationToken);
 }
 
-internal sealed class IssuesClient(HttpClient httpClient) : IIssuesClient
+internal sealed partial class IssuesClient(HttpClient httpClient) : IIssuesClient, IIssueMutationsClient
 {
     internal const int PageSize = 100;
 

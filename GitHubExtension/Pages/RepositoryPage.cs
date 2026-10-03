@@ -19,6 +19,7 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
     private readonly RepositoryPullRequestsPage? _pullRequestsTemplate;
     private readonly AuthService? _auth;
     private readonly IAgentsClient? _agentsClient;
+    private readonly RepositoryStarPage? _starPage;
     private GitHubRepository _repository;
     private readonly Lock _lock = new();
     private ActionsPage? _actions;
@@ -36,7 +37,8 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
         RepositoryIssuesPage? issuesPage = null,
         RepositoryPullRequestsPage? pullRequestsPage = null,
         AuthService? auth = null,
-        IAgentsClient? agentsClient = null)
+        IAgentsClient? agentsClient = null,
+        RepositoryStarPage? starPage = null)
     {
         _browser = browser;
         _actionsTemplate = actions;
@@ -44,6 +46,7 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
         _pullRequestsTemplate = pullRequestsPage;
         _auth = auth;
         _agentsClient = agentsClient;
+        _starPage = starPage;
         _repository = repository;
         Id = $"{PageId}.{Uri.EscapeDataString(repository.FullName)}";
         Name = "Open";
@@ -90,6 +93,11 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
                 Icon = Icons.Actions, MoreCommands = more,
             },
         };
+        if (_starPage is not null)
+        {
+            items.Add(new ListItem(_starPage) { Title = "Manage star", Subtitle = "Check and change your personal star", Icon = Icons.Repos });
+        }
+
         if (_createAgentTaskPage is not null)
         {
             items.Add(new ListItem(_createAgentTaskPage)

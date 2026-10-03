@@ -16,6 +16,8 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     private readonly IDisposable _accountSubscription;
     private readonly IActionsClient _client;
     private readonly IBrowserLauncher _browser;
+    private readonly MutationExecutor _cancelExecutor;
+    private readonly HashSet<long> _normalCancellationRequested = [];
     private readonly TimeProvider _time;
     private readonly PageEmptyContent _emptyContent;
     private readonly ActionFilters _filters = new();
@@ -28,11 +30,13 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     private ListLoadState.Operation? _cancellationOperation;
     private Task _currentCancellation = Task.CompletedTask;
     private string? _cancellationError;
+    private Uri? _cancellationAuthorizeUrl;
     private int _accountGeneration;
 
     public ActionsPage(AuthService auth, IActionsClient client, IBrowserLauncher browser, TimeProvider? time = null)
     {
         _auth = auth;
+        _cancelExecutor = new MutationExecutor(auth);
         _cancel = new ListLoadState(_lock);
         _client = client;
         _browser = browser;
@@ -138,7 +142,9 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
                 .Cast<IListItem>().ToList();
             if (error is not null && _items.Count > 0)
             {
-                matches.Add(new ListItem(new RefreshActionsCommand(this))
+                matches.Add(new ListItem(_cancellationAuthorizeUrl is { } authorize
+                    ? new OpenInBrowserCommand(_browser, authorize, "Authorize organization access", Icons.Authorize)
+                    : (ICommand)new RefreshActionsCommand(this))
                 {
                     Title = "Couldn't load workflow runs",
                     Subtitle = error,
@@ -182,6 +188,31 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
     internal Task ForceCancelAsync(WorkflowRunItem item) => StartCancellation(item, force: true);
 
+    internal bool CanForceCancel(long runId)
+    {
+        lock (_lock)
+        {
+            return _normalCancellationRequested.Contains(runId);
+        }
+    }
+
+    internal bool IsCancellationContextCurrent(WorkflowRunItem item)
+    {
+        lock (_lock)
+        {
+            return !_load.Disposed && ReferenceEquals(item.Account, _auth.CurrentAccount)
+                && _accountGeneration == item.AccountGeneration && _repository == item.Repository;
+        }
+    }
+
+    internal (string Message, Uri? AuthorizeUrl) CancellationFeedback()
+    {
+        lock (_lock)
+        {
+            return (_cancellationError ?? "GitHub returned a terminal run state. Refresh the list to see the outcome.", _cancellationAuthorizeUrl);
+        }
+    }
+
     internal RerunWorkflowPage RerunPage(string repository, GitHubWorkflowRun run)
     {
         lock (_lock)
@@ -215,6 +246,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
         CancelCancellation();
         ClearRerunPages();
+        _cancelExecutor.Dispose();
         IsLoading = false;
         HasMoreItems = false;
     }
@@ -309,6 +341,11 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
                 return Task.CompletedTask;
             }
 
+            if (force && !_normalCancellationRequested.Contains(item.Run.Id))
+            {
+                return Task.CompletedTask;
+            }
+
             if (_cancellationOperation is not null)
             {
                 if (!force)
@@ -322,6 +359,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
             _cancel.TryBegin(true, out cancellation);
             _cancellationOperation = cancellation;
             _cancellationError = null;
+            _cancellationAuthorizeUrl = null;
             account = currentAccount;
             repository = currentRepository;
             var token = cancellation.Token;
@@ -363,30 +401,108 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     {
         try
         {
-            var current = await _client.GetRunAsync(account, repository, item.Run.Id, token).ConfigureAwait(false);
+            GitHubWorkflowRun? verified = null;
+            async Task<MutationResult<GitHubWorkflowRun>> Reconcile(CancellationToken operationToken)
+            {
+                verified = await _client.GetRunAsync(account, repository, item.Run.Id, operationToken).ConfigureAwait(false);
+                return verified.Status == "completed" ? new(MutationState.Completed, verified)
+                    : IsActive(verified) ? new(MutationState.Pending, verified, "Cancellation was requested or may have been accepted. GitHub hasn't stopped the run yet.")
+                    : new(MutationState.Unknown, verified, "GitHub returned an unknown workflow state. Refresh before retrying.");
+            }
+
+            var result = await _cancelExecutor.ExecuteAsync(account,
+                $"workflow:{repository.ToLowerInvariant()}:{item.Run.Id}:{(force ? "force" : "cancel")}",
+                async operationToken =>
+                {
+                    verified = await _client.GetRunAsync(account, repository, item.Run.Id, operationToken).ConfigureAwait(false);
+                    if (!CanContinue(account, repository, cancellation, operationToken) || !IsActive(verified))
+                    {
+                        return false;
+                    }
+
+                    if (_client is IWorkflowCancellationPermissionsClient permissions
+                        && !await permissions.CanCancelAsync(account, repository, operationToken).ConfigureAwait(false))
+                    {
+                        throw new GitHubApiException("You need repository write access and Actions write permission to cancel this workflow.");
+                    }
+
+                    return CanContinue(account, repository, cancellation, operationToken);
+                },
+                async operationToken =>
+                {
+                    await _client.CancelRunAsync(account, repository, item.Run.Id, force, operationToken).ConfigureAwait(false);
+                    operationToken.ThrowIfCancellationRequested();
+                    if (!CanContinue(account, repository, cancellation, operationToken))
+                    {
+                        return new MutationResult<GitHubWorkflowRun>(MutationState.Stale);
+                    }
+
+                    if (!force)
+                    {
+                        lock (_lock)
+                        {
+                            if (CanContinueLocked(account, repository, cancellation, operationToken))
+                            {
+                                _normalCancellationRequested.Add(item.Run.Id);
+                            }
+                        }
+                    }
+
+                    try
+                    {
+                        return await Reconcile(operationToken).ConfigureAwait(false);
+                    }
+                    catch (GitHubApiException ex)
+                    {
+                        var error = new GitHubApiException(ex.Message, ex, ex.AuthorizeUrl, outcomeUnknown: true);
+                        OperationDiagnostics.CorrelateFailure(ex, error);
+                        throw error;
+                    }
+                }, Reconcile, token).ConfigureAwait(false);
             if (!CanContinue(account, repository, cancellation, token))
             {
                 return;
             }
 
-            UpdateRun(item, current, account, repository, cancellation, token);
-            if (!IsActive(current))
+            if (verified is not null)
+            {
+                UpdateRun(item, verified, account, repository, cancellation, token);
+            }
+
+            if (verified?.Status == "completed")
             {
                 return;
             }
 
-            await _client.CancelRunAsync(account, repository, current.Id, force, token).ConfigureAwait(false);
+            if (result.State is not (MutationState.Pending or MutationState.Completed))
+            {
+                lock (_lock)
+                {
+                    if (CanContinueLocked(account, repository, cancellation, token))
+                    {
+                        _cancellationError = verified is not null && !IsActive(verified)
+                            ? "GitHub returned an unknown workflow state. Refresh before retrying."
+                            : result.Error ?? "Couldn't request cancellation. Refresh to check GitHub before retrying.";
+                        _cancellationAuthorizeUrl = result.AuthorizeUrl;
+                    }
+                }
+
+                return;
+            }
+
             while (CanContinue(account, repository, cancellation, token))
             {
-                current = await _client.GetRunAsync(account, repository, item.Run.Id, token).ConfigureAwait(false);
+                var current = await _client.GetRunAsync(account, repository, item.Run.Id, token).WaitAsync(token).ConfigureAwait(false);
                 if (!CanContinue(account, repository, cancellation, token))
                 {
                     return;
                 }
 
                 UpdateRun(item, current, account, repository, cancellation, token);
-                if (!IsActive(current))
+                if (current.Status == "completed")
                 {
+                    _cancelExecutor.ObserveCompletion(account,
+                        $"workflow:{repository.ToLowerInvariant()}:{item.Run.Id}:{(force ? "force" : "cancel")}");
                     return;
                 }
 
@@ -405,6 +521,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
                 if (publish)
                 {
                     _cancellationError = ex.Message;
+                    _cancellationAuthorizeUrl = ex.AuthorizeUrl;
                 }
             }
 
@@ -485,6 +602,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
             CancelCancellationLocked();
             _cancellationError = null;
+            _normalCancellationRequested.Clear();
             Reset();
             _repository = null;
         }
@@ -499,6 +617,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         _accountGeneration++;
         CancelCancellationLocked();
         _cancellationError = null;
+        _normalCancellationRequested.Clear();
         _load.Invalidate(reset: true);
         _items.Clear();
     }

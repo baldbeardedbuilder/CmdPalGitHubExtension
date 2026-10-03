@@ -5,6 +5,7 @@
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using BaldBeardedBuilder.CmdPal.GitHub.Commands;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
+using BaldBeardedBuilder.CmdPal.GitHub.PullRequests;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 
@@ -22,12 +23,14 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
     private readonly IBrowserLauncher _browser;
     private readonly MutationExecutor _executor;
     private readonly IssueDetailsPage? _issueDetails;
+    private readonly IPullRequestActionsClient? _pullRequestActionsClient;
     private readonly TimeProvider _time;
     private readonly PageEmptyContent _emptyContent;
     private readonly ListLoadState _load = new();
     private Lock _lock => _load.SyncRoot;
     private readonly Dictionary<string, ListLoadState> _mutations = [];
     private readonly Dictionary<string, WeakReference<IssueDetailsPage>> _detailPages = [];
+    private readonly Dictionary<string, PullRequestActionsPage> _pullRequestActionPages = [];
     private readonly List<NotificationItem> _items = [];
     private readonly Dictionary<string, (DateTimeOffset UpdatedAt, SubjectDetails Details)> _subjectCache = [];
     private string? _mutationError;
@@ -41,10 +44,15 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
 
     internal int AccountGeneration => _accountGeneration;
 
-    public NotificationsPage(AuthService auth, INotificationsClient client, IBrowserLauncher browser, TimeProvider? time = null, IssueDetailsPage? issueDetails = null)
+    public NotificationsPage(AuthService auth, INotificationsClient client, IBrowserLauncher browser, TimeProvider? time = null,
+        IssueDetailsPage? issueDetails = null,
+        IThreadSubscriptionsClient? subscriptionsClient = null,
+        IPullRequestActionsClient? pullRequestActionsClient = null)
     {
         _auth = auth;
         _client = client;
+        _subscriptionsClient = subscriptionsClient ?? client as IThreadSubscriptionsClient;
+        _pullRequestActionsClient = pullRequestActionsClient;
         _browser = browser;
         _executor = new MutationExecutor(auth);
         _issueDetails = issueDetails;
@@ -153,6 +161,7 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
 
     public Task RefreshAsync()
     {
+        PullRequestActionsPage[] pullRequestActions;
         lock (_lock)
         {
             if (_load.Disposed)
@@ -161,6 +170,12 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
             }
 
             _load.Invalidate();
+            pullRequestActions = TakePullRequestActionPages();
+        }
+
+        foreach (var page in pullRequestActions)
+        {
+            page.Dispose();
         }
 
         return StartLoad(reset: true);
@@ -424,6 +439,8 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
                             MarkAsRead(item);
                         }
                     };
+                    Action<BaldBeardedBuilder.CmdPal.GitHub.Issues.GitHubIssue> onChanged =
+                        issue => { _ = RefreshAfterIssueMutationAsync(item); };
                     foreach (var key in _detailPages.Where(entry => !entry.Value.TryGetTarget(out _)).Select(entry => entry.Key).ToArray())
                     {
                         _detailPages.Remove(key);
@@ -432,11 +449,11 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
                     if (!_detailPages.TryGetValue(notification.Id, out var reference)
                         || !reference.TryGetTarget(out var details) || details.IsDisposed)
                     {
-                        details = issueDetails.ForNotification(notification.Id, issueApiUrl, notification.RepositoryFullName, onOpened);
+                        details = issueDetails.ForNotification(notification.Id, issueApiUrl, notification.RepositoryFullName, onOpened, onChanged);
                         _detailPages[notification.Id] = new(details);
                     }
 
-                    details.SetNotification(issueApiUrl, notification.RepositoryFullName, onOpened);
+                    details.SetNotification(issueApiUrl, notification.RepositoryFullName, onOpened, onChanged);
                     item.Command = details;
                 }
 
@@ -536,6 +553,8 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
     private void Reset()
     {
         IssueDetailsPage[] details;
+        ThreadSubscriptionPage[] subscriptions;
+        PullRequestActionsPage[] pullRequestActions;
         long revision;
         lock (_lock)
         {
@@ -548,6 +567,8 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
             _accountGeneration++;
             CancelMutations();
             details = TakeDetailPages();
+            subscriptions = TakeSubscriptionPages();
+            pullRequestActions = TakePullRequestActionPages();
             _items.Clear();
             _subjectCache.Clear();
             _mutationError = null;
@@ -556,6 +577,15 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
         }
 
         foreach (var page in details)
+        {
+            page.Dispose();
+        }
+
+        foreach (var page in subscriptions)
+        {
+            page.Dispose();
+        }
+        foreach (var page in pullRequestActions)
         {
             page.Dispose();
         }
@@ -589,6 +619,8 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
     {
         _auth.AccountChanged -= OnAccountChanged;
         IssueDetailsPage[] details;
+        ThreadSubscriptionPage[] subscriptions;
+        PullRequestActionsPage[] pullRequestActions;
         lock (_lock)
         {
             if (_load.Disposed)
@@ -599,11 +631,22 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
             _load.Dispose();
             CancelMutations();
             details = TakeDetailPages();
+            subscriptions = TakeSubscriptionPages();
+            pullRequestActions = TakePullRequestActionPages();
             _items.Clear();
             _subjectCache.Clear();
         }
 
         foreach (var page in details)
+        {
+            page.Dispose();
+        }
+
+        foreach (var page in subscriptions)
+        {
+            page.Dispose();
+        }
+        foreach (var page in pullRequestActions)
         {
             page.Dispose();
         }

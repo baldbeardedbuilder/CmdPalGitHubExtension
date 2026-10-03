@@ -25,7 +25,7 @@ internal interface INotificationsClient
     Task MarkAsDoneAsync(GitHubAccount account, string threadId, CancellationToken cancellationToken);
 }
 
-internal sealed class NotificationsClient(HttpClient httpClient) : INotificationsClient
+internal sealed partial class NotificationsClient(HttpClient httpClient) : INotificationsClient, IThreadSubscriptionsClient
 {
     internal const int PageSize = 50;
 

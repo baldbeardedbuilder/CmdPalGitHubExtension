@@ -49,7 +49,9 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         TimeProvider? time = null,
         TimeSpan? searchDelay = null,
         ActionsPage? actions = null,
-        IAgentsClient? agentsClient = null)
+        IAgentsClient? agentsClient = null,
+        IRepositoryStarsClient? starsClient = null,
+        bool starred = false)
     {
         _auth = auth;
         _client = client;
@@ -57,6 +59,14 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         _repositoryIssuesPage = repositoryIssuesPage;
         _repositoryPullRequestsPage = repositoryPullRequestsPage;
         _agentsClient = agentsClient;
+        _starsClient = starsClient ?? client as IRepositoryStarsClient;
+        _starred = starred;
+        if (starred && _starsClient is null)
+        {
+            throw new ArgumentException("The starred view needs a stars client.", nameof(starsClient));
+        }
+
+        _starExecutor = new MutationExecutor(auth);
         _time = time ?? TimeProvider.System;
         _searchLoad = new ListLoadState(_lock);
         _emptyContent = new PageEmptyContent(Icons.Repos, new RefreshReposCommand(this));
@@ -64,11 +74,11 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         _searchPagination = new PagedListPresentation(Icons.Repos, () => StartSearch(reset: false));
         _searchDelay = searchDelay ?? DefaultSearchDelay;
         Actions = actions;
-        Id = PageId;
+        Id = starred ? StarredPageId : PageId;
         Name = "Open";
-        Title = "Repos";
+        Title = starred ? "Starred repositories" : "Repos";
         Icon = Icons.Repos;
-        PlaceholderText = "Filter repos and search GitHub...";
+        PlaceholderText = starred ? "Filter starred repositories..." : "Filter repos and search GitHub...";
         _auth.AccountChanged += OnAccountChanged;
     }
 
@@ -160,6 +170,11 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         }
 
         var query = SearchText.Trim();
+        if (_starred)
+        {
+            return StarredItems(mine, query, error);
+        }
+
         if (query.Length == 0)
         {
             EmptyContent = error is not null
@@ -235,6 +250,13 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         }
 
         HasMoreItems = query.Length == 0 && hasMore;
+        if (_starred)
+        {
+            HasMoreItems = hasMore;
+            RaiseItemsChanged();
+            return;
+        }
+
         if (query.Length == 0)
         {
             IsLoading = fetching;
@@ -249,7 +271,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
 
     public override void LoadMore()
     {
-        if (SearchText.Trim().Length == 0)
+        if (_starred || SearchText.Trim().Length == 0)
         {
             StartLoad(reset: false);
         }
@@ -280,6 +302,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     {
         _auth.AccountChanged -= OnAccountChanged;
         RepositoryPage[] repositoryPages;
+        RepositoryStarPage[] starPages;
         lock (_lock)
         {
             if (_load.Disposed)
@@ -290,6 +313,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
             _load.Dispose();
             _searchLoad.Dispose();
             repositoryPages = TakeRepositoryPages();
+            starPages = TakeStarPages();
             _mine.Clear();
             _searchResults.Clear();
         }
@@ -299,6 +323,12 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
             page.Dispose();
         }
 
+        foreach (var page in starPages)
+        {
+            page.Dispose();
+        }
+
+        _starExecutor.Dispose();
         IsLoading = false;
         HasMoreItems = false;
     }
@@ -323,7 +353,8 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
                 return existing;
             }
 
-            var page = new RepositoryPage(_browser, Actions, repository, _repositoryIssuesPage, _repositoryPullRequestsPage, _auth, _agentsClient);
+            var page = new RepositoryPage(_browser, Actions, repository, _repositoryIssuesPage, _repositoryPullRequestsPage,
+                _auth, _agentsClient, StarPage(repository, _auth.CurrentAccount, _accountGeneration));
             _repositoryPages[repository.FullName] = new(page);
             return page;
         }
@@ -420,7 +451,9 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
 
     private async Task LoadAsync(GitHubAccount account, ListLoadState.Operation operation)
     {
-        var result = await _client.GetMyRepositoriesAsync(account, operation.Page, operation.Token).ConfigureAwait(false);
+        var result = _starred
+            ? await _starsClient!.GetStarredAsync(account, operation.Page, operation.Token).ConfigureAwait(false)
+            : await _client.GetMyRepositoriesAsync(account, operation.Page, operation.Token).ConfigureAwait(false);
         var now = _time.GetUtcNow();
         lock (_lock)
         {
@@ -448,7 +481,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         bool searching;
         lock (_lock)
         {
-            hasMore = _load.NextPage is not null && SearchText.Trim().Length == 0;
+            hasMore = _load.NextPage is not null && (_starred || SearchText.Trim().Length == 0);
             searching = _searchLoad.Fetching;
         }
 
@@ -462,6 +495,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     private void Reset()
     {
         RepositoryPage[] repositoryPages;
+        RepositoryStarPage[] starPages;
         long revision;
         lock (_lock)
         {
@@ -471,6 +505,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
             }
 
             repositoryPages = TakeRepositoryPages();
+            starPages = TakeStarPages();
             _accountGeneration++;
             _load.Invalidate(reset: true);
             _mine.Clear();
@@ -484,6 +519,11 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         foreach (var repositoryPage in repositoryPages)
         {
             repositoryPage.Reset();
+        }
+
+        foreach (var page in starPages)
+        {
+            page.Dispose();
         }
 
         _load.Publish(revision, () => HasMoreItems = false);
