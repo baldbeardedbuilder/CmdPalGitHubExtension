@@ -26,6 +26,10 @@ internal sealed partial class WorkflowRunItem : ListItem
             new CommandContextItem(new CopyTextCommand(run.WebUrl.AbsoluteUri) { Name = "Copy run URL", Icon = Icons.Copy }),
             new CommandContextItem(new RefreshActionsCommand(page)),
         ];
+        if (run.CanRerun)
+        {
+            MoreCommands = [.. MoreCommands, new CommandContextItem(page.RerunPage(repository, run))];
+        }
     }
 
     public GitHubWorkflowRun Run { get; }
