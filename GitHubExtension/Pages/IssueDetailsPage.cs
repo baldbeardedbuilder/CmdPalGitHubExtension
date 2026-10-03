@@ -31,11 +31,13 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
     private bool _notificationOpened;
     private IssueDetailsForm _form;
 
-    public IssueDetailsPage(AuthService auth, IIssuesClient client, IBrowserLauncher browser)
+    public IssueDetailsPage(AuthService auth, IIssuesClient client, IBrowserLauncher browser, IIssueMutationsClient? mutationsClient = null)
     {
         _auth = auth;
         _client = client;
         _browser = browser;
+        _mutationClient = mutationsClient ?? client as IIssueMutationsClient;
+        _mutations = _mutationClient is null ? null : new IssueMutationSession(auth, _mutationClient);
         Id = PageId;
         Name = "Issue";
         Title = "Issue details";
@@ -46,6 +48,7 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
 
     public override IContent[] GetContent()
     {
+        ActivateIssue();
         ActivateNotification();
         lock (_lock)
         {
@@ -53,16 +56,17 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
         }
     }
 
-    internal IssueDetailsPage ForNotification(string notificationId, Uri issueApiUrl, string repository, Action onOpened)
+    internal IssueDetailsPage ForNotification(string notificationId, Uri issueApiUrl, string repository, Action onOpened, Action<GitHubIssue>? changed = null)
     {
-        return new IssueDetailsPage(_auth, _client, _browser)
+        return new IssueDetailsPage(_auth, _client, _browser, _mutationClient)
         {
             Id = $"{PageId}.{Uri.EscapeDataString(notificationId)}",
             _notification = (issueApiUrl, repository, onOpened),
+            _changed = changed,
         };
     }
 
-    internal void SetNotification(Uri issueApiUrl, string repository, Action onOpened)
+    internal void SetNotification(Uri issueApiUrl, string repository, Action onOpened, Action<GitHubIssue>? changed = null)
     {
         lock (_lock)
         {
@@ -70,6 +74,7 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
             {
                 _notification = (issueApiUrl, repository, onOpened);
                 _notificationOpened = false;
+                _changed = changed;
             }
         }
     }
@@ -90,13 +95,17 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
         ListLoadState.Operation operation;
         lock (_lock)
         {
-            if (_load.Disposed || _auth.CurrentAccount != account)
+            if (_load.Disposed || !ReferenceEquals(_auth.CurrentAccount, account))
             {
                 return;
             }
 
             _load.Invalidate(reset: true);
+            _targetRevision++;
+            _review = null;
+            _choices = null;
             _load.TryBegin(true, out operation);
+            _loadedAccount = account;
             _issueApiUrl = issueApiUrl;
             _repository = repository;
             _issue = null;
@@ -123,6 +132,18 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
 
     internal void Open(GitHubAccount account, Uri issueApiUrl, string repository) =>
         LoadIssue(account, issueApiUrl, repository);
+
+    internal static IssueDetailsPage ForIssue(AuthService auth, IIssuesClient client, IBrowserLauncher browser,
+        GitHubAccount account, Uri issueApiUrl, string repository, Action<IssueDetailsPage, GitHubIssue> changed)
+    {
+        var page = new IssueDetailsPage(auth, client, browser)
+        {
+            Id = $"{PageId}.{Guid.NewGuid():N}",
+            _initialIssue = (account, issueApiUrl, repository),
+        };
+        page._changed = issue => changed(page, issue);
+        return page;
+    }
 
     internal ICommandResult HandleSubmit(string action)
     {
@@ -206,7 +227,7 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
             }
 
             _issue = issue;
-            _form = new IssueDetailsForm(this, IssueDetailsCards.Details(repository, issue));
+            _form = new IssueDetailsForm(this, IssueDetailsCards.Details(repository, issue, _mutations is not null, login: account.Login));
             _load.Succeed(operation, null);
         }
     }
@@ -222,6 +243,11 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
             }
 
             _load.Invalidate(reset: true);
+            _targetRevision++;
+            _review = null;
+            _choices = null;
+            _loadedAccount = null;
+            _initialIssue = null;
             _issueApiUrl = null;
             _issue = null;
             _repository = null;
@@ -245,6 +271,11 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
             }
 
             _load.Dispose();
+            _targetRevision++;
+            _review = null;
+            _choices = null;
+            _loadedAccount = null;
+            _initialIssue = null;
             _issueApiUrl = null;
             _issue = null;
             _repository = null;
@@ -252,6 +283,7 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
             _form = new IssueDetailsForm(this, IssueDetailsCards.SignedOut());
         }
 
+        _mutations?.Dispose();
         IsLoading = false;
     }
 
@@ -265,14 +297,16 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
             TemplateJson = template;
         }
 
-        public override ICommandResult SubmitForm(string inputs, string data) => _page.HandleSubmit(ReadAction(data));
+        public override ICommandResult SubmitForm(string inputs, string data) => _page.Submit(this, inputs, ReadAction(data));
 
         private static string ReadAction(string data)
         {
             try
             {
                 using var json = JsonDocument.Parse(string.IsNullOrEmpty(data) ? "{}" : data);
-                return json.RootElement.TryGetProperty("action", out var action) ? action.GetString() ?? string.Empty : string.Empty;
+                return json.RootElement.ValueKind == JsonValueKind.Object
+                    && json.RootElement.TryGetProperty("action", out var action) && action.ValueKind == JsonValueKind.String
+                    ? action.GetString() ?? string.Empty : string.Empty;
             }
             catch (JsonException)
             {
@@ -286,4 +320,15 @@ internal static class IssueDetailsActions
 {
     public const string OpenInBrowser = "openInBrowser";
     public const string Retry = "retry";
+    public const string CloseCompleted = "closeCompleted";
+    public const string CloseNotPlanned = "closeNotPlanned";
+    public const string Reopen = "reopen";
+    public const string AssignSelf = "assignSelf";
+    public const string RemoveSelf = "removeSelf";
+    public const string AddAssignee = "addAssignee";
+    public const string RemoveAssignee = "removeAssignee";
+    public const string AddLabel = "addLabel";
+    public const string RemoveLabel = "removeLabel";
+    public const string Select = "select";
+    public const string Confirm = "confirmIssueChange";
 }

@@ -91,6 +91,29 @@ public class GitHubCommandsProviderTests
     }
 
     [TestMethod]
+    public void HomePage_ExposesStarredRepositoriesWhenClientIsAvailable()
+    {
+        var store = new InMemoryAccountStore(new GitHubAccount(GitHubHost.GitHubDotCom, "octocat", "t"));
+        var client = new Mock<IGitHubAuthClient>();
+        client.Setup(c => c.GetLoginAsync(It.IsAny<GitHubHost>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("mona");
+        var auth = new AuthService(store, client.Object, new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
+        using var provider = new GitHubCommandsProvider(
+            auth,
+            () => string.Empty,
+            browser: new FakeBrowser(_ => null),
+            repositoriesClient: Mock.Of<IRepositoriesClient>(),
+            agentsClient: Mock.Of<IAgentsClient>(),
+            repositoryStarsClient: Mock.Of<IRepositoryStarsClient>());
+
+        var homeItems = ((HomePage)provider.GetCommand(HomePage.PageId)!).GetItems();
+        var starred = homeItems.Single(item => item.Title == "Starred repositories");
+
+        Assert.IsInstanceOfType<ReposPage>(starred.Command);
+        Assert.AreSame(starred.Command, provider.GetCommand(ReposPage.StarredPageId));
+    }
+
+    [TestMethod]
     public void GetCommand_ResolvesNotificationsPage()
     {
         using var provider = CreateProvider(new InMemoryAccountStore(), out _);

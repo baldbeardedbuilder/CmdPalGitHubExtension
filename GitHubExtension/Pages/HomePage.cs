@@ -20,6 +20,7 @@ internal sealed partial class HomePage : ListPage, IDisposable
     private readonly AgentsPage _agents;
     private readonly CodespacesPage _codespaces;
     private readonly CreateCodespacePage _createCodespace;
+    private readonly ReposPage? _starredRepos;
     private readonly SignOutCommand _signOut;
     private volatile bool _disposed;
 
@@ -29,7 +30,8 @@ internal sealed partial class HomePage : ListPage, IDisposable
         ReposPage repos,
         AgentsPage agents,
         CodespacesPage codespaces,
-        CreateCodespacePage createCodespace)
+        CreateCodespacePage createCodespace,
+        ReposPage? starredRepos = null)
     {
         _auth = auth;
         _notifications = notifications;
@@ -37,6 +39,7 @@ internal sealed partial class HomePage : ListPage, IDisposable
         _agents = agents;
         _codespaces = codespaces;
         _createCodespace = createCodespace;
+        _starredRepos = starredRepos;
         _signOut = new SignOutCommand(auth);
         Id = PageId;
         Name = "Open";
@@ -60,11 +63,25 @@ internal sealed partial class HomePage : ListPage, IDisposable
             new CommandContextItem(_signOut),
         ];
 
-        return
-        [
+        var items = new List<IListItem>
+        {
             new ListItem(_notifications) { Title = "Notifications", Subtitle = "Your GitHub inbox", Icon = Icons.Notifications, MoreCommands = accountCommands },
             ComingSoon("Saved Queries", Icons.SavedQueries, accountCommands),
             new ListItem(_repos) { Title = "Repos", Subtitle = "Find and open repositories", Icon = Icons.Repos, MoreCommands = accountCommands },
+        };
+        if (_starredRepos is not null)
+        {
+            items.Add(new ListItem(_starredRepos)
+            {
+                Title = "Starred repositories",
+                Subtitle = "Browse repositories you starred",
+                Icon = Icons.Repos,
+                MoreCommands = accountCommands,
+            });
+        }
+
+        items.AddRange(
+        [
             new ListItem(_agents) { Title = "Agents", Subtitle = "Check your Copilot agent tasks", Icon = Icons.Agents, MoreCommands = accountCommands },
             new ListItem(_codespaces)
             {
@@ -73,7 +90,8 @@ internal sealed partial class HomePage : ListPage, IDisposable
                 Icon = Icons.Codespaces,
                 MoreCommands = [.. accountCommands, new CommandContextItem(_createCodespace)],
             },
-        ];
+        ]);
+        return [.. items];
     }
 
     private static ListItem ComingSoon(string title, IIconInfo icon, IContextItem[] more) =>

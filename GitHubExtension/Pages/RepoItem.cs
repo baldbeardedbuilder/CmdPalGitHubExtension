@@ -54,6 +54,11 @@ internal sealed partial class RepoItem : ListItem
 
         more.Add(new CommandContextItem(new CopyTextCommand(repository.FullName) { Name = "Copy name", Icon = Icons.Copy }));
         more.Add(new CommandContextItem(new RefreshReposCommand(page)));
+        if (page.StarPage(repository, _account, _accountGeneration) is { } starPage)
+        {
+            more.Add(new CommandContextItem(starPage));
+        }
+
         MoreCommands = [.. more];
     }
 

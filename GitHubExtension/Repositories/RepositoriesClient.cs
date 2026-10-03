@@ -24,7 +24,7 @@ internal interface IRepositoriesClient
     Task<RepositorySearchPageResult> SearchAsync(GitHubAccount account, string query, Uri? page, CancellationToken cancellationToken);
 }
 
-internal sealed class RepositoriesClient(HttpClient httpClient) : IRepositoriesClient
+internal sealed partial class RepositoriesClient(HttpClient httpClient) : IRepositoriesClient, IRepositoryStarsClient
 {
     internal const int PageSize = 50;
     internal const int SearchPageSize = 30;

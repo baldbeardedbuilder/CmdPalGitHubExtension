@@ -157,6 +157,11 @@ public sealed class OperationDiagnosticsTests
 
     [TestMethod]
     [DataRow("https://private.example/api/v3/repos/private-owner/private-repo/issues/secret-id?token=secret", "/repos/{owner}/{repo}/issues/{number}")]
+    [DataRow("https://api.github.com/repos/private-owner/private-repo/issues/42/labels/private-label", "/repos/{owner}/{repo}/issues/{number}/labels/{name}")]
+    [DataRow("https://api.github.com/repos/private-owner/private-repo/pulls/42/requested_reviewers", "/repos/{owner}/{repo}/pulls/{number}/requested_reviewers")]
+    [DataRow("https://api.github.com/repos/private-owner/private-repo/actions/runs/123/cancel", "/repos/{owner}/{repo}/actions/runs/{run_id}/cancel")]
+    [DataRow("https://api.github.com/user/starred/private-owner/private-repo", "/user/starred/{owner}/{repo}")]
+    [DataRow("https://api.github.com/notifications/threads/secret-id/subscription", "/notifications/threads/{id}/subscription")]
     [DataRow("https://api.github.com/user/codespaces/private-name/stop", "/user/codespaces/{name}/stop")]
     [DataRow("https://api.github.com/agents/tasks/private-id", "/agents/tasks/{id}")]
     [DataRow("https://api.github.com/private-route/private-id", "unknown")]

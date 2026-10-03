@@ -4,6 +4,7 @@
 
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
+using BaldBeardedBuilder.CmdPal.GitHub.PullRequests;
 using BaldBeardedBuilder.CmdPal.GitHub.Tests.PullRequests;
 using Microsoft.CommandPalette.Extensions;
 using Microsoft.CommandPalette.Extensions.Toolkit;
@@ -34,6 +35,31 @@ public class NotificationsPageTests
         Assert.AreEqual("o/r \u00B7 45m ago", item.Subtitle);
         Assert.AreEqual("Merged", item.Tags.Single().Text);
         Assert.IsFalse(page.HasMoreItems);
+    }
+
+    [TestMethod]
+    public async Task PullRequestNotification_OffersNativeActionMenu()
+    {
+        var api = new Uri("https://api.github.com/repos/o/r/pulls/7");
+        using var json = System.Text.Json.JsonDocument.Parse(PullRequestDetailsTests.Payload);
+        var subject = NotificationsClient.ParseSubject(json.RootElement);
+        var client = new Mock<INotificationsClient>();
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationsPageResult([NotificationParsingTests.Notification("1", "PullRequest", api)], null));
+        client.Setup(c => c.GetSubjectAsync(Account, api, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subject);
+        using var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(),
+            new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
+        using var page = new NotificationsPage(auth, client.Object, new FakeBrowser(_ => null),
+            pullRequestActionsClient: Mock.Of<IPullRequestActionsClient>());
+
+        page.GetItems();
+        await page.CurrentLoad;
+
+        var item = (NotificationItem)page.GetItems().Single();
+        Assert.IsInstanceOfType<PullRequestActionsPage>(item.MoreCommands
+            .OfType<CommandContextItem>()
+            .Single(context => context.Command is PullRequestActionsPage).Command);
     }
 
     [TestMethod]
