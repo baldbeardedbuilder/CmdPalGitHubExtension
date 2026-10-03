@@ -183,6 +183,10 @@ public sealed class DomainDiagnosticsTests
         Assert.AreEqual(category, terminal.Failure.ToString());
         Assert.IsFalse(entries.Any(entry => entry.ToString().Contains("private-", StringComparison.Ordinal)));
         Assert.IsFalse(entries.Any(entry => entry.Event == DiagnosticEvent.CodespaceStart && entry.Outcome == DiagnosticOutcome.Completed));
+        if (failure == "schema")
+        {
+            Assert.HasCount(1, entries.Where(entry => entry.Severity == DiagnosticSeverity.Error));
+        }
     }
 
     [TestMethod]
@@ -255,20 +259,33 @@ public sealed class DomainDiagnosticsTests
     }
 
     [TestMethod]
-    [DataRow(202, "Accepted")]
-    [DataRow(200, "Accepted")]
-    [DataRow(204, "Completed")]
-    [DataRow(205, "Completed")]
-    public async Task NotificationMutation_OnlySynchronousContractResponseProvesCompletion(int status, string outcome)
+    [DataRow("read", 202, "Accepted")]
+    [DataRow("read", 200, "Accepted")]
+    [DataRow("read", 204, "Completed")]
+    [DataRow("read", 205, "Completed")]
+    [DataRow("done", 202, "Accepted")]
+    [DataRow("done", 200, "Accepted")]
+    [DataRow("done", 204, "Completed")]
+    [DataRow("done", 205, "Completed")]
+    public async Task NotificationMutation_OnlySynchronousContractResponseProvesCompletion(string action, int status, string outcome)
     {
         var entries = new List<DiagnosticEntry>();
         using var sink = OperationDiagnostics.UseSink(entries.Add, verboseReads: false);
         using var handler = new Handler((_, _) => Task.FromResult(Response(string.Empty, (HttpStatusCode)status)));
         using var http = new HttpClient(handler);
 
-        await new NotificationsClient(http).MarkAsReadAsync(Account, "private-thread", TestContext.CancellationToken);
+        var client = new NotificationsClient(http);
+        if (action == "read")
+        {
+            await client.MarkAsReadAsync(Account, "private-thread", TestContext.CancellationToken);
+        }
+        else
+        {
+            await client.MarkAsDoneAsync(Account, "private-thread", TestContext.CancellationToken);
+        }
 
-        Assert.AreEqual(outcome, entries.Last(entry => entry.Event == DiagnosticEvent.NotificationRead).Outcome.ToString());
+        var eventName = action == "read" ? DiagnosticEvent.NotificationRead : DiagnosticEvent.NotificationDone;
+        Assert.AreEqual(outcome, entries.Last(entry => entry.Event == eventName).Outcome.ToString());
     }
 
     [TestMethod]
@@ -327,6 +344,29 @@ public sealed class DomainDiagnosticsTests
         Assert.AreEqual(DiagnosticEvent.SchemaRead, schema.Event);
         var terminal = entries.Last(entry => entry.Event == DiagnosticEvent.PageLoad);
         Assert.AreEqual(DiagnosticFailure.Schema, terminal.Failure);
+        Assert.AreEqual(DiagnosticOutcome.Failed, terminal.Outcome);
+        Assert.HasCount(1, entries.Select(entry => entry.OperationId).Distinct());
+        Assert.IsFalse(entries.Any(entry => entry.ToString().Contains("private-", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    [DataRow(403)]
+    [DataRow(404)]
+    public async Task AgentCustomHttpError_ReportsOneErrorAndPreservesCategory(int status)
+    {
+        var entries = new List<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Add, verboseReads: false);
+        using var handler = new Handler((_, _) => Task.FromResult(Response("private-response-body", (HttpStatusCode)status)));
+        using var http = new HttpClient(handler);
+
+        await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            new AgentsClient(http).GetTasksAsync(Account, null, TestContext.CancellationToken));
+
+        var error = entries.Single(entry => entry.Severity == DiagnosticSeverity.Error);
+        Assert.AreEqual(DiagnosticEvent.RestRequest, error.Event);
+        Assert.AreEqual(status, error.Status);
+        var terminal = entries.Last(entry => entry.Event == DiagnosticEvent.PageLoad);
+        Assert.AreEqual(DiagnosticFailure.Http, terminal.Failure);
         Assert.AreEqual(DiagnosticOutcome.Failed, terminal.Outcome);
         Assert.HasCount(1, entries.Select(entry => entry.OperationId).Distinct());
         Assert.IsFalse(entries.Any(entry => entry.ToString().Contains("private-", StringComparison.Ordinal)));

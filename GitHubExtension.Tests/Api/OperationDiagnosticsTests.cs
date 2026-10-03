@@ -40,6 +40,22 @@ public sealed class OperationDiagnosticsTests
     }
 
     [TestMethod]
+    public async Task FailureDeduplicationDoesNotSuppressIndependentRetries()
+    {
+        var entries = new List<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Add);
+        var failure = new IOException("secret-exception");
+        for (var retry = 0; retry < 2; retry++)
+        {
+            await Assert.ThrowsExactlyAsync<IOException>(() =>
+                OperationDiagnostics.RunAsync(DiagnosticEvent.PageLoad, () => Task.FromException(failure)));
+        }
+
+        Assert.HasCount(2, entries.Where(e => e.Severity == DiagnosticSeverity.Error));
+        Assert.HasCount(2, entries.Select(e => e.OperationId).Distinct());
+    }
+
+    [TestMethod]
     public async Task NormalCancellationIsInformationNotError()
     {
         var entries = new List<DiagnosticEntry>();

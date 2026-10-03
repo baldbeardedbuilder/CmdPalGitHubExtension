@@ -239,6 +239,44 @@ public sealed class PageDiagnosticsTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task CodespaceCreate_FailureBeforePostIsFailedAndSchemaAfterAcceptanceIsUnknown(bool sent)
+    {
+        var entries = new ConcurrentQueue<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Enqueue);
+        var requests = 0;
+        using var http = new HttpClient(new StubHandler(request =>
+        {
+            Interlocked.Increment(ref requests);
+            if (request.Method == HttpMethod.Get)
+            {
+                return sent
+                    ? Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""{"id":1}"""),
+                    })
+                    : Task.FromException<HttpResponseMessage>(new HttpRequestException("private transport failure"));
+            }
+
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.Accepted)
+            {
+                Content = new StringContent("private malformed response"),
+            });
+        }));
+        using var page = new CreateCodespacePage(CreateAuth(), new CodespacesClient(http), new FakeBrowser(_ => null));
+        page.HandleSubmit("""{"repository":"private/repository"}""", """{"action":"create"}""");
+        await page.CurrentCreate;
+
+        var outcome = entries.Last(e => e.Event == DiagnosticEvent.CodespaceCreate && e.Outcome != DiagnosticOutcome.Requested);
+        Assert.AreEqual(sent ? DiagnosticOutcome.Unknown : DiagnosticOutcome.Failed, outcome.Outcome);
+        Assert.AreEqual(sent ? DiagnosticFailure.Schema : DiagnosticFailure.Transport, outcome.Failure);
+        Assert.AreEqual(DiagnosticSeverity.Information, outcome.Severity);
+        Assert.AreEqual(sent ? 2 : 1, requests);
+        Assert.IsFalse(entries.Any(e => e.ToString().Contains("private", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
     public async Task PageLoad_AccountResetDuringPublicationIsCancelledNotCompleted()
     {
         var entries = new ConcurrentQueue<DiagnosticEntry>();

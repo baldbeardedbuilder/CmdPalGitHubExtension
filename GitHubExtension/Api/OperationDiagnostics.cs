@@ -92,7 +92,7 @@ internal static partial class OperationDiagnostics
         catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
         {
             operation.Cancel();
-            MarkLogged(ex, new(DiagnosticFailure.None, DiagnosticOutcome.Cancelled));
+            MarkLogged(ex, new(operation.Id, DiagnosticFailure.None, DiagnosticOutcome.Cancelled));
             throw;
         }
         catch (Exception ex)
@@ -135,7 +135,8 @@ internal static partial class OperationDiagnostics
     };
 
     private static FailureContext? GetFailure(Exception exception) =>
-        LoggedFailures.TryGetValue(exception, out var context) ? context
+        LoggedFailures.TryGetValue(exception, out var context)
+            && (Current.Value is null || Current.Value.Id == context.OperationId) ? context
             : exception.InnerException is { } inner ? GetFailure(inner) : null;
 
     internal static DiagnosticFailure FailureCategory(Exception exception) =>
@@ -245,7 +246,7 @@ internal static partial class OperationDiagnostics
             var category = failure ?? previous?.Failure ?? Classify(exception);
             var severity = previous is not null ? DiagnosticSeverity.Information
                 : _outcome == DiagnosticOutcome.Unknown ? DiagnosticSeverity.Warning : DiagnosticSeverity.Error;
-            MarkLogged(exception, new(category, _outcome));
+            MarkLogged(exception, new(Id, category, _outcome));
             Emit(_outcome, severity, category, status, method, uri, textSink);
         }
 
@@ -307,7 +308,7 @@ internal static partial class OperationDiagnostics
         };
     }
 
-    private sealed record FailureContext(DiagnosticFailure Failure, DiagnosticOutcome Outcome);
+    private sealed record FailureContext(Guid OperationId, DiagnosticFailure Failure, DiagnosticOutcome Outcome);
 
     private sealed partial class RestoreSink(Action<DiagnosticEntry>? previous, bool? previousVerbose) : IDisposable
     {
