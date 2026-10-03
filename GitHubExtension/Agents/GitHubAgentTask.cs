@@ -17,3 +17,13 @@ internal sealed record GitHubAgentTask(
     string? RepositoryError = null);
 
 internal sealed record AgentTasksPageResult(IReadOnlyList<GitHubAgentTask> Tasks, Uri? NextPage);
+
+internal sealed record AgentTaskRequest(
+    string Prompt,
+    string? Model,
+    string? CustomAgent,
+    string? BaseRef,
+    string? HeadRef,
+    bool CreatePullRequest);
+
+internal sealed class AgentTaskOutcomeUnknownException(string message, Exception? innerException = null) : Exception(message, innerException);

@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
+using BaldBeardedBuilder.CmdPal.GitHub.Agents;
 using BaldBeardedBuilder.CmdPal.GitHub.Commands;
 using BaldBeardedBuilder.CmdPal.GitHub.Repositories;
 
@@ -16,6 +17,7 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
     private readonly ActionsPage? _actions;
     private readonly RepositoryIssuesPage? _issuesPage;
     private readonly RepositoryPullRequestsPage? _pullRequestsPage;
+    private readonly CreateAgentTaskPage? _createAgentTaskPage;
     private IListItem[] _items = [];
 
     public RepositoryPage(
@@ -23,12 +25,17 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
         ActionsPage? actions,
         GitHubRepository repository,
         RepositoryIssuesPage? issuesPage = null,
-        RepositoryPullRequestsPage? pullRequestsPage = null)
+        RepositoryPullRequestsPage? pullRequestsPage = null,
+        AuthService? auth = null,
+        IAgentsClient? agentsClient = null)
     {
         _browser = browser;
         _actions = actions?.ForRepository(repository.FullName);
         _issuesPage = issuesPage?.ForRepository(repository.FullName);
         _pullRequestsPage = pullRequestsPage?.ForRepository(repository.FullName);
+        _createAgentTaskPage = auth is not null && agentsClient is not null
+            ? new CreateAgentTaskPage(auth, agentsClient, repository)
+            : null;
         Id = $"{PageId}.{Uri.EscapeDataString(repository.FullName)}";
         Name = "Open";
         Icon = Icons.Repos;
@@ -51,8 +58,8 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
             ? (ICommand)new OpenInBrowserCommand(_browser, new Uri(repoBase + "actions"), "Open on GitHub", Icons.Actions)
             : _actions;
 
-        _items =
-        [
+        var items = new List<IListItem>
+        {
             new ListItem(open) { Title = repository.FullName, Subtitle = repository.Description ?? string.Empty, Icon = Icons.Repos, MoreCommands = more },
             new ListItem(_issuesPage is null
                 ? new OpenInBrowserCommand(_browser, new Uri(repoBase + "issues"), "Open on GitHub", Icons.Issues)
@@ -75,11 +82,21 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
                 Title = "Actions", Subtitle = _actions is null ? "Open workflows on GitHub" : "Browse workflow runs",
                 Icon = Icons.Actions, MoreCommands = more,
             },
-            new ListItem(new OpenInBrowserCommand(_browser, new Uri(repoBase + "discussions"), "Open on GitHub", Icons.Discussions))
+        };
+        if (_createAgentTaskPage is not null)
+        {
+            items.Add(new ListItem(_createAgentTaskPage)
             {
-                Title = "Discussions", Subtitle = "Open discussions on GitHub", Icon = Icons.Discussions, MoreCommands = more,
-            },
-        ];
+                Title = "Start Copilot task", Subtitle = "Send work to a Copilot cloud agent",
+                Icon = Icons.Agents, MoreCommands = more,
+            });
+        }
+
+        items.Add(new ListItem(new OpenInBrowserCommand(_browser, new Uri(repoBase + "discussions"), "Open on GitHub", Icons.Discussions))
+        {
+            Title = "Discussions", Subtitle = "Open discussions on GitHub", Icon = Icons.Discussions, MoreCommands = more,
+        });
+        _items = [.. items];
         RaiseItemsChanged();
     }
 
@@ -92,6 +109,7 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
         _actions?.Dispose();
         _issuesPage?.Dispose();
         _pullRequestsPage?.Dispose();
+        _createAgentTaskPage?.Dispose();
     }
 
     internal void Reset()
