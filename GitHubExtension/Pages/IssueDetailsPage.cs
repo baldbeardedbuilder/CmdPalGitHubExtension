@@ -11,29 +11,27 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 /// <summary>
 /// A shared detail view for issues opened from anywhere in the extension.
 /// </summary>
-internal sealed partial class IssueDetailsPage : ContentPage
+internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
 {
     public const string PageId = "com.baldbeardedbuilder.cmdpal.github.issue-details";
+
+    internal bool IsDisposed => _load.Disposed;
 
     private readonly AuthService _auth;
     private readonly IIssuesClient _client;
     private readonly IBrowserLauncher _browser;
-    private readonly Lock _lock = new();
+    private readonly ListLoadState _load = new();
+    private Lock _lock => _load.SyncRoot;
+    private readonly IDisposable _accountSubscription;
     private Uri? _issueApiUrl;
     private GitHubIssue? _issue;
     private string? _repository;
     private (Uri ApiUrl, string Repository, Action OnOpened)? _notification;
     private bool _notificationActivated;
-    private int _generation;
+    private bool _notificationOpened;
     private IssueDetailsForm _form;
-    private Task _currentLoad = Task.CompletedTask;
 
     public IssueDetailsPage(AuthService auth, IIssuesClient client, IBrowserLauncher browser)
-        : this(auth, client, browser, listenForAccountChanges: true)
-    {
-    }
-
-    private IssueDetailsPage(AuthService auth, IIssuesClient client, IBrowserLauncher browser, bool listenForAccountChanges)
     {
         _auth = auth;
         _client = client;
@@ -43,10 +41,7 @@ internal sealed partial class IssueDetailsPage : ContentPage
         Title = "Issue details";
         Icon = Icons.Issues;
         _form = new IssueDetailsForm(this, IssueDetailsCards.SignedOut());
-        if (listenForAccountChanges)
-        {
-            _auth.AccountChanged += OnAccountChanged;
-        }
+        _accountSubscription = auth.Subscribe(this, static page => page.OnAccountChanged(null, EventArgs.Empty));
     }
 
     public override IContent[] GetContent()
@@ -60,11 +55,23 @@ internal sealed partial class IssueDetailsPage : ContentPage
 
     internal IssueDetailsPage ForNotification(string notificationId, Uri issueApiUrl, string repository, Action onOpened)
     {
-        return new IssueDetailsPage(_auth, _client, _browser, listenForAccountChanges: false)
+        return new IssueDetailsPage(_auth, _client, _browser)
         {
             Id = $"{PageId}.{Uri.EscapeDataString(notificationId)}",
             _notification = (issueApiUrl, repository, onOpened),
         };
+    }
+
+    internal void SetNotification(Uri issueApiUrl, string repository, Action onOpened)
+    {
+        lock (_lock)
+        {
+            if (!_load.Disposed)
+            {
+                _notification = (issueApiUrl, repository, onOpened);
+                _notificationOpened = false;
+            }
+        }
     }
 
     internal Task CurrentLoad
@@ -73,32 +80,54 @@ internal sealed partial class IssueDetailsPage : ContentPage
         {
             lock (_lock)
             {
-                return _currentLoad;
+                return _load.CurrentLoad;
             }
         }
     }
 
     internal void LoadIssue(GitHubAccount account, Uri issueApiUrl, string repository)
     {
-        int generation;
+        ListLoadState.Operation operation;
         lock (_lock)
         {
-            generation = ++_generation;
+            if (_load.Disposed || _auth.CurrentAccount != account)
+            {
+                return;
+            }
+
+            _load.Invalidate(reset: true);
+            _load.TryBegin(true, out operation);
             _issueApiUrl = issueApiUrl;
             _repository = repository;
             _issue = null;
             _form = new IssueDetailsForm(this, IssueDetailsCards.Loading());
         }
 
-        IsLoading = true;
-        lock (_lock)
+        _load.Publish(operation, () => IsLoading = true);
+        _load.Run(operation, () => LoadAsync(account, issueApiUrl, repository, operation), () =>
         {
-            _currentLoad = Task.Run(() => LoadAsync(account, issueApiUrl, repository, generation));
-        }
+            string? error;
+            lock (_lock)
+            {
+                error = _load.Error;
+                if (_load.IsCurrent(operation) && error is not null)
+                {
+                    _form = new IssueDetailsForm(this, IssueDetailsCards.Error(error));
+                }
+            }
+
+            _load.Publish(operation, () => IsLoading = false);
+            _load.Publish(operation, () => RaiseItemsChanged());
+        }, "GitHub took too long to respond. Try loading the issue again.", area: DiagnosticArea.Issues);
     }
 
     internal ICommandResult HandleSubmit(string action)
     {
+        if (_load.Disposed)
+        {
+            return CommandResult.KeepOpen();
+        }
+
         if (action == IssueDetailsActions.OpenInBrowser)
         {
             Uri? url;
@@ -135,21 +164,27 @@ internal sealed partial class IssueDetailsPage : ContentPage
     private void ActivateNotification()
     {
         (Uri ApiUrl, string Repository, Action OnOpened)? notification;
+        bool load;
         lock (_lock)
         {
-            if (_notificationActivated || _notification is not { } pending)
+            if (_load.Disposed || _notificationOpened || _notification is not { } pending)
             {
                 return;
             }
 
+            load = !_notificationActivated;
             _notificationActivated = true;
+            _notificationOpened = true;
             notification = pending;
         }
 
         if (_auth.CurrentAccount is { } account)
         {
             notification.Value.OnOpened();
-            LoadIssue(account, notification.Value.ApiUrl, notification.Value.Repository);
+            if (load)
+            {
+                LoadIssue(account, notification.Value.ApiUrl, notification.Value.Repository);
+            }
         }
         else
         {
@@ -157,73 +192,64 @@ internal sealed partial class IssueDetailsPage : ContentPage
         }
     }
 
-    private async Task LoadAsync(GitHubAccount account, Uri issueApiUrl, string repository, int generation)
+    private async Task LoadAsync(GitHubAccount account, Uri issueApiUrl, string repository, ListLoadState.Operation operation)
     {
-        using var operation = OperationDiagnostics.Begin(DiagnosticEvent.PageLoad, DiagnosticArea.Issues, verbose: true);
-        Exception? failure = null;
-        try
+        var issue = await _client.GetIssueAsync(account, issueApiUrl, operation.Token).ConfigureAwait(false);
+        lock (_lock)
         {
-            var issue = await _client.GetIssueAsync(account, issueApiUrl, CancellationToken.None).ConfigureAwait(false);
-            lock (_lock)
+            if (!_load.IsCurrent(operation))
             {
-                if (generation != _generation)
-                {
-                    return;
-                }
-
-                _issue = issue;
-                _form = new IssueDetailsForm(this, IssueDetailsCards.Details(repository, issue));
-            }
-        }
-        catch (Exception ex)
-        {
-            failure = ex;
-            lock (_lock)
-            {
-                if (generation != _generation)
-                {
-                    return;
-                }
-
-                _form = new IssueDetailsForm(this, IssueDetailsCards.Error(ex.Message));
-            }
-        }
-        finally
-        {
-            bool publish;
-            lock (_lock)
-            {
-                publish = generation == _generation;
+                return;
             }
 
-            if (publish)
-            {
-                IsLoading = false;
-                RaiseItemsChanged();
-            }
-
-            lock (_lock)
-            {
-                publish = generation == _generation;
-            }
-
-            PageDiagnostics.Finish(operation, failure, publish);
+            _issue = issue;
+            _form = new IssueDetailsForm(this, IssueDetailsCards.Details(repository, issue));
+            _load.Succeed(operation, null);
         }
     }
 
     private void OnAccountChanged(object? sender, EventArgs e)
     {
+        long revision;
         lock (_lock)
         {
-            _generation++;
+            if (_load.Disposed)
+            {
+                return;
+            }
+
+            _load.Invalidate(reset: true);
             _issueApiUrl = null;
             _issue = null;
             _repository = null;
+            _notification = null;
+            _form = new IssueDetailsForm(this, IssueDetailsCards.SignedOut());
+            revision = _load.Revision;
+        }
+
+        _load.Publish(revision, () => IsLoading = false);
+        _load.Publish(revision, () => RaiseItemsChanged());
+    }
+
+    public void Dispose()
+    {
+        _accountSubscription.Dispose();
+        lock (_lock)
+        {
+            if (_load.Disposed)
+            {
+                return;
+            }
+
+            _load.Dispose();
+            _issueApiUrl = null;
+            _issue = null;
+            _repository = null;
+            _notification = null;
             _form = new IssueDetailsForm(this, IssueDetailsCards.SignedOut());
         }
 
         IsLoading = false;
-        RaiseItemsChanged();
     }
 
     private sealed partial class IssueDetailsForm : FormContent

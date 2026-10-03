@@ -217,6 +217,7 @@ public sealed class PageNotificationTests
     [DataRow("codespaces")]
     [DataRow("actions")]
     [DataRow("repos")]
+    [DataRow("notifications")]
     [DataRow("issues")]
     [DataRow("pull-requests")]
     public async Task ListLifecycle_RefreshCancelsOldRequestAndIgnoresLateFailure(string name)
@@ -260,12 +261,14 @@ public sealed class PageNotificationTests
     [DataRow("codespaces", false)]
     [DataRow("actions", false)]
     [DataRow("repos", false)]
+    [DataRow("notifications", false)]
     [DataRow("issues", false)]
     [DataRow("pull-requests", false)]
     [DataRow("agents", true)]
     [DataRow("codespaces", true)]
     [DataRow("actions", true)]
     [DataRow("repos", true)]
+    [DataRow("notifications", true)]
     [DataRow("issues", true)]
     [DataRow("pull-requests", true)]
     public async Task ListLifecycle_AccountChangeOrDisposalCancelsAndRejectsLateResponse(string name, bool dispose)
@@ -312,6 +315,7 @@ public sealed class PageNotificationTests
     [DataRow("codespaces")]
     [DataRow("actions")]
     [DataRow("repos")]
+    [DataRow("notifications")]
     [DataRow("issues")]
     [DataRow("pull-requests")]
     public async Task ListLifecycle_PaginationFailurePreservesItemsAndRefreshRecovers(string name)
@@ -346,6 +350,7 @@ public sealed class PageNotificationTests
     [DataRow("codespaces")]
     [DataRow("actions")]
     [DataRow("repos")]
+    [DataRow("notifications")]
     [DataRow("issues")]
     [DataRow("pull-requests")]
     public async Task ListLifecycle_TimeoutSettlesAndRefreshRetries(string name)
@@ -487,7 +492,8 @@ public sealed class PageNotificationTests
             case "notifications":
                 var notifications = new Mock<INotificationsClient>();
                 notifications.Setup(c => c.GetNotificationsAsync(Account, It.IsAny<Uri?>(), It.IsAny<CancellationToken>()))
-                    .Returns(() => LoadResult(new NotificationsPageResult([new GitHubNotification("1", "Test notification", "Discussion", null, "o/r", WebUrl, "mention", true, Now)], NextPage), fail));
+                    .Returns((GitHubAccount _, Uri? next, CancellationToken token) =>
+                        LoadResult(new NotificationsPageResult([new GitHubNotification("1", "Test notification", "Discussion", null, "o/r", WebUrl, "mention", true, Now)], NextPage), fail, next, beforeLoad, token));
                 var notificationsPage = new NotificationsPage(auth, notifications.Object, browser);
                 return (notificationsPage, () => notificationsPage.CurrentLoad, notificationsPage.RefreshAsync);
             case "issues":

@@ -14,6 +14,7 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
     public const string PageId = "com.baldbeardedbuilder.cmdpal.github.repository-issues";
 
     private readonly AuthService _auth;
+    private readonly IDisposable _accountSubscription;
     private readonly IIssuesClient _client;
     private readonly IBrowserLauncher _browser;
     private readonly TimeProvider _time;
@@ -37,9 +38,9 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         Icon = Icons.Issues;
         PlaceholderText = "Filter issues...";
         _filters.CurrentFilterId = IssueFilters.Open;
-        _filters.PropChanged += (_, _) => RaiseItemsChanged();
+        _filters.PropChanged += OnFilterChanged;
         Filters = _filters;
-        _auth.AccountChanged += OnAccountChanged;
+        _accountSubscription = auth.Subscribe(this, static page => page.Reset());
     }
 
     internal Task CurrentLoad
@@ -53,18 +54,26 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         }
     }
 
-    internal RepositoryIssuesPage ForRepository(string repository) =>
+    internal RepositoryPage? Owner { get; private init; }
+
+    internal RepositoryIssuesPage ForRepository(string repository, RepositoryPage? owner = null) =>
         new(_auth, _client, _browser, _time)
         {
             Id = $"{PageId}.{Uri.EscapeDataString(repository)}",
             Title = $"{repository} issues",
             _repository = repository,
+            Owner = owner,
         };
 
     internal ICommandResult Open(string repository)
     {
         lock (_lock)
         {
+            if (_load.Disposed)
+            {
+                return CommandResult.KeepOpen();
+            }
+
             _load.Invalidate(reset: true);
             _repository = repository;
             _items.Clear();
@@ -87,6 +96,11 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         string filter;
         lock (_lock)
         {
+            if (_load.Disposed)
+            {
+                return [];
+            }
+
             needsLoad = _repository is not null && _load.NeedsLoad;
             snapshot = [.. _items];
             repository = _repository;
@@ -130,6 +144,11 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         bool hasMore;
         lock (_lock)
         {
+            if (_load.Disposed)
+            {
+                return;
+            }
+
             hasMore = newSearch.Trim().Length == 0 && _load.NextPage is not null;
         }
 
@@ -149,7 +168,7 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
     {
         lock (_lock)
         {
-            if (_repository is null)
+            if (_load.Disposed || _repository is null)
             {
                 return _load.CurrentLoad;
             }
@@ -164,9 +183,21 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
 
     public void Dispose()
     {
-        _auth.AccountChanged -= OnAccountChanged;
-        _load.Dispose();
+        _accountSubscription.Dispose();
+        _filters.PropChanged -= OnFilterChanged;
+        lock (_lock)
+        {
+            if (_load.Disposed)
+            {
+                return;
+            }
+
+            _load.Dispose();
+            _items.Clear();
+        }
+
         IsLoading = false;
+        HasMoreItems = false;
     }
 
     private CommandItem Empty(string title, string subtitle, bool refresh = false) =>
@@ -233,6 +264,11 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
     {
         lock (_lock)
         {
+            if (_load.Disposed)
+            {
+                return;
+            }
+
             _load.Invalidate(reset: true);
             _repository = null;
             _items.Clear();
@@ -243,7 +279,13 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         RaiseItemsChanged();
     }
 
-    private void OnAccountChanged(object? sender, EventArgs e) => Reset();
+    private void OnFilterChanged(object? sender, IPropChangedEventArgs e)
+    {
+        if (!_load.Disposed)
+        {
+            RaiseItemsChanged();
+        }
+    }
 }
 
 internal sealed partial class IssueFilters : Filters

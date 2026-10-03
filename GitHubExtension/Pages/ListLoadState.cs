@@ -9,13 +9,20 @@ internal sealed partial class ListLoadState : IDisposable
 {
     private Operation? _operation;
 
-    public Lock SyncRoot { get; } = new();
+    public ListLoadState(Lock? syncRoot = null)
+    {
+        SyncRoot = syncRoot ?? new();
+    }
+
+    public Lock SyncRoot { get; }
 
     public bool Loaded { get; private set; }
 
     public bool Fetching { get; private set; }
 
     public bool Disposed { get; private set; }
+
+    public long Revision { get; private set; }
 
     public bool NeedsLoad => !Disposed && !Loaded && !Fetching;
 
@@ -33,6 +40,7 @@ internal sealed partial class ListLoadState : IDisposable
             return false;
         }
 
+        Invalidate();
         operation = new Operation(reset, reset ? null : NextPage);
         _operation = operation;
         Fetching = true;
@@ -64,7 +72,7 @@ internal sealed partial class ListLoadState : IDisposable
 
     public Task Run(Operation operation, Func<Task> work, Action completed, string timeoutMessage, bool markLoadedOnError = true,
         DiagnosticArea area = DiagnosticArea.None, DiagnosticEvent diagnosticEvent = DiagnosticEvent.PageLoad,
-        bool mutation = false, DiagnosticOutcome? success = null, bool completesOnSuccess = false)
+        bool mutation = false, DiagnosticOutcome? success = null, bool completesOnSuccess = false, Action? retired = null)
     {
         lock (SyncRoot)
         {
@@ -161,6 +169,15 @@ internal sealed partial class ListLoadState : IDisposable
                     }
 
                     operation.Cancellation.Dispose();
+                    try
+                    {
+                        retired?.Invoke();
+                    }
+                    catch (Exception ex)
+                    {
+                        failure ??= ex;
+                    }
+
                     if (failure is null)
                     {
                         operation.Completion.TrySetResult();
@@ -171,7 +188,7 @@ internal sealed partial class ListLoadState : IDisposable
                     }
                 }
             });
-            return CurrentLoad;
+            return operation.Completion.Task;
         }
     }
 
@@ -190,6 +207,7 @@ internal sealed partial class ListLoadState : IDisposable
 
     public void Invalidate(bool reset = false)
     {
+        Revision++;
         if (_operation is { } operation)
         {
             // CancelAsync marks the token immediately without running client callbacks under the page lock.
@@ -207,6 +225,19 @@ internal sealed partial class ListLoadState : IDisposable
             Loaded = false;
             Error = null;
         }
+    }
+
+    public void Publish(long revision, Action notification)
+    {
+        lock (SyncRoot)
+        {
+            if (Disposed || Revision != revision)
+            {
+                return;
+            }
+        }
+
+        notification();
     }
 
     public void Dispose()

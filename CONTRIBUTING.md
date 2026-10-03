@@ -59,6 +59,12 @@ Command Palette handles property and item notifications synchronously and may re
 
 Reuse the same `EmptyContent` item when its text and command haven't changed. Creating a new item on every `GetItems()` call can send the host into a notification loop, including when you're showing an error.
 
+Use `ListLoadState` for request lifetimes. Refresh, account changes, and disposal cancel obsolete work; still check operation identity before applying results because clients can ignore cancellation. Let the operation finish before disposing its cancellation source, and keep cancellation callbacks outside state locks.
+
+The provider owns its root pages and the HTTP clients it creates, not injected clients or auth services. Repository menus create their sections lazily and use weak reuse so old search results can be collected. Child pages keep their menu owner alive while the host holds them, and weak account subscriptions don't keep retired page graphs alive.
+
+Don't dispose an active destination just because a search or notification refresh replaced its row. Account changes and owner disposal invalidate every live destination, cancel its requests, and detach subscriptions.
+
 ### Trying it in Command Palette
 
 Open `GitHubExtension.slnx` in Visual Studio, set **GitHubExtension** as the startup project, and deploy it. Then open Command Palette and run **Reload Command Palette extensions**.

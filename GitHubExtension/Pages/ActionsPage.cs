@@ -13,6 +13,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     public const string PageId = "com.baldbeardedbuilder.cmdpal.github.actions";
 
     private readonly AuthService _auth;
+    private readonly IDisposable _accountSubscription;
     private readonly IActionsClient _client;
     private readonly IBrowserLauncher _browser;
     private readonly TimeProvider _time;
@@ -23,7 +24,8 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     private readonly List<WorkflowRunItem> _items = [];
     private readonly Dictionary<(long Id, int? Attempt), RerunWorkflowPage> _rerunPages = [];
     private string? _repository;
-    private CancellationTokenSource? _cancellationCts;
+    private readonly ListLoadState _cancel;
+    private ListLoadState.Operation? _cancellationOperation;
     private Task _currentCancellation = Task.CompletedTask;
     private string? _cancellationError;
     private int _accountGeneration;
@@ -31,6 +33,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     public ActionsPage(AuthService auth, IActionsClient client, IBrowserLauncher browser, TimeProvider? time = null)
     {
         _auth = auth;
+        _cancel = new ListLoadState(_lock);
         _client = client;
         _browser = browser;
         _time = time ?? TimeProvider.System;
@@ -41,9 +44,9 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         Icon = Icons.Actions;
         PlaceholderText = "Filter workflow runs...";
         _filters.CurrentFilterId = ActionFilters.Running;
-        _filters.PropChanged += (_, _) => RaiseItemsChanged();
+        _filters.PropChanged += OnFilterChanged;
         Filters = _filters;
-        _auth.AccountChanged += OnAccountChanged;
+        _accountSubscription = auth.Subscribe(this, static page => page.OnAccountChanged(null, EventArgs.Empty));
     }
 
     internal Task CurrentLoad
@@ -68,12 +71,15 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         }
     }
 
-    internal ActionsPage ForRepository(string repository) =>
+    internal RepositoryPage? Owner { get; private init; }
+
+    internal ActionsPage ForRepository(string repository, RepositoryPage? owner = null) =>
         new(_auth, _client, _browser, _time)
         {
             Id = $"{PageId}.{Uri.EscapeDataString(repository)}",
             Title = $"{repository} actions",
             _repository = repository,
+            Owner = owner,
         };
 
     internal ICommandResult OpenRepository(string repository)
@@ -97,6 +103,11 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         bool needsLoad;
         lock (_lock)
         {
+            if (_load.Disposed)
+            {
+                return [];
+            }
+
             needsLoad = _load.NeedsLoad;
         }
 
@@ -148,6 +159,11 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
     public Task RefreshAsync()
     {
+        if (_load.Disposed)
+        {
+            return _load.CurrentLoad;
+        }
+
         CancelCancellation();
         lock (_lock)
         {
@@ -183,15 +199,24 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
     public void Dispose()
     {
-        _auth.AccountChanged -= OnAccountChanged;
-        CancelCancellation();
-        ClearRerunPages();
+        _accountSubscription.Dispose();
+        _filters.PropChanged -= OnFilterChanged;
         lock (_lock)
         {
+            if (_load.Disposed)
+            {
+                return;
+            }
+
             _load.Dispose();
+            _cancel.Dispose();
+            _items.Clear();
         }
 
+        CancelCancellation();
+        ClearRerunPages();
         IsLoading = false;
+        HasMoreItems = false;
     }
 
     private void ClearRerunPages()
@@ -273,7 +298,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     {
         GitHubAccount account;
         string repository;
-        CancellationTokenSource cancellation;
+        ListLoadState.Operation cancellation;
         lock (_lock)
         {
             if (_load.Disposed || item.Account is null || _auth.CurrentAccount is not { } currentAccount
@@ -284,7 +309,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
                 return Task.CompletedTask;
             }
 
-            if (_cancellationCts is not null)
+            if (_cancellationOperation is not null)
             {
                 if (!force)
                 {
@@ -294,13 +319,36 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
                 CancelCancellationLocked();
             }
 
-            cancellation = new CancellationTokenSource();
-            _cancellationCts = cancellation;
+            _cancel.TryBegin(true, out cancellation);
+            _cancellationOperation = cancellation;
             _cancellationError = null;
             account = currentAccount;
             repository = currentRepository;
             var token = cancellation.Token;
-            _currentCancellation = Task.Run(() => CancelRunAsync(account, repository, item, force, cancellation, token));
+            _currentCancellation = _cancel.Run(cancellation, () => CancelRunAsync(account, repository, item, force, cancellation, token),
+                () =>
+                {
+                    lock (_lock)
+                    {
+                        if (_cancel.IsCurrent(cancellation) && _cancel.Error is { } error)
+                        {
+                            _cancellationError = error;
+                        }
+                    }
+
+                    _cancel.Publish(cancellation, () => RaiseItemsChanged());
+                },
+                "GitHub took too long to respond. Refresh workflow runs to check their state.", area: DiagnosticArea.Actions,
+                mutation: true, retired: () =>
+                {
+                    lock (_lock)
+                    {
+                        if (ReferenceEquals(_cancellationOperation, cancellation))
+                        {
+                            _cancellationOperation = null;
+                        }
+                    }
+                });
             return _currentCancellation;
         }
     }
@@ -310,7 +358,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         string repository,
         WorkflowRunItem item,
         bool force,
-        CancellationTokenSource cancellation,
+        ListLoadState.Operation cancellation,
         CancellationToken token)
     {
         try
@@ -365,24 +413,6 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
                 RaiseItemsChanged();
             }
         }
-        finally
-        {
-            bool publish;
-            lock (_lock)
-            {
-                publish = ReferenceEquals(_cancellationCts, cancellation);
-                if (publish)
-                {
-                    _cancellationCts = null;
-                }
-            }
-
-            cancellation.Dispose();
-            if (publish)
-            {
-                RaiseItemsChanged();
-            }
-        }
     }
 
     private void UpdateRun(
@@ -390,7 +420,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         GitHubWorkflowRun run,
         GitHubAccount account,
         string repository,
-        CancellationTokenSource cancellation,
+        ListLoadState.Operation cancellation,
         CancellationToken token)
     {
         bool publish;
@@ -410,7 +440,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         }
     }
 
-    private bool CanContinue(GitHubAccount account, string repository, CancellationTokenSource cancellation, CancellationToken token)
+    private bool CanContinue(GitHubAccount account, string repository, ListLoadState.Operation cancellation, CancellationToken token)
     {
         lock (_lock)
         {
@@ -418,9 +448,9 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         }
     }
 
-    private bool CanContinueLocked(GitHubAccount account, string repository, CancellationTokenSource cancellation, CancellationToken token) =>
+    private bool CanContinueLocked(GitHubAccount account, string repository, ListLoadState.Operation cancellation, CancellationToken token) =>
         !token.IsCancellationRequested
-        && ReferenceEquals(_cancellationCts, cancellation)
+        && ReferenceEquals(_cancellationOperation, cancellation)
         && string.Equals(_repository, repository, StringComparison.Ordinal)
         && !_load.Disposed
         && _auth.CurrentAccount == account;
@@ -439,12 +469,8 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
     private void CancelCancellationLocked()
     {
-        if (_cancellationCts is { } cancellation)
-        {
-            _ = cancellation.CancelAsync();
-        }
-
-        _cancellationCts = null;
+        _cancel.Invalidate();
+        _cancellationOperation = null;
     }
 
     private void OnAccountChanged(object? sender, EventArgs e)
@@ -452,6 +478,11 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         ClearRerunPages();
         lock (_lock)
         {
+            if (_load.Disposed)
+            {
+                return;
+            }
+
             CancelCancellationLocked();
             _cancellationError = null;
             Reset();
@@ -470,6 +501,14 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         _cancellationError = null;
         _load.Invalidate(reset: true);
         _items.Clear();
+    }
+
+    private void OnFilterChanged(object? sender, IPropChangedEventArgs e)
+    {
+        if (!_load.Disposed)
+        {
+            RaiseItemsChanged();
+        }
     }
 }
 

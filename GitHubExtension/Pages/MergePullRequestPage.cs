@@ -11,14 +11,15 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
 {
     private readonly AuthService _auth;
+    private readonly IDisposable _accountSubscription;
     private readonly IPullRequestMergeClient _client;
     private readonly GitHubAccount _account;
     private readonly string _repository;
     private readonly int _number;
     private readonly Uri _webUrl;
-    private readonly Lock _lock = new();
+    private readonly ListLoadState _load = new();
+    private Lock _lock => _load.SyncRoot;
     private string _confirmationId = Guid.NewGuid().ToString();
-    private CancellationTokenSource _cancellation = new();
     private MergeForm _form;
     private PullRequestMergeTarget? _target;
     private PullRequestMergeResult? _result;
@@ -28,6 +29,8 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
     private bool _submitted;
     private bool _invalidated;
     private bool _disposed;
+
+    internal RepositoryPullRequestsPage? Owner { get; init; }
 
     public MergePullRequestPage(
         AuthService auth, IPullRequestMergeClient client, GitHubAccount account, string repository, int number, Uri webUrl)
@@ -43,7 +46,7 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
         Title = $"Merge {repository}#{number}";
         Icon = Icons.PullRequests;
         _form = new MergeForm(this, Card("Loading merge confirmation...", null));
-        _auth.AccountChanged += OnAccountChanged;
+        _accountSubscription = auth.Subscribe(this, static page => page.OnAccountChanged(null, EventArgs.Empty));
     }
 
     internal Task CurrentWork
@@ -89,8 +92,7 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
         lock (_lock)
         {
             if (_disposed || _busy || confirmation != _confirmationId || !ReferenceEquals(_auth.CurrentAccount, _account)) return;
-            _cancellation.Dispose();
-            _cancellation = new CancellationTokenSource();
+            _load.Invalidate();
             _confirmationId = Guid.NewGuid().ToString();
             _invalidated = false;
             _started = false;
@@ -119,21 +121,37 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
             _form = new MergeForm(this, Card(
                 action == "load" ? "Loading merge confirmation..." : "Checking with GitHub. Acceptance does not mean merged.",
                 null, cancel: true));
-            _currentWork = Task.Run(() => WorkAsync(action!, method));
+            _load.TryBegin(true, out var operation);
+            _currentWork = _load.Run(operation, () => WorkAsync(action!, method, operation.Token), () =>
+            {
+                lock (_lock)
+                {
+                    if (!_load.IsCurrent(operation) || _load.Error is not { } error)
+                    {
+                        return;
+                    }
+
+                    _form = new MergeForm(this, Card($"No completion is confirmed. Check GitHub before submitting another merge. {error}", null));
+                }
+
+                _load.Publish(operation, () => RaiseItemsChanged());
+            },
+                "GitHub took too long to respond. Check GitHub before submitting another merge.",
+                area: DiagnosticArea.PullRequests, mutation: action == "confirm");
         }
 
         RaiseItemsChanged();
     }
 
-    private async Task WorkAsync(string action, string? method)
+    private async Task WorkAsync(string action, string? method, CancellationToken token)
     {
         try
         {
-            _cancellation.Token.ThrowIfCancellationRequested();
+            token.ThrowIfCancellationRequested();
             if (!ReferenceEquals(_auth.CurrentAccount, _account)) return;
             if (action == "load")
             {
-                var target = await _client.GetTargetAsync(_account, _repository, _number, _cancellation.Token).ConfigureAwait(false);
+                var target = await _client.GetTargetAsync(_account, _repository, _number, token).ConfigureAwait(false);
                 lock (_lock)
                 {
                     if (_invalidated) return;
@@ -152,8 +170,8 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
                 }
 
                 var result = action == "confirm"
-                    ? await _client.MergeAsync(_account, target, method!, _cancellation.Token).ConfigureAwait(false)
-                    : await _client.GetStatusAsync(_account, target, uuid!, _cancellation.Token).ConfigureAwait(false);
+                    ? await _client.MergeAsync(_account, target, method!, token).ConfigureAwait(false)
+                    : await _client.GetStatusAsync(_account, target, uuid!, token).ConfigureAwait(false);
                 lock (_lock)
                 {
                     if (_invalidated) return;
@@ -162,7 +180,7 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
                 }
             }
         }
-        catch (OperationCanceledException) when (_cancellation.IsCancellationRequested)
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
         }
         catch (GitHubApiException ex)
@@ -197,11 +215,11 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
         {
             if (_disposed) return;
             _disposed = true;
+            _load.Dispose();
         }
 
-        _auth.AccountChanged -= OnAccountChanged;
+        _accountSubscription.Dispose();
         Invalidate("This confirmation is no longer active. Check GitHub for any submitted request.");
-        _ = CurrentWork.ContinueWith(_ => _cancellation.Dispose(), TaskScheduler.Default);
     }
 
     private void OnAccountChanged(object? sender, EventArgs e) =>
@@ -213,12 +231,12 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
         {
             if (_invalidated || (expectedConfirmation is not null && expectedConfirmation != _confirmationId)) return;
             _invalidated = true;
+            _load.Invalidate();
             _target = null;
             _result = null;
             _form = new MergeForm(this, Card(message, allowFresh ? "prepare" : null, includeLink: allowFresh));
         }
 
-        _cancellation.Cancel();
         IsLoading = false;
         RaiseItemsChanged();
     }

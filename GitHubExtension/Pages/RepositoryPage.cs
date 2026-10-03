@@ -14,10 +14,19 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
     public const string PageId = "com.baldbeardedbuilder.cmdpal.github.repository";
 
     private readonly IBrowserLauncher _browser;
-    private readonly ActionsPage? _actions;
-    private readonly RepositoryIssuesPage? _issuesPage;
-    private readonly RepositoryPullRequestsPage? _pullRequestsPage;
-    private readonly CreateAgentTaskPage? _createAgentTaskPage;
+    private readonly ActionsPage? _actionsTemplate;
+    private readonly RepositoryIssuesPage? _issuesTemplate;
+    private readonly RepositoryPullRequestsPage? _pullRequestsTemplate;
+    private readonly AuthService? _auth;
+    private readonly IAgentsClient? _agentsClient;
+    private GitHubRepository _repository;
+    private readonly Lock _lock = new();
+    private ActionsPage? _actions;
+    private RepositoryIssuesPage? _issuesPage;
+    private RepositoryPullRequestsPage? _pullRequestsPage;
+    private CreateAgentTaskPage? _createAgentTaskPage;
+    private bool _initialized;
+    private bool _disposed;
     private IListItem[] _items = [];
 
     public RepositoryPage(
@@ -30,23 +39,21 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
         IAgentsClient? agentsClient = null)
     {
         _browser = browser;
-        _actions = actions?.ForRepository(repository.FullName);
-        _issuesPage = issuesPage?.ForRepository(repository.FullName);
-        _pullRequestsPage = pullRequestsPage?.ForRepository(repository.FullName);
-        _createAgentTaskPage = auth is not null && agentsClient is not null
-            ? new CreateAgentTaskPage(auth, agentsClient, repository)
-            : null;
+        _actionsTemplate = actions;
+        _issuesTemplate = issuesPage;
+        _pullRequestsTemplate = pullRequestsPage;
+        _auth = auth;
+        _agentsClient = agentsClient;
+        _repository = repository;
         Id = $"{PageId}.{Uri.EscapeDataString(repository.FullName)}";
         Name = "Open";
         Icon = Icons.Repos;
-        SetRepository(repository);
+        Title = repository.FullName;
+        PlaceholderText = $"Search in {repository.FullName}...";
     }
 
     private void SetRepository(GitHubRepository repository)
     {
-        Title = repository.FullName;
-        PlaceholderText = $"Search in {repository.FullName}...";
-        SearchText = string.Empty;
         var repoBase = repository.WebUrl.AbsoluteUri.TrimEnd('/') + "/";
         var open = new OpenInBrowserCommand(_browser, repository.WebUrl, "Open on GitHub", Icons.Repos);
         IContextItem[] more =
@@ -87,25 +94,86 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
         {
             items.Add(new ListItem(_createAgentTaskPage)
             {
-                Title = "Start Copilot task", Subtitle = "Send work to a Copilot cloud agent",
-                Icon = Icons.Agents, MoreCommands = more,
+                Title = "Start Copilot task",
+                Subtitle = "Send work to a Copilot cloud agent",
+                Icon = Icons.Agents,
+                MoreCommands = more,
             });
         }
 
         items.Add(new ListItem(new OpenInBrowserCommand(_browser, new Uri(repoBase + "discussions"), "Open on GitHub", Icons.Discussions))
         {
-            Title = "Discussions", Subtitle = "Open discussions on GitHub", Icon = Icons.Discussions, MoreCommands = more,
+            Title = "Discussions",
+            Subtitle = "Open discussions on GitHub",
+            Icon = Icons.Discussions,
+            MoreCommands = more,
         });
         _items = [.. items];
-        RaiseItemsChanged();
     }
 
-    public override IListItem[] GetItems() => _items;
+    public override IListItem[] GetItems()
+    {
+        lock (_lock)
+        {
+            if (_disposed)
+            {
+                return [];
+            }
 
-    internal ActionsPage? Actions => _actions;
+            if (!_initialized)
+            {
+                _actions ??= _actionsTemplate?.ForRepository(_repository.FullName, this);
+                _issuesPage ??= _issuesTemplate?.ForRepository(_repository.FullName, this);
+                _pullRequestsPage ??= _pullRequestsTemplate?.ForRepository(_repository.FullName, this);
+                _createAgentTaskPage ??= _auth is not null && _agentsClient is not null
+                    ? new CreateAgentTaskPage(_auth, _agentsClient, _repository) { Owner = this }
+                    : null;
+                SetRepository(_repository);
+                _initialized = true;
+            }
+
+            return _items;
+        }
+    }
+
+    internal void UpdateRepository(GitHubRepository repository)
+    {
+        lock (_lock)
+        {
+            if (!_disposed && _repository != repository)
+            {
+                _repository = repository;
+                _initialized = false;
+            }
+        }
+    }
+
+    internal ActionsPage? Actions
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _disposed ? null : _actions ??= _actionsTemplate?.ForRepository(_repository.FullName, this);
+            }
+        }
+    }
+
+    internal bool IsDisposed => _disposed;
 
     public void Dispose()
     {
+        lock (_lock)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            _items = [];
+        }
+
         _actions?.Dispose();
         _issuesPage?.Dispose();
         _pullRequestsPage?.Dispose();
@@ -114,11 +182,10 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
 
     internal void Reset()
     {
-        _items = [];
+        Dispose();
         Title = "Repository";
         PlaceholderText = "Search repository sections...";
         SearchText = string.Empty;
         RaiseItemsChanged();
-        Dispose();
     }
 }

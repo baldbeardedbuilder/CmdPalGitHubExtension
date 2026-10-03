@@ -15,12 +15,10 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
     private readonly AuthService _auth;
     private readonly ICodespacesClient _client;
     private readonly IBrowserLauncher _browser;
-    private readonly Lock _lock = new();
+    private readonly ListLoadState _load = new();
+    private Lock _lock => _load.SyncRoot;
     private CreateCodespaceForm _form;
     private GitHubCodespace? _createdCodespace;
-    private CancellationTokenSource? _createCancellation;
-    private Task _currentCreate = Task.CompletedTask;
-    private int _generation;
     private bool _disposed;
 
     public CreateCodespacePage(AuthService auth, ICodespacesClient client, IBrowserLauncher browser)
@@ -42,7 +40,7 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
         {
             lock (_lock)
             {
-                return _currentCreate;
+                return _load.CurrentLoad;
             }
         }
     }
@@ -57,6 +55,11 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
 
     internal ICommandResult HandleSubmit(string inputs, string data)
     {
+        if (_disposed)
+        {
+            return CommandResult.KeepOpen();
+        }
+
         var action = ReadString(data, "action");
         if (action == CreateCodespaceActions.Open)
         {
@@ -111,92 +114,73 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
         _auth.AccountChanged -= OnAccountChanged;
         lock (_lock)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             _disposed = true;
             CancelCreate();
+            _load.Dispose();
+            _createdCodespace = null;
+            _form = new CreateCodespaceForm(this, CreateCodespaceCards.Form(null, null, null));
         }
+
+        IsLoading = false;
     }
 
     private void StartCreate(GitHubAccount account, string repository, string? branch)
     {
-        int generation;
-        CancellationToken token;
+        ListLoadState.Operation operation;
         lock (_lock)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             CancelCreate();
-            _createCancellation = new CancellationTokenSource();
-            token = _createCancellation.Token;
-            generation = ++_generation;
+            _load.TryBegin(true, out operation);
             _createdCodespace = null;
             _form = new CreateCodespaceForm(this, CreateCodespaceCards.Creating(repository));
         }
 
-        IsLoading = true;
-        RaiseItemsChanged();
-        lock (_lock)
+        _load.Publish(operation, () => IsLoading = true);
+        _load.Publish(operation, () => RaiseItemsChanged());
+        _load.Run(operation, () => CreateAsync(account, repository, branch, operation), () =>
         {
-            _currentCreate = Task.Run(() => CreateAsync(account, repository, branch, generation, token));
-        }
+            lock (_lock)
+            {
+                if (_load.IsCurrent(operation) && _load.Error is { } error)
+                {
+                    _form = new CreateCodespaceForm(this, CreateCodespaceCards.Form(repository, branch, error));
+                }
+            }
+
+            _load.Publish(operation, () => IsLoading = false);
+            _load.Publish(operation, () => RaiseItemsChanged());
+        },
+            "GitHub took too long to respond. Refresh codespaces before trying again.",
+            area: DiagnosticArea.Codespaces, diagnosticEvent: DiagnosticEvent.CodespaceCreate,
+            mutation: true, success: DiagnosticOutcome.Accepted);
     }
 
     private async Task CreateAsync(
         GitHubAccount account,
         string repository,
         string? branch,
-        int generation,
-        CancellationToken cancellationToken)
+        ListLoadState.Operation operation)
     {
-        using var operation = OperationDiagnostics.Begin(DiagnosticEvent.CodespaceCreate, DiagnosticArea.Codespaces);
-        Exception? failure = null;
-        try
+        var codespace = await _client.CreateCodespaceAsync(account, repository, branch, operation.Token).ConfigureAwait(false);
+        lock (_lock)
         {
-            var codespace = await _client.CreateCodespaceAsync(account, repository, branch, cancellationToken).ConfigureAwait(false);
-            lock (_lock)
+            if (!_load.IsCurrent(operation))
             {
-                if (generation != _generation || _disposed)
-                {
-                    return;
-                }
-
-                _createdCodespace = codespace;
-                _form = new CreateCodespaceForm(this, CreateCodespaceCards.Created(codespace));
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex)
-        {
-            failure = ex;
-            lock (_lock)
-            {
-                if (generation != _generation || _disposed)
-                {
-                    return;
-                }
-
-                _form = new CreateCodespaceForm(this, CreateCodespaceCards.Form(repository, branch, ex.Message));
-            }
-        }
-        finally
-        {
-            bool publish;
-            lock (_lock)
-            {
-                publish = generation == _generation && !_disposed;
+                return;
             }
 
-            if (publish)
-            {
-                IsLoading = false;
-                RaiseItemsChanged();
-            }
-
-            lock (_lock)
-            {
-                publish = generation == _generation && !_disposed;
-            }
-
-            PageDiagnostics.Finish(operation, failure, publish, DiagnosticOutcome.Accepted, mutation: true, cancellationToken: cancellationToken);
+            _createdCodespace = codespace;
+            _form = new CreateCodespaceForm(this, CreateCodespaceCards.Created(codespace));
         }
     }
 
@@ -204,6 +188,11 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
     {
         lock (_lock)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             _form = new CreateCodespaceForm(this, CreateCodespaceCards.Form(repository, branch, error));
         }
 
@@ -214,6 +203,11 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
     {
         lock (_lock)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             CancelCreate();
             _createdCodespace = null;
             _form = new CreateCodespaceForm(this, CreateCodespaceCards.Form(null, null, null));
@@ -225,10 +219,7 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
 
     private void CancelCreate()
     {
-        _generation++;
-        _createCancellation?.Cancel();
-        _createCancellation?.Dispose();
-        _createCancellation = null;
+        _load.Invalidate();
     }
 
     private static bool IsRepositoryName(string repository)

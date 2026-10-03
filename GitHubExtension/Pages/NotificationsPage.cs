@@ -11,7 +11,7 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 /// <summary>
 /// Your GitHub inbox. Loads lazily on first view, fills in issue and PR state as it arrives, and filters as you type.
 /// </summary>
-internal sealed partial class NotificationsPage : DynamicListPage
+internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
 {
     public const string PageId = "com.baldbeardedbuilder.cmdpal.github.notifications";
 
@@ -23,17 +23,19 @@ internal sealed partial class NotificationsPage : DynamicListPage
     private readonly IssueDetailsPage? _issueDetails;
     private readonly TimeProvider _time;
     private readonly PageEmptyContent _emptyContent;
-    private readonly Lock _lock = new();
+    private readonly ListLoadState _load = new();
+    private Lock _lock => _load.SyncRoot;
+    private readonly Dictionary<string, ListLoadState> _mutations = [];
+    private readonly Dictionary<string, WeakReference<IssueDetailsPage>> _detailPages = [];
     private readonly List<NotificationItem> _items = [];
     private readonly Dictionary<string, (DateTimeOffset UpdatedAt, SubjectDetails Details)> _subjectCache = [];
-    private Uri? _nextPage;
-    private bool _loaded;
-    private bool _fetching;
-    private string? _error;
     private string? _mutationError;
-    private int _generation;
-    private Task _currentLoad = Task.CompletedTask;
     private Task _currentMutation = Task.CompletedTask;
+    private int _accountGeneration;
+
+    internal GitHubAccount? CurrentAccount => _auth.CurrentAccount;
+
+    internal int AccountGeneration => _accountGeneration;
 
     public NotificationsPage(AuthService auth, INotificationsClient client, IBrowserLauncher browser, TimeProvider? time = null, IssueDetailsPage? issueDetails = null)
     {
@@ -49,7 +51,7 @@ internal sealed partial class NotificationsPage : DynamicListPage
         Icon = Icons.Notifications;
         PlaceholderText = "Filter notifications...";
         ShowDetails = true;
-        _auth.AccountChanged += (_, _) => Reset();
+        _auth.AccountChanged += OnAccountChanged;
     }
 
     /// <summary>
@@ -61,7 +63,7 @@ internal sealed partial class NotificationsPage : DynamicListPage
         {
             lock (_lock)
             {
-                return _currentLoad;
+                return _load.CurrentLoad;
             }
         }
     }
@@ -85,9 +87,14 @@ internal sealed partial class NotificationsPage : DynamicListPage
         string? mutationError;
         lock (_lock)
         {
-            needsLoad = !_loaded && !_fetching;
+            if (_load.Disposed)
+            {
+                return [];
+            }
+
+            needsLoad = _load.NeedsLoad;
             snapshot = [.. _items];
-            error = _error;
+            error = _load.Error;
             mutationError = _mutationError;
         }
 
@@ -119,7 +126,13 @@ internal sealed partial class NotificationsPage : DynamicListPage
         return result;
     }
 
-    public override void UpdateSearchText(string oldSearch, string newSearch) => RaiseItemsChanged();
+    public override void UpdateSearchText(string oldSearch, string newSearch)
+    {
+        if (!_load.Disposed)
+        {
+            RaiseItemsChanged();
+        }
+    }
 
     public override void LoadMore() => StartLoad(reset: false);
 
@@ -127,8 +140,13 @@ internal sealed partial class NotificationsPage : DynamicListPage
     {
         lock (_lock)
         {
-            _generation++;
-            _fetching = false;
+            if (_load.Disposed)
+            {
+                return _load.CurrentLoad;
+            }
+
+            _load.Invalidate();
+            CancelMutations();
         }
 
         return StartLoad(reset: true);
@@ -147,74 +165,99 @@ internal sealed partial class NotificationsPage : DynamicListPage
 
     internal void MarkAsRead(NotificationItem item)
     {
-        if (_auth.CurrentAccount is not { } account)
-        {
-            return;
-        }
-
-        int generation;
-        lock (_lock)
-        {
-            generation = _generation;
-            _mutationError = null;
-        }
-
-        item.SetUnread(false);
-        lock (_lock)
-        {
-            _currentMutation = Task.Run(() => MutateAsync(account, item, generation, done: false));
-        }
+        StartMutation(item, done: false);
     }
 
     internal void MarkAsDone(NotificationItem item)
     {
-        if (_auth.CurrentAccount is not { } account)
-        {
-            return;
-        }
-
-        int generation;
-        lock (_lock)
-        {
-            generation = _generation;
-            _mutationError = null;
-            _items.Remove(item);
-        }
-
-        RaiseItemsChanged();
-        lock (_lock)
-        {
-            _currentMutation = Task.Run(() => MutateAsync(account, item, generation, done: true));
-        }
+        StartMutation(item, done: true);
     }
 
-    private async Task MutateAsync(GitHubAccount account, NotificationItem item, int generation, bool done)
+    private void StartMutation(NotificationItem item, bool done)
     {
-        using var operation = OperationDiagnostics.Begin(
-            done ? DiagnosticEvent.NotificationDone : DiagnosticEvent.NotificationRead, DiagnosticArea.Notifications);
-        Exception? failure = null;
+        GitHubAccount account;
+        ListLoadState state;
+        ListLoadState.Operation operation;
+        lock (_lock)
+        {
+            if (_load.Disposed || _auth.CurrentAccount is not { } current
+                || current != item.Account || item.AccountGeneration != _accountGeneration)
+            {
+                return;
+            }
+
+            account = current;
+            if (_mutations.Remove(item.Notification.Id, out var previous))
+            {
+                previous.Dispose();
+            }
+
+            state = new ListLoadState(_lock);
+            state.TryBegin(true, out operation);
+            _mutations.Add(item.Notification.Id, state);
+            _mutationError = null;
+            if (done)
+            {
+                _items.Remove(item);
+            }
+
+            _currentMutation = operation.Completion.Task;
+        }
+
+        state.Publish(operation, () =>
+        {
+            if (!done)
+            {
+                item.SetUnread(false, notification => state.Publish(operation, notification));
+            }
+        });
+        state.Publish(operation, () => RaiseItemsChanged());
+        state.Run(operation, () => MutateAsync(account, item, state, operation, done), () =>
+        {
+            state.Publish(operation, () => RaiseItemsChanged());
+        }, "GitHub took too long to respond. Refresh and try again.", area: DiagnosticArea.Notifications,
+            diagnosticEvent: done ? DiagnosticEvent.NotificationDone : DiagnosticEvent.NotificationRead, mutation: true,
+            retired: () =>
+            {
+                lock (_lock)
+                {
+                    if (_mutations.TryGetValue(item.Notification.Id, out var current) && ReferenceEquals(current, state))
+                    {
+                        _mutations.Remove(item.Notification.Id);
+                    }
+
+                    state.Dispose();
+                }
+            });
+    }
+
+    private async Task MutateAsync(GitHubAccount account, NotificationItem item, ListLoadState state,
+        ListLoadState.Operation operation, bool done)
+    {
         try
         {
             if (done)
             {
-                await _client.MarkAsDoneAsync(account, item.Notification.Id, CancellationToken.None).ConfigureAwait(false);
+                await _client.MarkAsDoneAsync(account, item.Notification.Id, operation.Token).ConfigureAwait(false);
             }
             else
             {
-                await _client.MarkAsReadAsync(account, item.Notification.Id, CancellationToken.None).ConfigureAwait(false);
+                await _client.MarkAsReadAsync(account, item.Notification.Id, operation.Token).ConfigureAwait(false);
             }
         }
-        catch (Exception ex)
+        catch (OperationCanceledException) when (operation.Token.IsCancellationRequested)
         {
-            failure = ex;
+            throw;
         }
-
-        bool current;
-        lock (_lock)
+        catch
         {
-            current = generation == _generation;
-            if (current && failure is not null)
+            lock (_lock)
             {
+                if (!state.IsCurrent(operation))
+                {
+                    throw;
+                }
+
                 _mutationError = done ? "Couldn't mark notification as done. Refresh and try again."
                     : "Couldn't mark notification as read. Refresh and try again.";
                 if (done && !_items.Any(i => i.Notification.Id == item.Notification.Id))
@@ -222,178 +265,121 @@ internal sealed partial class NotificationsPage : DynamicListPage
                     _items.Add(item);
                 }
             }
-        }
 
-        if (current)
-        {
-            if (failure is not null && !done)
+            if (!done)
             {
-                item.SetUnread(true);
+                state.Publish(operation, () => item.SetUnread(true, notification => state.Publish(operation, notification)));
             }
 
-            RaiseItemsChanged();
+            throw;
         }
-
-        lock (_lock)
-        {
-            current = generation == _generation;
-        }
-
-        PageDiagnostics.Finish(operation, failure, current, mutation: true);
     }
 
     private Task StartLoad(bool reset)
     {
         GitHubAccount? account;
-        Uri? page;
-        int generation;
+        ListLoadState.Operation operation;
         lock (_lock)
         {
             account = _auth.CurrentAccount;
-            if (account is null || _fetching || (!reset && _nextPage is null))
+            if (account is null || !_load.TryBegin(reset, out operation))
             {
-                return _currentLoad;
+                return _load.CurrentLoad;
             }
-
-            _fetching = true;
-            page = reset ? null : _nextPage;
-            generation = _generation;
         }
 
-        IsLoading = true;
+        _load.Publish(operation, () => IsLoading = true);
+        return _load.Run(operation, () => LoadAsync(account, operation), () =>
+        {
+            _load.Publish(operation, () => IsLoading = false);
+            _load.Publish(operation, () => RaiseItemsChanged());
+        }, "GitHub took too long to respond. Try refreshing notifications.", area: DiagnosticArea.Notifications);
+    }
+
+    private async Task LoadAsync(GitHubAccount account, ListLoadState.Operation operation)
+    {
+        List<NotificationItem> added = [];
+        var result = await _client.GetNotificationsAsync(account, operation.Page, operation.Token).ConfigureAwait(false);
+        var now = _time.GetUtcNow();
+
         lock (_lock)
         {
-            if (generation != _generation)
+            if (!_load.IsCurrent(operation))
             {
-                return _currentLoad;
+                return;
             }
 
-            _currentLoad = Task.Run(() => LoadAsync(account, page, reset, generation));
-            return _currentLoad;
-        }
-    }
-
-    private async Task LoadAsync(GitHubAccount account, Uri? page, bool reset, int generation)
-    {
-        using var operation = OperationDiagnostics.Begin(DiagnosticEvent.PageLoad, DiagnosticArea.Notifications, verbose: true);
-        Exception? failure = null;
-        List<NotificationItem> added = [];
-        try
-        {
-            var result = await _client.GetNotificationsAsync(account, page, CancellationToken.None).ConfigureAwait(false);
-            var now = _time.GetUtcNow();
-
-            lock (_lock)
+            if (operation.Reset)
             {
-                if (generation != _generation)
-                {
-                    return;
-                }
+                _items.Clear();
+            }
 
-                if (reset)
+            var known = _items.Select(i => i.Notification.Id).ToHashSet(StringComparer.Ordinal);
+            foreach (var notification in result.Notifications.Where(n => known.Add(n.Id)))
+            {
+                var item = new NotificationItem(this, notification, NotificationFormatting.WebUrl(account.Host, notification), _browser, now);
+                if (_issueDetails is { } issueDetails
+                    && notification.SubjectType == "Issue"
+                    && notification.SubjectApiUrl is { } issueApiUrl)
                 {
-                    _items.Clear();
-                }
-
-                var known = _items.Select(i => i.Notification.Id).ToHashSet(StringComparer.Ordinal);
-                foreach (var notification in result.Notifications.Where(n => known.Add(n.Id)))
-                {
-                    var item = new NotificationItem(this, notification, NotificationFormatting.WebUrl(account.Host, notification), _browser, now);
-                    if (_issueDetails is { } issueDetails
-                        && notification.SubjectType == "Issue"
-                        && notification.SubjectApiUrl is { } issueApiUrl)
+                    Action onOpened = () =>
                     {
-                        item.Command = issueDetails.ForNotification(
-                            notification.Id,
-                            issueApiUrl,
-                            notification.RepositoryFullName,
-                            () =>
-                            {
-                                if (item.Unread)
-                                {
-                                    MarkAsRead(item);
-                                }
-                            });
+                        if (item.Unread)
+                        {
+                            MarkAsRead(item);
+                        }
+                    };
+                    foreach (var key in _detailPages.Where(entry => !entry.Value.TryGetTarget(out _)).Select(entry => entry.Key).ToArray())
+                    {
+                        _detailPages.Remove(key);
                     }
 
-                    if (_subjectCache.TryGetValue(notification.Id, out var cached) && cached.UpdatedAt == notification.UpdatedAt)
+                    if (!_detailPages.TryGetValue(notification.Id, out var reference)
+                        || !reference.TryGetTarget(out var details) || details.IsDisposed)
                     {
-                        item.ApplySubject(cached.Details);
+                        details = issueDetails.ForNotification(notification.Id, issueApiUrl, notification.RepositoryFullName, onOpened);
+                        _detailPages[notification.Id] = new(details);
                     }
 
-                    _items.Add(item);
-                    added.Add(item);
+                    details.SetNotification(issueApiUrl, notification.RepositoryFullName, onOpened);
+                    item.Command = details;
                 }
 
-                _nextPage = result.NextPage;
-                _loaded = true;
-                _error = null;
-                _mutationError = null;
-            }
-
-            HasMoreItems = result.NextPage is not null;
-        }
-        catch (Exception ex)
-        {
-            failure = ex;
-            lock (_lock)
-            {
-                if (generation != _generation)
+                if (_subjectCache.TryGetValue(notification.Id, out var cached) && cached.UpdatedAt == notification.UpdatedAt)
                 {
-                    return;
+                    item.ApplySubject(cached.Details);
                 }
 
-                _error = ex.Message;
-                _loaded = true;
+                _items.Add(item);
+                added.Add(item);
             }
+
+            _load.Succeed(operation, result.NextPage);
+            _mutationError = null;
         }
-        finally
-        {
-            bool publish;
-            lock (_lock)
-            {
-                publish = generation == _generation;
-                if (publish)
-                {
-                    _fetching = false;
-                }
-            }
 
-            if (publish)
-            {
-                IsLoading = false;
-                RaiseItemsChanged();
-                if (failure is null)
-                {
-                    await LoadSubjectsAsync(account, added, generation).ConfigureAwait(false);
-                }
-            }
-
-            lock (_lock)
-            {
-                publish = generation == _generation;
-            }
-
-            PageDiagnostics.Finish(operation, failure, publish);
-        }
+        _load.Publish(operation, () => HasMoreItems = result.NextPage is not null);
+        _load.Publish(operation, () => RaiseItemsChanged());
+        await LoadSubjectsAsync(account, added, operation).ConfigureAwait(false);
     }
 
-    private async Task LoadSubjectsAsync(GitHubAccount account, List<NotificationItem> items, int generation)
+    private async Task LoadSubjectsAsync(GitHubAccount account, List<NotificationItem> items, ListLoadState.Operation load)
     {
         using var throttle = new SemaphoreSlim(MaxConcurrentSubjectRequests);
         await Task.WhenAll(items
             .Where(i => i.Subject is null && NotificationFormatting.HasState(i.Notification))
             .Select(async item =>
             {
-                await throttle.WaitAsync().ConfigureAwait(false);
+                await throttle.WaitAsync(load.Token).ConfigureAwait(false);
                 using var operation = OperationDiagnostics.Begin(DiagnosticEvent.SchemaRead, DiagnosticArea.Notifications, verbose: true);
                 Exception? failure = null;
                 try
                 {
-                    var details = await _client.GetSubjectAsync(account, item.Notification.SubjectApiUrl!, CancellationToken.None).ConfigureAwait(false);
+                    load.Token.ThrowIfCancellationRequested();
+                    var details = await _client.GetSubjectAsync(account, item.Notification.SubjectApiUrl!, load.Token).ConfigureAwait(false);
                     lock (_lock)
                     {
-                        if (generation != _generation)
+                        if (!_load.IsCurrent(load))
                         {
                             return;
                         }
@@ -411,26 +397,31 @@ internal sealed partial class NotificationsPage : DynamicListPage
                             failure = new System.Text.Json.JsonException();
                         }
 
-                        item.ApplySubject(details);
+                        _load.Publish(load, () => item.ApplySubject(details, notification => _load.Publish(load, notification)));
                     }
                     else
                     {
                         failure = new System.Text.Json.JsonException();
-                        item.SetSubjectError(UnavailableSubjectMessage(item.Notification.SubjectType));
+                        _load.Publish(load, () => item.SetSubjectError(UnavailableSubjectMessage(item.Notification.SubjectType),
+                            publish: notification => _load.Publish(load, notification)));
                     }
+                }
+                catch (OperationCanceledException) when (load.Token.IsCancellationRequested)
+                {
                 }
                 catch (Exception ex)
                 {
                     failure = ex;
                     lock (_lock)
                     {
-                        if (generation != _generation)
+                        if (!_load.IsCurrent(load))
                         {
                             return;
                         }
                     }
 
-                    item.SetSubjectError(ex.Message, (ex as GitHubApiException)?.AuthorizeUrl);
+                    _load.Publish(load, () => item.SetSubjectError(ex.Message, (ex as GitHubApiException)?.AuthorizeUrl,
+                        notification => _load.Publish(load, notification)));
                 }
                 finally
                 {
@@ -438,31 +429,90 @@ internal sealed partial class NotificationsPage : DynamicListPage
                     bool current;
                     lock (_lock)
                     {
-                        current = generation == _generation;
+                        current = _load.IsCurrent(load);
                     }
 
-                    PageDiagnostics.Finish(operation, failure, current);
+                    PageDiagnostics.Finish(operation, failure, current, cancellationToken: load.Token);
                 }
             })).ConfigureAwait(false);
     }
 
     private void Reset()
     {
+        IssueDetailsPage[] details;
+        long revision;
         lock (_lock)
         {
-            _generation++;
+            if (_load.Disposed)
+            {
+                return;
+            }
+
+            _load.Invalidate(reset: true);
+            _accountGeneration++;
+            CancelMutations();
+            details = TakeDetailPages();
             _items.Clear();
             _subjectCache.Clear();
-            _nextPage = null;
-            _loaded = false;
-            _fetching = false;
-            _error = null;
             _mutationError = null;
+            revision = _load.Revision;
         }
 
-        HasMoreItems = false;
+        foreach (var page in details)
+        {
+            page.Dispose();
+        }
+
+        _load.Publish(revision, () => HasMoreItems = false);
+        _load.Publish(revision, () => IsLoading = false);
+        _load.Publish(revision, () => RaiseItemsChanged());
+    }
+
+    private void OnAccountChanged(object? sender, EventArgs e) => Reset();
+
+    private void CancelMutations()
+    {
+        foreach (var state in _mutations.Values)
+        {
+            state.Dispose();
+        }
+
+        _mutations.Clear();
+    }
+
+    private IssueDetailsPage[] TakeDetailPages()
+    {
+        var pages = _detailPages.Values.Select(reference => reference.TryGetTarget(out var page) ? page : null)
+            .OfType<IssueDetailsPage>().ToArray();
+        _detailPages.Clear();
+        return pages;
+    }
+
+    public void Dispose()
+    {
+        _auth.AccountChanged -= OnAccountChanged;
+        IssueDetailsPage[] details;
+        lock (_lock)
+        {
+            if (_load.Disposed)
+            {
+                return;
+            }
+
+            _load.Dispose();
+            CancelMutations();
+            details = TakeDetailPages();
+            _items.Clear();
+            _subjectCache.Clear();
+        }
+
+        foreach (var page in details)
+        {
+            page.Dispose();
+        }
+
         IsLoading = false;
-        RaiseItemsChanged();
+        HasMoreItems = false;
     }
 
     private static bool HasSubjectDetails(string subjectType, SubjectDetails details) => subjectType switch
