@@ -32,7 +32,7 @@ internal sealed class IssuesClient(HttpClient httpClient) : IIssuesClient
         using var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken).ConfigureAwait(false);
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
         return new IssuesPageResult(ParseIssues(json.RootElement), NextPage(response));
-    }, cancellationToken);
+    }, cancellationToken: cancellationToken);
 
     public Task<GitHubIssue> GetIssueAsync(GitHubAccount account, Uri issueApiUrl, CancellationToken cancellationToken) =>
         DomainDiagnostics.RunAsync(DiagnosticArea.Issues, async () =>
@@ -40,7 +40,7 @@ internal sealed class IssuesClient(HttpClient httpClient) : IIssuesClient
         using var response = await SendAsync(httpClient, account, HttpMethod.Get, issueApiUrl, cancellationToken).ConfigureAwait(false);
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
         return ParseIssue(json.RootElement);
-    }, cancellationToken);
+    }, cancellationToken: cancellationToken);
 
     internal static List<GitHubIssue> ParseIssues(JsonElement array) =>
         DomainDiagnostics.Read(DiagnosticArea.Issues, () =>

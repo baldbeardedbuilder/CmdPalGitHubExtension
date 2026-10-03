@@ -154,6 +154,24 @@ public class AuthDiagnosticsTests
     }
 
     [TestMethod]
+    public async Task AuthFailure_PreservesPreviouslyRecordedCategoryWithoutInnerException()
+    {
+        var entries = new List<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Add);
+        var error = new GitHubAuthException(Sensitive);
+        using var schema = OperationDiagnostics.Begin(DiagnosticEvent.SchemaRead, DiagnosticArea.Auth);
+        schema.Fail(error, DiagnosticFailure.Schema);
+
+        await Assert.ThrowsAsync<GitHubAuthException>(() => AuthDiagnostics.RunAsync<string>(
+            DiagnosticEvent.AuthIdentity, () => Task.FromException<string>(error), CancellationToken.None));
+
+        var failure = entries.Single(entry => entry.Event == DiagnosticEvent.AuthIdentity && entry.Outcome == DiagnosticOutcome.Failed);
+        Assert.AreEqual(DiagnosticFailure.Schema, failure.Failure);
+        Assert.AreEqual(DiagnosticSeverity.Information, failure.Severity);
+        AssertRedacted(entries);
+    }
+
+    [TestMethod]
     public async Task ExchangeRejected_PreservesDescriptionWithoutLoggingIt()
     {
         var entries = new List<DiagnosticEntry>();

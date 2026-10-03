@@ -39,7 +39,7 @@ internal sealed class RepositoriesClient(HttpClient httpClient) : IRepositoriesC
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
 
         return new RepositoriesPageResult(ParseRepositories(json.RootElement), NextPage(response));
-    }, cancellationToken);
+    }, cancellationToken: cancellationToken);
 
     public Task<IReadOnlyList<GitHubRepository>> SearchAsync(GitHubAccount account, string query, CancellationToken cancellationToken) =>
         DomainDiagnostics.RunAsync<IReadOnlyList<GitHubRepository>>(DiagnosticArea.Repositories, async () =>
@@ -50,7 +50,7 @@ internal sealed class RepositoriesClient(HttpClient httpClient) : IRepositoriesC
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
 
         return ParseSearch(json.RootElement);
-    }, cancellationToken, DiagnosticEvent.PageSearch);
+    }, name: DiagnosticEvent.PageSearch, cancellationToken: cancellationToken);
 
     internal static List<GitHubRepository> ParseSearch(JsonElement root)
     {

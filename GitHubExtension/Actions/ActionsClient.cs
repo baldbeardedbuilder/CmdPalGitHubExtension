@@ -37,7 +37,7 @@ internal sealed class ActionsClient(HttpClient httpClient) : IActionsClient
         {
             throw new GitHubApiException("The connection closed while loading workflow runs. Try refreshing.", ex);
         }
-    }, cancellationToken);
+    }, cancellationToken: cancellationToken);
 
     internal static List<GitHubWorkflowRun> ParseRuns(JsonElement root) =>
         DomainDiagnostics.Read(DiagnosticArea.Actions, () =>

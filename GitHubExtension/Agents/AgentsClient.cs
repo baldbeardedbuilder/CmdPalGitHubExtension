@@ -82,8 +82,8 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
                 throttle.Release();
             }
         }
-    }, cancellationToken, outcome: result => result.Tasks.Any(task => task.DetailsError is not null)
-        ? DiagnosticOutcome.Partial : DiagnosticOutcome.Completed);
+    }, outcome: result => result.Tasks.Any(task => task.DetailsError is not null)
+        ? DiagnosticOutcome.Partial : DiagnosticOutcome.Completed, cancellationToken: cancellationToken);
 
     internal static List<GitHubAgentTask> ParseTasks(JsonElement root, GitHubHost host) =>
         DomainDiagnostics.Read(DiagnosticArea.Agents, () =>
@@ -194,14 +194,14 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
 
         using (response)
         {
-            throw response.StatusCode switch
+            throw CorrelateFailure(response, response.StatusCode switch
             {
                 HttpStatusCode.Unauthorized => new GitHubApiException("GitHub didn't accept your token. Sign out and back in to fix it."),
                 HttpStatusCode.Forbidden => new GitHubApiException("GitHub denied access to agents. Check your Copilot access, token permissions (Agent tasks: read for fine-grained tokens), and API rate limit."),
                 HttpStatusCode.NotFound => new GitHubApiException("The Agent Tasks API isn't available for this account or GitHub host."),
                 HttpStatusCode.TooManyRequests => new GitHubApiException("GitHub's rate limit was reached. Try refreshing agents later."),
                 _ => new GitHubApiException($"{account.Host.Name} returned {(int)response.StatusCode} {response.ReasonPhrase}."),
-            };
+            });
         }
     }
 }

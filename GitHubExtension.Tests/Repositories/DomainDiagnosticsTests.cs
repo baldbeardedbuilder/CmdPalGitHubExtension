@@ -123,7 +123,7 @@ public sealed class DomainDiagnosticsTests
         Assert.HasCount(1, entries.Select(entry => entry.OperationId).Distinct());
         Assert.IsTrue(entries.All(entry => entry.Area == DiagnosticArea.Codespaces));
         Assert.AreEqual(pending ? DiagnosticOutcome.Accepted : DiagnosticOutcome.Completed,
-            entries.Last(entry => entry.Event == DiagnosticEvent.Mutation).Outcome);
+            entries.Last(entry => entry.Event == DiagnosticEvent.CodespaceCreate).Outcome);
         Assert.IsFalse(entries.Any(entry => entry.ToString().Contains("private-", StringComparison.Ordinal)));
         Assert.IsFalse(entries.Any(entry => entry.ToString().Contains("987654", StringComparison.Ordinal)));
     }
@@ -150,9 +150,10 @@ public sealed class DomainDiagnosticsTests
             await client.StopCodespaceAsync(Account, "private-space", TestContext.CancellationToken);
         }
 
-        Assert.AreEqual(DiagnosticOutcome.Requested, entries.First(entry => entry.Event == DiagnosticEvent.Mutation).Outcome);
+        var eventName = action == "start" ? DiagnosticEvent.CodespaceStart : DiagnosticEvent.CodespaceStop;
+        Assert.AreEqual(DiagnosticOutcome.Requested, entries.First(entry => entry.Event == eventName).Outcome);
         Assert.AreEqual(completed ? DiagnosticOutcome.Completed : DiagnosticOutcome.Accepted,
-            entries.Last(entry => entry.Event == DiagnosticEvent.Mutation).Outcome);
+            entries.Last(entry => entry.Event == eventName).Outcome);
         Assert.HasCount(1, entries.Select(entry => entry.OperationId).Distinct());
     }
 
@@ -177,11 +178,11 @@ public sealed class DomainDiagnosticsTests
         await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
             new CodespacesClient(http).StartCodespaceAsync(Account, "private-space", TestContext.CancellationToken));
 
-        var terminal = entries.Last(entry => entry.Event == DiagnosticEvent.Mutation);
+        var terminal = entries.Last(entry => entry.Event == DiagnosticEvent.CodespaceStart);
         Assert.AreEqual(expected, terminal.Outcome.ToString());
         Assert.AreEqual(category, terminal.Failure.ToString());
         Assert.IsFalse(entries.Any(entry => entry.ToString().Contains("private-", StringComparison.Ordinal)));
-        Assert.IsFalse(entries.Any(entry => entry.Event == DiagnosticEvent.Mutation && entry.Outcome == DiagnosticOutcome.Completed));
+        Assert.IsFalse(entries.Any(entry => entry.Event == DiagnosticEvent.CodespaceStart && entry.Outcome == DiagnosticOutcome.Completed));
     }
 
     [TestMethod]
@@ -204,7 +205,7 @@ public sealed class DomainDiagnosticsTests
             new CodespacesClient(http).CreateCodespaceAsync(Account, "private-owner/private-repo", null, TestContext.CancellationToken));
 
         Assert.AreEqual(1, requests);
-        Assert.AreEqual(DiagnosticOutcome.Failed, entries.Last(entry => entry.Event == DiagnosticEvent.Mutation).Outcome);
+        Assert.AreEqual(DiagnosticOutcome.Failed, entries.Last(entry => entry.Event == DiagnosticEvent.CodespaceCreate).Outcome);
     }
 
     [TestMethod]
@@ -223,7 +224,7 @@ public sealed class DomainDiagnosticsTests
         await Assert.ThrowsAsync<OperationCanceledException>(() =>
             new CodespacesClient(http).StartCodespaceAsync(Account, "private-space", cancellation.Token));
 
-        Assert.AreEqual(DiagnosticOutcome.Cancelled, entries.Last(entry => entry.Event == DiagnosticEvent.Mutation).Outcome);
+        Assert.AreEqual(DiagnosticOutcome.Cancelled, entries.Last(entry => entry.Event == DiagnosticEvent.CodespaceStart).Outcome);
         Assert.IsFalse(entries.Any(entry => entry.Severity == DiagnosticSeverity.Error));
     }
 
@@ -267,7 +268,7 @@ public sealed class DomainDiagnosticsTests
 
         await new NotificationsClient(http).MarkAsReadAsync(Account, "private-thread", TestContext.CancellationToken);
 
-        Assert.AreEqual(outcome, entries.Last(entry => entry.Event == DiagnosticEvent.Mutation).Outcome.ToString());
+        Assert.AreEqual(outcome, entries.Last(entry => entry.Event == DiagnosticEvent.NotificationRead).Outcome.ToString());
     }
 
     [TestMethod]
@@ -281,7 +282,7 @@ public sealed class DomainDiagnosticsTests
         var space = await new CodespacesClient(http).StartCodespaceAsync(Account, "private-space", TestContext.CancellationToken);
 
         Assert.AreEqual("Failed", space.State);
-        var terminal = entries.Last(entry => entry.Event == DiagnosticEvent.Mutation);
+        var terminal = entries.Last(entry => entry.Event == DiagnosticEvent.CodespaceStart);
         Assert.AreEqual(DiagnosticOutcome.Failed, terminal.Outcome);
         Assert.AreEqual(DiagnosticSeverity.Error, terminal.Severity);
         Assert.AreEqual(DiagnosticFailure.None, terminal.Failure);

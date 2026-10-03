@@ -38,7 +38,7 @@ internal sealed class NotificationsClient(HttpClient httpClient) : INotification
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
 
         return new NotificationsPageResult(ParseNotifications(json.RootElement), NextPage(response));
-    }, cancellationToken);
+    }, cancellationToken: cancellationToken);
 
     internal static List<GitHubNotification> ParseNotifications(JsonElement root) =>
         DomainDiagnostics.Read(DiagnosticArea.Notifications, () =>
@@ -70,7 +70,7 @@ internal sealed class NotificationsClient(HttpClient httpClient) : INotification
         {
             throw new GitHubApiException($"The request to {subjectApiUrl.Host} timed out. Try again.", ex);
         }
-    }, cancellationToken);
+    }, cancellationToken: cancellationToken);
 
     public async Task MarkAsReadAsync(GitHubAccount account, string threadId, CancellationToken cancellationToken)
     {
@@ -83,7 +83,7 @@ internal sealed class NotificationsClient(HttpClient httpClient) : INotification
             using var response = await SendAsync(httpClient, account, HttpMethod.Patch, uri, cancellationToken).ConfigureAwait(false);
             return response.StatusCode is System.Net.HttpStatusCode.NoContent or System.Net.HttpStatusCode.ResetContent
                 ? DiagnosticOutcome.Completed : DiagnosticOutcome.Accepted;
-        }, cancellationToken, DiagnosticEvent.Mutation, outcome => outcome, () => sent).ConfigureAwait(false);
+        }, DiagnosticEvent.NotificationRead, outcome => outcome, () => sent, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task MarkAsDoneAsync(GitHubAccount account, string threadId, CancellationToken cancellationToken)
@@ -97,7 +97,7 @@ internal sealed class NotificationsClient(HttpClient httpClient) : INotification
             using var response = await SendAsync(httpClient, account, HttpMethod.Delete, uri, cancellationToken).ConfigureAwait(false);
             return response.StatusCode is System.Net.HttpStatusCode.NoContent or System.Net.HttpStatusCode.ResetContent
                 ? DiagnosticOutcome.Completed : DiagnosticOutcome.Accepted;
-        }, cancellationToken, DiagnosticEvent.Mutation, outcome => outcome, () => sent).ConfigureAwait(false);
+        }, DiagnosticEvent.NotificationDone, outcome => outcome, () => sent, cancellationToken).ConfigureAwait(false);
     }
 
     internal static GitHubNotification ParseNotification(JsonElement element) =>

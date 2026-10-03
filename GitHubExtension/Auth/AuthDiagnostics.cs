@@ -44,9 +44,13 @@ internal static class AuthDiagnostics
         }
     }
 
-    private static DiagnosticFailure Classify(Exception exception) =>
-        exception is CredentialFailureException ? DiagnosticFailure.Credentials
-        : exception is GitHubAuthException { InnerException: { } inner } ? Classify(inner)
-        : exception is GitHubAuthException ? DiagnosticFailure.Authentication
-        : OperationDiagnostics.Classify(exception);
+    private static DiagnosticFailure Classify(Exception exception)
+    {
+        var category = OperationDiagnostics.FailureCategory(exception);
+        return category != DiagnosticFailure.Unexpected ? category
+            : exception is CredentialFailureException ? DiagnosticFailure.Credentials
+            : exception is GitHubAuthException { InnerException: { } inner } ? Classify(inner)
+            : exception is GitHubAuthException ? DiagnosticFailure.Authentication
+            : category;
+    }
 }

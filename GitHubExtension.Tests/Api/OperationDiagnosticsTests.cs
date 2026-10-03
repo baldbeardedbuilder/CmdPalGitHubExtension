@@ -238,6 +238,46 @@ public sealed class OperationDiagnosticsTests
         Assert.AreEqual(DiagnosticOutcome.Completed, entries[^1].Outcome);
     }
 
+    [TestMethod]
+    public void PostAcceptanceSchemaFailureRemainsUnknownInSummary()
+    {
+        var entries = new List<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Add, verboseReads: false);
+        var error = new GitHubApiException("secret-message");
+        using var page = OperationDiagnostics.Begin(DiagnosticEvent.CodespaceCreate);
+        using (var parser = OperationDiagnostics.Begin(DiagnosticEvent.SchemaRead, verbose: true))
+        {
+            parser.Fail(error, DiagnosticFailure.Schema);
+        }
+
+        using (var client = OperationDiagnostics.Begin(DiagnosticEvent.CodespaceCreate))
+        {
+            client.Fail(error, outcome: DiagnosticOutcome.Unknown);
+        }
+
+        page.Fail(error);
+        Assert.AreEqual(DiagnosticOutcome.Unknown, entries[^1].Outcome);
+        Assert.HasCount(1, entries.Where(e => e.Severity == DiagnosticSeverity.Error));
+    }
+
+    [TestMethod]
+    public void PartialReadIsVisibleWithoutVerboseModeAndInheritedBySummary()
+    {
+        var entries = new List<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Add, verboseReads: false);
+        using var page = OperationDiagnostics.Begin(DiagnosticEvent.PageLoad, verbose: true);
+        using (var client = OperationDiagnostics.Begin(DiagnosticEvent.PageLoad, verbose: true))
+        {
+            client.Complete(DiagnosticOutcome.Partial);
+        }
+
+        page.Complete();
+        Assert.HasCount(2, entries);
+        Assert.AreEqual(DiagnosticSeverity.Warning, entries[0].Severity);
+        Assert.AreEqual(DiagnosticOutcome.Partial, entries[^1].Outcome);
+        Assert.AreEqual(DiagnosticSeverity.Information, entries[^1].Severity);
+    }
+
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>

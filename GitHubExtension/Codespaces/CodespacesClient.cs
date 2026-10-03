@@ -53,9 +53,9 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
             {
                 throw new GitHubApiException(timeoutMessage, ex);
             }
-        }, cancellationToken, DiagnosticEvent.Mutation,
+        }, DiagnosticEvent.CodespaceStop,
             space => MutationOutcome(space, "Shutdown"),
-            () => sent).ConfigureAwait(false);
+            () => sent, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<GitHubCodespace> StartCodespaceAsync(GitHubAccount account, string name, CancellationToken cancellationToken)
@@ -82,9 +82,9 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
             {
                 throw new GitHubApiException(timeoutMessage, ex);
             }
-        }, cancellationToken, DiagnosticEvent.Mutation,
+        }, DiagnosticEvent.CodespaceStart,
             space => MutationOutcome(space, "Available"),
-            () => sent).ConfigureAwait(false);
+            () => sent, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<CodespacesPageResult> GetCodespacesAsync(GitHubAccount account, Uri? page, CancellationToken cancellationToken) =>
@@ -99,7 +99,7 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
         using var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken).ConfigureAwait(false);
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
         return new CodespacesPageResult(ParseCodespaces(json.RootElement), NextPage(response));
-    }, cancellationToken);
+    }, cancellationToken: cancellationToken);
 
     public async Task<GitHubCodespace> CreateCodespaceAsync(
         GitHubAccount account,
@@ -153,9 +153,9 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
             using var response = await SendAsync(httpClient, account, HttpMethod.Post, createUri, cancellationToken, content: content).ConfigureAwait(false);
             using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
             return ReadCodespace(json.RootElement);
-        }, cancellationToken, DiagnosticEvent.Mutation,
+        }, DiagnosticEvent.CodespaceCreate,
             space => MutationOutcome(space, "Available"),
-            () => sent).ConfigureAwait(false);
+            () => sent, cancellationToken).ConfigureAwait(false);
     }
 
     private static GitHubCodespace ReadCodespace(JsonElement root) =>

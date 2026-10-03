@@ -34,10 +34,8 @@ public sealed class PageNotificationTests
     [DataRow("pull-requests")]
     public async Task PageDiagnostics_LoadFailureAndRecoveryShareCallerCorrelation(string name)
     {
-        var previous = Environment.GetEnvironmentVariable("CMDPAL_GITHUB_VERBOSE_DIAGNOSTICS");
-        Environment.SetEnvironmentVariable("CMDPAL_GITHUB_VERBOSE_DIAGNOSTICS", "1");
         var entries = new ConcurrentQueue<DiagnosticEntry>();
-        using var sink = OperationDiagnostics.UseSink(entries.Enqueue);
+        using var sink = OperationDiagnostics.UseSink(entries.Enqueue, verboseReads: true);
         using var caller = OperationDiagnostics.Begin(DiagnosticEvent.Mutation);
         var fail = true;
         var (page, load, refresh) = CreateListPage(name, CreateAuth(), () => fail);
@@ -57,7 +55,6 @@ public sealed class PageNotificationTests
         {
             (page as IDisposable)?.Dispose();
             caller.Complete();
-            Environment.SetEnvironmentVariable("CMDPAL_GITHUB_VERBOSE_DIAGNOSTICS", previous);
         }
     }
 

@@ -138,6 +138,36 @@ public sealed class PageDiagnosticsTests
     }
 
     [TestMethod]
+    [DataRow(false, 202)]
+    [DataRow(true, 202)]
+    [DataRow(false, 204)]
+    [DataRow(true, 204)]
+    public async Task NotificationMutation_PageInheritsAcceptedOrConfirmedDomainOutcome(bool done, int status)
+    {
+        var entries = new ConcurrentQueue<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Enqueue);
+        using var http = new HttpClient(new StubHandler(_ =>
+            Task.FromResult(new HttpResponseMessage((System.Net.HttpStatusCode)status))));
+        var browser = new FakeBrowser(_ => null);
+        var page = new NotificationsPage(CreateAuth(), new NotificationsClient(http), browser);
+        var notification = new GitHubNotification("1", "private title", "Discussion", null, "private/repository", WebUrl, "mention", true, Now);
+        var item = new NotificationItem(page, notification, WebUrl, browser, Now);
+        if (done)
+        {
+            page.MarkAsDone(item);
+        }
+        else
+        {
+            page.MarkAsRead(item);
+        }
+
+        await page.CurrentMutation;
+        var outcome = entries.Last(e => e.Event == (done ? DiagnosticEvent.NotificationDone : DiagnosticEvent.NotificationRead)
+            && e.Outcome != DiagnosticOutcome.Requested);
+        Assert.AreEqual(status == 202 ? DiagnosticOutcome.Accepted : DiagnosticOutcome.Completed, outcome.Outcome);
+    }
+
+    [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
     public async Task CodespaceAction_ResponseIsAcceptedNotCompleted(bool start)
@@ -183,12 +213,36 @@ public sealed class PageDiagnosticsTests
     }
 
     [TestMethod]
-    public async Task PageLoad_AccountResetDuringPublicationIsCancelledNotCompleted()
+    public async Task CodespaceAction_DomainFailedStateIsNotReportedAsAccepted()
     {
-        var previous = Environment.GetEnvironmentVariable("CMDPAL_GITHUB_VERBOSE_DIAGNOSTICS");
-        Environment.SetEnvironmentVariable("CMDPAL_GITHUB_VERBOSE_DIAGNOSTICS", "1");
         var entries = new ConcurrentQueue<DiagnosticEntry>();
         using var sink = OperationDiagnostics.UseSink(entries.Enqueue);
+        var client = new Mock<ICodespacesClient>();
+        var codespace = new GitHubCodespace("private-name", "private title", "private/repository", "private-branch", "Shutdown", Now, WebUrl);
+        client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CodespacesPageResult([codespace], null));
+        client.Setup(c => c.StartCodespaceAsync(Account, codespace.Name, It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                using var domain = OperationDiagnostics.Begin(DiagnosticEvent.CodespaceStart, DiagnosticArea.Codespaces);
+                domain.Complete(DiagnosticOutcome.Failed);
+                return Task.FromResult(codespace with { State = "Failed" });
+            });
+        using var page = new CodespacesPage(CreateAuth(), client.Object, new FakeBrowser(_ => null));
+        page.GetItems();
+        await page.CurrentLoad;
+        await page.StartAsync(Assert.IsInstanceOfType<CodespaceItem>(page.GetItems().Single()));
+
+        var outcome = entries.Last(e => e.Event == DiagnosticEvent.CodespaceStart && e.Outcome != DiagnosticOutcome.Requested);
+        Assert.AreEqual(DiagnosticOutcome.Failed, outcome.Outcome);
+        Assert.HasCount(1, entries.Where(e => e.Severity == DiagnosticSeverity.Error));
+    }
+
+    [TestMethod]
+    public async Task PageLoad_AccountResetDuringPublicationIsCancelledNotCompleted()
+    {
+        var entries = new ConcurrentQueue<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Enqueue, verboseReads: true);
         var auth = CreateAuth();
         var client = new Mock<INotificationsClient>();
         client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
@@ -201,27 +255,18 @@ public sealed class PageDiagnosticsTests
                 auth.SignOut();
             }
         };
-        try
-        {
-            page.GetItems();
-            await page.CurrentLoad;
-            var outcome = entries.Single(e => e.Event == DiagnosticEvent.PageLoad && e.Outcome != DiagnosticOutcome.Requested);
-            Assert.AreEqual(DiagnosticOutcome.Cancelled, outcome.Outcome);
-            Assert.AreEqual(DiagnosticSeverity.Information, outcome.Severity);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("CMDPAL_GITHUB_VERBOSE_DIAGNOSTICS", previous);
-        }
+        page.GetItems();
+        await page.CurrentLoad;
+        var outcome = entries.Single(e => e.Event == DiagnosticEvent.PageLoad && e.Outcome != DiagnosticOutcome.Requested);
+        Assert.AreEqual(DiagnosticOutcome.Cancelled, outcome.Outcome);
+        Assert.AreEqual(DiagnosticSeverity.Information, outcome.Severity);
     }
 
     [TestMethod]
     public async Task RepositorySearch_CancellationIsInformationAndTimeoutIsFailed()
     {
-        var previous = Environment.GetEnvironmentVariable("CMDPAL_GITHUB_VERBOSE_DIAGNOSTICS");
-        Environment.SetEnvironmentVariable("CMDPAL_GITHUB_VERBOSE_DIAGNOSTICS", "1");
         var entries = new ConcurrentQueue<DiagnosticEntry>();
-        using var sink = OperationDiagnostics.UseSink(entries.Enqueue);
+        using var sink = OperationDiagnostics.UseSink(entries.Enqueue, verboseReads: true);
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var pending = new TaskCompletionSource<IReadOnlyList<GitHubRepository>>(TaskCreationOptions.RunContinuationsAsynchronously);
         var client = new Mock<IRepositoriesClient>();
@@ -234,26 +279,19 @@ public sealed class PageDiagnosticsTests
         using var issues = new RepositoryIssuesPage(auth, Mock.Of<IIssuesClient>(), browser);
         using var pulls = new RepositoryPullRequestsPage(auth, Mock.Of<IPullRequestsClient>(), browser);
         using var page = new ReposPage(auth, client.Object, browser, issues, pulls, searchDelay: TimeSpan.Zero);
-        try
-        {
-            page.SearchText = "private-query";
-            var oldSearch = page.CurrentSearch;
-            await started.Task;
-            page.SearchText = "timeout";
-            await page.CurrentSearch;
-            pending.SetResult([]);
-            await oldSearch;
+        page.SearchText = "private-query";
+        var oldSearch = page.CurrentSearch;
+        await started.Task;
+        page.SearchText = "timeout";
+        await page.CurrentSearch;
+        pending.SetResult([]);
+        await oldSearch;
 
-            var outcomes = entries.Where(e => e.Event == DiagnosticEvent.PageSearch && e.Outcome != DiagnosticOutcome.Requested).ToArray();
-            Assert.HasCount(2, outcomes);
-            Assert.AreEqual(DiagnosticSeverity.Information, outcomes.Single(e => e.Outcome == DiagnosticOutcome.Cancelled).Severity);
-            Assert.AreEqual(DiagnosticFailure.Timeout, outcomes.Single(e => e.Outcome == DiagnosticOutcome.Failed).Failure);
-            Assert.IsFalse(entries.Any(e => e.ToString().Contains("private", StringComparison.Ordinal)));
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("CMDPAL_GITHUB_VERBOSE_DIAGNOSTICS", previous);
-        }
+        var outcomes = entries.Where(e => e.Event == DiagnosticEvent.PageSearch && e.Outcome != DiagnosticOutcome.Requested).ToArray();
+        Assert.HasCount(2, outcomes);
+        Assert.AreEqual(DiagnosticSeverity.Information, outcomes.Single(e => e.Outcome == DiagnosticOutcome.Cancelled).Severity);
+        Assert.AreEqual(DiagnosticFailure.Timeout, outcomes.Single(e => e.Outcome == DiagnosticOutcome.Failed).Failure);
+        Assert.IsFalse(entries.Any(e => e.ToString().Contains("private", StringComparison.Ordinal)));
     }
 
     private sealed class StubHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> send) : HttpMessageHandler

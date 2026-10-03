@@ -34,7 +34,7 @@ internal sealed class PullRequestsClient(HttpClient httpClient) : IPullRequestsC
         using var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken).ConfigureAwait(false);
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
         return new PullRequestsPageResult(ParsePullRequests(json.RootElement), NextPage(response));
-    }, cancellationToken);
+    }, cancellationToken: cancellationToken);
 
     internal static List<GitHubPullRequest> ParsePullRequests(JsonElement array) =>
         DomainDiagnostics.Read(DiagnosticArea.PullRequests, () =>

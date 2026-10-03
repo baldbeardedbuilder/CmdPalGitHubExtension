@@ -7,7 +7,7 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 internal static class PageDiagnostics
 {
     internal static void Finish(OperationDiagnostics.Operation operation, Exception? failure, bool current,
-        DiagnosticOutcome success = DiagnosticOutcome.Completed, bool mutation = false,
+        DiagnosticOutcome? success = null, bool mutation = false,
         CancellationToken cancellationToken = default)
     {
         if (!current || cancellationToken.IsCancellationRequested)
@@ -16,12 +16,12 @@ internal static class PageDiagnostics
         }
         else if (failure is not null)
         {
-            var ambiguous = mutation && IsAmbiguous(failure);
+            var ambiguous = mutation && !OperationDiagnostics.HasFailure(failure) && IsAmbiguous(failure);
             operation.Fail(failure, outcome: ambiguous ? DiagnosticOutcome.Unknown : null);
         }
         else
         {
-            operation.Complete(success);
+            operation.Complete(operation.ChildOutcome is null ? success : null);
         }
     }
 

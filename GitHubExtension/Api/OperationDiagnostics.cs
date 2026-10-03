@@ -141,6 +141,8 @@ internal static partial class OperationDiagnostics
     internal static DiagnosticFailure FailureCategory(Exception exception) =>
         GetFailure(exception)?.Failure ?? Classify(exception);
 
+    internal static bool HasFailure(Exception exception) => GetFailure(exception) is not null;
+
     internal static void CorrelateFailure(Exception source, Exception target)
     {
         if (GetFailure(source) is { } context)
@@ -149,7 +151,7 @@ internal static partial class OperationDiagnostics
         }
     }
 
-    private static void MarkLogged(Exception exception, FailureContext context) => LoggedFailures.GetValue(exception, _ => context);
+    private static void MarkLogged(Exception exception, FailureContext context) => LoggedFailures.AddOrUpdate(exception, context);
 
     private static void Write(DiagnosticEntry entry, Action<string>? textSink)
     {
@@ -186,7 +188,7 @@ internal static partial class OperationDiagnostics
         private readonly bool _verbose;
         private readonly long _started = Stopwatch.GetTimestamp();
         private DiagnosticOutcome _outcome = DiagnosticOutcome.Unknown;
-        private DiagnosticOutcome? _mutationOutcome;
+        private DiagnosticOutcome? _childOutcome;
         private bool _finished;
 
         internal Operation(DiagnosticEvent name, DiagnosticArea area, bool verbose, Guid? operationId)
@@ -204,23 +206,30 @@ internal static partial class OperationDiagnostics
         }
 
         internal Guid Id { get; }
+        internal DiagnosticOutcome? ChildOutcome => _childOutcome;
 
         internal void Complete(DiagnosticOutcome? outcome = null, int? status = null,
             HttpMethod? method = null, Uri? uri = null, Action<string>? textSink = null)
         {
-            _outcome = outcome ?? _mutationOutcome ?? DiagnosticOutcome.Completed;
+            var inherited = outcome is null && _childOutcome is not null;
+            _outcome = outcome ?? _childOutcome ?? DiagnosticOutcome.Completed;
             _finished = true;
             if (_parent is not null && (_name is DiagnosticEvent.Mutation or DiagnosticEvent.NotificationRead
                 or DiagnosticEvent.NotificationDone or DiagnosticEvent.CodespaceStart
                 or DiagnosticEvent.CodespaceStop or DiagnosticEvent.CodespaceCreate
-                || _name == DiagnosticEvent.RestRequest && method is not null && method != HttpMethod.Get && method != HttpMethod.Head))
+                || _name == DiagnosticEvent.RestRequest && method is not null && method != HttpMethod.Get && method != HttpMethod.Head
+                || _outcome is DiagnosticOutcome.Partial or DiagnosticOutcome.Failed or DiagnosticOutcome.Unknown))
             {
-                _parent._mutationOutcome = _outcome;
+                _parent._childOutcome = _outcome;
             }
 
-            if (!_verbose || VerboseReads)
+            if (!_verbose || VerboseReads || _outcome is DiagnosticOutcome.Partial or DiagnosticOutcome.Failed or DiagnosticOutcome.Unknown)
             {
-                Emit(_outcome, DiagnosticSeverity.Information, status: status, method: method, uri: uri, textSink: textSink);
+                var severity = inherited ? DiagnosticSeverity.Information
+                    : _outcome == DiagnosticOutcome.Failed ? DiagnosticSeverity.Error
+                    : _outcome is DiagnosticOutcome.Unknown or DiagnosticOutcome.Partial ? DiagnosticSeverity.Warning
+                    : DiagnosticSeverity.Information;
+                Emit(_outcome, severity, status: status, method: method, uri: uri, textSink: textSink);
             }
         }
 
