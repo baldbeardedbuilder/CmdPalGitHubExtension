@@ -85,6 +85,58 @@ public class ReposPageTests
     }
 
     [TestMethod]
+    public async Task SearchTimeout_ClearsLoadingAndRefreshRetries()
+    {
+        var client = Client([]);
+        client.SetupSequence(c => c.SearchAsync(Account, "remote", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new TaskCanceledException("transport timeout"))
+            .ReturnsAsync([RepoFormattingTests.Repo("o/remote")]);
+        using var page = await LoadedPage(client.Object);
+
+        page.SearchText = "remote";
+        await page.CurrentSearch;
+
+        Assert.IsFalse(page.IsLoading);
+        Assert.IsEmpty(page.GetItems());
+        Assert.AreEqual("Couldn't search GitHub", page.EmptyContent!.Title);
+        Assert.AreEqual("GitHub took too long to respond. Try searching again.", page.EmptyContent.Subtitle);
+        ((InvokableCommand)page.EmptyContent.Command!).Invoke();
+        await page.CurrentSearch;
+        await page.CurrentLoad;
+
+        Assert.IsFalse(page.IsLoading);
+        Assert.AreEqual("o/remote", page.GetItems().Single().Title);
+    }
+
+    [TestMethod]
+    public async Task SearchCancellation_RemainsQuietAndDoesNotOverwriteNewSearch()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = Client([]);
+        client.Setup(c => c.SearchAsync(Account, "old", It.IsAny<CancellationToken>()))
+            .Returns(async (GitHubAccount _, string _, CancellationToken token) =>
+            {
+                started.SetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                return new List<GitHubRepository>();
+            });
+        client.Setup(c => c.SearchAsync(Account, "new", It.IsAny<CancellationToken>()))
+            .ReturnsAsync([RepoFormattingTests.Repo("o/new")]);
+        using var page = await LoadedPage(client.Object);
+        page.SearchText = "old";
+        var oldSearch = page.CurrentSearch;
+        await started.Task;
+
+        page.SearchText = "new";
+        await page.CurrentSearch;
+        await oldSearch;
+
+        Assert.IsFalse(page.IsLoading);
+        Assert.AreEqual("o/new", page.GetItems().Single().Title);
+        Assert.AreNotEqual("Couldn't search GitHub", page.EmptyContent!.Title);
+    }
+
+    [TestMethod]
     public async Task ClearingSearch_RestoresYourRepos()
     {
         var client = Client([RepoFormattingTests.Repo("o/a"), RepoFormattingTests.Repo("o/b")]);

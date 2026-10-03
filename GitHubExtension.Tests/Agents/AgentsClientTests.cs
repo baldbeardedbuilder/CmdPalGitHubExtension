@@ -245,7 +245,7 @@ public sealed class AgentsClientTests
 
         Assert.AreEqual("Fix token expiry", task.Title);
         Assert.AreEqual("microsoft/PowerToys", task.RepositoryFullName);
-        Assert.Contains("Couldn't load the model. request timed out", task.DetailsError!);
+        Assert.Contains("Couldn't load the model. GitHub took too long to respond. Try refreshing agents.", task.DetailsError!);
     }
 
     [TestMethod]

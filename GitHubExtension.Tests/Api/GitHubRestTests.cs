@@ -96,16 +96,19 @@ public sealed class GitHubRestTests
     }
 
     [TestMethod]
-    public async Task SendAsync_TimeoutLogsAndPreservesException()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task SendAsync_TimeoutLogsAndThrowsRetryableError(bool throwOnError)
     {
         var logs = new List<string>();
         var failure = new TaskCanceledException("secret-exception");
         using var http = new HttpClient(new StubHandler(_ => throw failure));
 
-        var error = await Assert.ThrowsExactlyAsync<TaskCanceledException>(() =>
-            GitHubRest.SendAsync(http, Account, HttpMethod.Get, Endpoint, TestContext.CancellationToken, logError: logs.Add));
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            GitHubRest.SendAsync(http, Account, HttpMethod.Get, Endpoint, TestContext.CancellationToken, throwOnError: throwOnError, logError: logs.Add));
 
-        Assert.AreSame(failure, error);
+        Assert.AreSame(failure, error.InnerException);
+        Assert.AreEqual("The request to api.github.com timed out. Try again.", error.Message);
         Assert.AreEqual(
             "GitHub API error: GET https://api.github.com/repos/o/r/pulls/7; transport=Timeout.",
             Assert.ContainsSingle(logs));

@@ -178,7 +178,8 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
 
     private async Task<HttpResponseMessage> SendAgentsAsync(GitHubAccount account, Uri uri, CancellationToken cancellationToken)
     {
-        var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken, throwOnError: false, apiVersion: ApiVersion).ConfigureAwait(false);
+        var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken, throwOnError: false, apiVersion: ApiVersion,
+            timeoutMessage: "GitHub took too long to respond. Try refreshing agents.").ConfigureAwait(false);
         if (response.IsSuccessStatusCode)
         {
             return response;
