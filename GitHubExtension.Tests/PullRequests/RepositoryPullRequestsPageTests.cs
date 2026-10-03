@@ -232,7 +232,7 @@ public sealed class RepositoryPullRequestsPageTests
             CreatedAt = Now.AddMinutes(-45),
         };
 
-    private static IReadOnlyList<GitHubPullRequest> ParsePullRequests(string payload)
+    private static List<GitHubPullRequest> ParsePullRequests(string payload)
     {
         using var json = System.Text.Json.JsonDocument.Parse(payload);
         return PullRequestsClient.ParsePullRequests(json.RootElement);
