@@ -15,6 +15,8 @@ internal interface ICodespacesClient
 
     Task<GitHubCodespace> StopCodespaceAsync(GitHubAccount account, string name, CancellationToken cancellationToken);
 
+    Task<GitHubCodespace> StartCodespaceAsync(GitHubAccount account, string name, CancellationToken cancellationToken);
+
     Task<GitHubCodespace> CreateCodespaceAsync(
         GitHubAccount account,
         string repository,
@@ -44,6 +46,27 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
             throw new GitHubApiException("GitHub took too long to close this codespace. Refresh to check its state, then try again.", ex);
+        }
+    }
+
+    public async Task<GitHubCodespace> StartCodespaceAsync(GitHubAccount account, string name, CancellationToken cancellationToken)
+    {
+        if (!account.Host.IsGitHubDotCom)
+        {
+            throw new GitHubApiException("Codespaces isn't available on GitHub Enterprise Server. Sign in to github.com to start one.");
+        }
+
+        var uri = new Uri(account.Host.ApiUrl, $"user/codespaces/{Uri.EscapeDataString(name)}/start");
+        try
+        {
+            using var response = await SendAsync(httpClient, account, HttpMethod.Post, uri, cancellationToken).ConfigureAwait(false);
+            using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
+            return ParseCodespace(json.RootElement)
+                ?? throw new GitHubApiException("GitHub sent back a codespace we couldn't read.");
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new GitHubApiException("GitHub took too long to start this codespace. Refresh to check its state, then try again.", ex);
         }
     }
 

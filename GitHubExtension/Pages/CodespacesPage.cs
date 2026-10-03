@@ -140,13 +140,31 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
     }
 
     internal Task CloseAsync(CodespaceItem item)
+        => RunCodespaceActionAsync(
+            item,
+            "Available",
+            "Couldn't close codespace",
+            (account, name, token) => _client.StopCodespaceAsync(account, name, token));
+
+    internal Task StartAsync(CodespaceItem item)
+        => RunCodespaceActionAsync(
+            item,
+            "Shutdown",
+            "Couldn't start codespace",
+            (account, name, token) => _client.StartCodespaceAsync(account, name, token));
+
+    private Task RunCodespaceActionAsync(
+        CodespaceItem item,
+        string requiredState,
+        string errorTitle,
+        Func<GitHubAccount, string, CancellationToken, Task<GitHubCodespace>> action)
     {
         GitHubAccount account;
         CancellationToken token;
         int generation;
         lock (_lock)
         {
-            if (_disposed || _fetching || !_items.Contains(item) || item.Codespace.State != "Available"
+            if (_disposed || _fetching || !_items.Contains(item) || item.Codespace.State != requiredState
                 || _auth.CurrentAccount is not { Host.IsGitHubDotCom: true } currentAccount)
             {
                 return _currentLoad;
@@ -169,7 +187,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
                 return _currentLoad;
             }
 
-            _currentLoad = Task.Run(() => CloseCoreAsync(account, item, generation, token));
+            _currentLoad = Task.Run(() => RunCodespaceActionCoreAsync(account, item, generation, errorTitle, action, token));
             return _currentLoad;
         }
     }
@@ -286,11 +304,17 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         }
     }
 
-    private async Task CloseCoreAsync(GitHubAccount account, CodespaceItem item, int generation, CancellationToken token)
+    private async Task RunCodespaceActionCoreAsync(
+        GitHubAccount account,
+        CodespaceItem item,
+        int generation,
+        string errorTitle,
+        Func<GitHubAccount, string, CancellationToken, Task<GitHubCodespace>> action,
+        CancellationToken token)
     {
         try
         {
-            var codespace = await _client.StopCodespaceAsync(account, item.Codespace.Name, token).ConfigureAwait(false);
+            var codespace = await action(account, item.Codespace.Name, token).ConfigureAwait(false);
             lock (_lock)
             {
                 if (generation != _generation)
@@ -318,7 +342,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
                 }
 
                 _error = ex.Message;
-                _errorTitle = "Couldn't close codespace";
+                _errorTitle = errorTitle;
             }
         }
         finally
