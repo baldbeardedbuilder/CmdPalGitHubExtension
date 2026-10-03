@@ -225,7 +225,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
 
         _load.Publish(operation, () => IsLoading = true);
         return _load.Run(operation, () => LoadAsync(account, repository, operation), () => PublishLoad(operation),
-            "GitHub took too long to respond. Try refreshing pull requests.");
+            "GitHub took too long to respond. Try refreshing pull requests.", area: DiagnosticArea.PullRequests);
     }
 
     private async Task LoadAsync(GitHubAccount account, string repository, ListLoadState.Operation operation)

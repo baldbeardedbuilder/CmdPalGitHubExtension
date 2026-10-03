@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Text.Json;
+using BaldBeardedBuilder.CmdPal.GitHub.Api;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using static BaldBeardedBuilder.CmdPal.GitHub.Api.GitHubRest;
@@ -22,19 +23,21 @@ internal sealed class PullRequestsClient(HttpClient httpClient) : IPullRequestsC
 {
     internal const int PageSize = 100;
 
-    public async Task<PullRequestsPageResult> GetPullRequestsAsync(
+    public Task<PullRequestsPageResult> GetPullRequestsAsync(
         GitHubAccount account,
         string repository,
         Uri? page,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) =>
+        DomainDiagnostics.RunAsync(DiagnosticArea.PullRequests, async () =>
     {
         var uri = page ?? RepositoryPullRequestsUri(account, repository);
         using var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken).ConfigureAwait(false);
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
         return new PullRequestsPageResult(ParsePullRequests(json.RootElement), NextPage(response));
-    }
+    }, cancellationToken: cancellationToken);
 
-    internal static List<GitHubPullRequest> ParsePullRequests(JsonElement array)
+    internal static List<GitHubPullRequest> ParsePullRequests(JsonElement array) =>
+        DomainDiagnostics.Read(DiagnosticArea.PullRequests, () =>
     {
         if (array.ValueKind != JsonValueKind.Array)
         {
@@ -53,7 +56,7 @@ internal sealed class PullRequestsClient(HttpClient httpClient) : IPullRequestsC
         }
 
         return pullRequests;
-    }
+    });
 
     private static Uri RepositoryPullRequestsUri(GitHubAccount account, string repository)
     {

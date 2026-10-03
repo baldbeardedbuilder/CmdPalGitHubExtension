@@ -189,7 +189,7 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
 
         _load.Publish(operation, () => IsLoading = true);
         return _load.Run(operation, () => LoadAsync(account, repository, operation), () => PublishLoad(operation),
-            "GitHub took too long to respond. Try refreshing issues.");
+            "GitHub took too long to respond. Try refreshing issues.", area: DiagnosticArea.Issues);
     }
 
     private async Task LoadAsync(GitHubAccount account, string repository, ListLoadState.Operation operation)

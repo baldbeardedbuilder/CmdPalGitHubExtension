@@ -135,7 +135,7 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
 
         _load.Publish(operation, () => IsLoading = true);
         return _load.Run(operation, () => LoadAsync(account, operation), () => PublishLoad(operation),
-            "GitHub took too long to respond. Try refreshing agents.");
+            "GitHub took too long to respond. Try refreshing agents.", area: DiagnosticArea.Agents);
     }
 
     private async Task LoadAsync(GitHubAccount account, ListLoadState.Operation operation)

@@ -33,7 +33,13 @@ Merging currently requires github.com and repository write access; fine-grained 
 
 Actions lists start with **Running** selected, including queued runs; switch to **Succeeded** for successful runs or **Failed** for every other completed outcome, including cancelled and skipped runs. Each filter has a status icon, text search narrows the selected group, and more results load as you scroll.
 
+On a completed run, use **More > Rerun workflow...** to rerun all jobs. Runs that failed or timed out also offer failed jobs and their dependents. The confirmation warns that reruns use Actions compute and may incur charges; you can optionally enable debug logging. You need repository write access and a classic PAT/OAuth token with `repo` scope, or a fine-grained token with **Actions: write**. GitHub enforces rerun limits, including the 30-day window.
+
+Rerunning keeps the same run ID. The extension rechecks its state before requesting a rerun, refreshes the Actions list, and shows the attempt and status reported by GitHub. **Rerun requested** means the request was accepted, not that the jobs succeeded or finished. Use **Refresh status** to follow the new attempt, including when GitHub hasn't updated it yet or a request timed out. Repeated confirmation won't submit another request; account changes invalidate the confirmation.
+
 Codespaces requires a github.com account and the `codespace` token scope. It isn't available on GitHub Enterprise Server. Use **More > Close Codespace** on an active codespace to stop it without deleting its files, or **More > Start Codespace** on a stopped one to start it. Start asks you to confirm compute use and possible charges, then checks the codespace's state at two-second intervals until it is available, for up to 60 checks. **Refresh** cancels the pending checks and reloads the list; signing out or switching accounts also cancels them. Cancellation doesn't undo a start GitHub has already accepted. If starting takes longer or fails, use **Refresh** to check its state. Starting a codespace doesn't open it in your browser. Opening a stopped codespace still takes you to GitHub's browser editor, where it can start the environment.
+
+Use **More > Delete Codespace** to review its exact name, repository, and current Git status before confirming permanent deletion. The confirmation warns about uncommitted changes, unpushed commits, and unknown safety when GitHub cannot provide that information. Even a reported clean status is not a guarantee; push or back up any work you need first. **Cancel** leaves the codespace untouched. A codespace stays in the list until GitHub confirms it is absent, not just that deletion was accepted. If deletion is pending or a request times out, use **Refresh** to check before trying again.
 
 ### Agents access
 
@@ -61,9 +67,13 @@ To sign out, open the extension and pick **Sign out**.
 
 ## Troubleshooting
 
-Failed GitHub REST calls write diagnostic messages to Command Palette's logs. Type **logs** in Command Palette to view them. Refresh notifications to retry a failed PR lookup; the preview now shows the API error instead of hiding it behind a generic message.
+Extension operations write diagnostics to Command Palette's existing logs. Type **logs** in Command Palette to view them. Match `operation-id` to follow a page load, sign-in, or command through its REST requests and parsing stages. Entries have stable event names, severity, duration in milliseconds, and outcomes. User-facing errors remain in the page or command feedback, not in diagnostic payloads.
 
-Log entries include the API host and path, HTTP status, GitHub request ID, rate-limit metadata, and whether GitHub sent an SSO header. Network failures and invalid JSON are logged too. Tokens, authorization headers, URL queries, and response bodies aren't logged. API paths can contain private repository names, so review logs before sharing them.
+Diagnostics cover auth stages, Credential Locker failures, HTTP and schema failures, page loads, and mutations. `Requested` means an operation started; `Accepted` means GitHub accepted a mutation, not that asynchronous work finished; `Completed` means the operation confirmed completion. `Failed` indicates a known failure; `Unknown` means a mutation might have reached GitHub, so refresh before retrying. `Partial` identifies a read with unavailable enrichment. Normal cancellation is informational, not an error.
+
+Successful reads are quiet by default. To diagnose loads and searches, set the environment variable `CMDPAL_GITHUB_VERBOSE_DIAGNOSTICS=1` before starting the extension, then restart it. Unset it and restart to return to normal logging. Verbose mode uses the same privacy rules.
+
+Only allowlisted categories, HTTP status, safe method names, generated correlation IDs, timing, and route templates are logged. For example, a private pull request is `/repos/{owner}/{repo}/pulls/{number}`, never its actual path. Unknown routes are logged as `unknown`. Tokens, OAuth values, prompts, bodies, search text, account names, server names, raw exception messages, and arbitrary response headers are never logged. No separate file logger or telemetry service is used.
 
 If an organization uses SAML single sign-on and hasn't authorized the extension yet, the pull request preview says so and links to GitHub's authorization page. You can also use **More > Authorize single sign-on**. Approve it, then refresh notifications. If your org restricts OAuth apps, an org owner may need to approve the app first.
 
@@ -93,6 +103,16 @@ If you skip this, everything still builds. The github.com button just tells you 
 Yes, the client secret ships inside the app. That's normal for desktop OAuth apps since there's nowhere safe to hide it, and it's why the flow also uses PKCE.
 
 ## Contributing
+
+### GraphQL transport
+
+`GitHubGraphQLClient` sits beside the REST transport and uses the account supplied on each call. It routes github.com and GHE.com tenants to `/graphql`, and GitHub Enterprise Server to `/api/graphql`, with the same authentication, host validation, and HTTP error handling as REST.
+
+`ExecuteAsync` accepts queries or mutations with JSON variables and an optional operation name. Its result owns its JSON data and exposes `Errors`, `IsSuccess`, and `HasPartialData`. HTTP 200 does not imply GraphQL success. Callers must check errors before treating a mutation as successful, and may use partial data while reporting the errors. GraphQL messages, queries, variables, and response bodies are not logged.
+
+Schema errors with `extensions.code = undefinedField` expose `UnsupportedField` with the exact type and field name. Limit any fallback to the affected feature; do not disable GraphQL or unrelated features for that host. The transport does not cache capability or account data.
+
+Pull request models preserve REST `node_id`. `GetNodeIdAsync` resolves a pull request or discussion number to its opaque GraphQL `id` and retains the complete response, including errors. Use IDs only with the account and host that supplied them. This is transport infrastructure; existing REST features and browser-only discussion navigation are unchanged.
 
 Bugs, ideas, and pull requests are all welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
 

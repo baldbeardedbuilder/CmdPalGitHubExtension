@@ -21,6 +21,10 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
     private readonly ListLoadState _load = new();
     private Lock _lock => _load.SyncRoot;
     private readonly List<CodespaceItem> _items = [];
+    private readonly HashSet<string> _pendingDeletes = new(StringComparer.Ordinal);
+    private bool _reconcileDeletes;
+    private int _deleteGeneration;
+    private CancellationTokenSource? _deleteCancellation = new();
     private string _errorTitle = "Couldn't load codespaces";
 
     public CodespacesPage(
@@ -57,6 +61,159 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
     }
 
     internal CreateCodespacePage? CreatePage { get; }
+
+    internal (GitHubAccount? Account, int Generation, CancellationToken Token) DeleteContext()
+    {
+        lock (_lock)
+        {
+            return (_auth.CurrentAccount, _deleteGeneration, _deleteCancellation?.Token ?? new CancellationToken(true));
+        }
+    }
+
+    internal bool CanDelete(CodespaceItem item, GitHubAccount? account, int generation)
+    {
+        lock (_lock)
+        {
+            return !_load.Disposed && generation == _deleteGeneration && account is { Host.IsGitHubDotCom: true }
+                && ReferenceEquals(account, _auth.CurrentAccount) && _items.Contains(item)
+                && !_pendingDeletes.Contains(item.Codespace.Name);
+        }
+    }
+
+    internal bool IsDeleteContextCurrent(GitHubAccount? account, int generation)
+    {
+        lock (_lock)
+        {
+            return !_load.Disposed && generation == _deleteGeneration && account is { Host.IsGitHubDotCom: true }
+                && ReferenceEquals(account, _auth.CurrentAccount);
+        }
+    }
+
+    internal Task<GitHubCodespace> GetDeleteDetailsAsync(GitHubAccount account, string name, CancellationToken token)
+        => _client.GetCodespaceAsync(account, name, token);
+
+    internal async Task<string> DeleteAsync(CodespaceItem item, GitHubAccount account, int generation)
+    {
+        ListLoadState.Operation operation;
+        lock (_lock)
+        {
+            if (!CanDelete(item, account, generation) || !_load.TryBegin(true, out operation))
+            {
+                return "This codespace is no longer current. Refresh the list.";
+            }
+
+            _reconcileDeletes = true;
+        }
+
+        var status = "The account or list changed.";
+        _load.Publish(operation, () => IsLoading = true);
+        await _load.Run(operation, DeleteCoreAsync, () => PublishLoad(operation),
+            "GitHub took too long to respond. Refresh to check whether the codespace still exists.",
+            markLoadedOnError: false, area: DiagnosticArea.Codespaces).ConfigureAwait(false);
+        return status;
+
+        async Task DeleteCoreAsync()
+        {
+            var token = operation.Token;
+            try
+            {
+                token.ThrowIfCancellationRequested();
+                await _client.DeleteCodespaceAsync(account, item.Codespace.Name, token).ConfigureAwait(false);
+                lock (_lock)
+                {
+                    if (!_load.IsCurrent(operation))
+                    {
+                        return;
+                    }
+
+                    _pendingDeletes.Add(item.Codespace.Name);
+                }
+
+                var codespaces = await GetAllCodespacesAsync(account, token).ConfigureAwait(false);
+                lock (_lock)
+                {
+                    if (!_load.IsCurrent(operation))
+                    {
+                        return;
+                    }
+
+                    var present = codespaces.Any(c => c.Name == item.Codespace.Name);
+                    ApplyReconciliation(codespaces, operation);
+                    if (present)
+                    {
+                        _errorTitle = "Deletion pending";
+                        _load.SetError(operation, "GitHub accepted the deletion, but the codespace is still present. Refresh to check again.");
+                    }
+
+                    status = present ? "Deletion pending. Refresh to check again." : "Codespace deleted.";
+                }
+            }
+            catch (Exception ex) when (!token.IsCancellationRequested)
+            {
+                lock (_lock)
+                {
+                    if (_load.IsCurrent(operation))
+                    {
+                        _errorTitle = "Couldn't confirm deletion";
+                        status = $"{ex.Message} Refresh to check whether the codespace still exists.";
+                    }
+                }
+
+                throw;
+            }
+        }
+    }
+
+    private async Task<List<GitHubCodespace>> GetAllCodespacesAsync(GitHubAccount account, CancellationToken token)
+    {
+        var result = new List<GitHubCodespace>();
+        var visited = new HashSet<Uri>();
+        int? totalCount = null;
+        Uri? page = null;
+        do
+        {
+            token.ThrowIfCancellationRequested();
+            var batch = await _client.GetCodespacesAsync(account, page, token).ConfigureAwait(false);
+            if (!batch.IsComplete || (batch.NextPage is { } next
+                && (!next.IsAbsoluteUri || !visited.Add(next) || next.Scheme != account.Host.ApiUrl.Scheme
+                    || next.Authority != account.Host.ApiUrl.Authority
+                    || next.AbsolutePath != "/user/codespaces")))
+            {
+                throw new GitHubApiException("GitHub's codespaces list was incomplete. No items were removed.");
+            }
+
+            if (batch.TotalCount is { } count)
+            {
+                if (totalCount is { } previous && previous != count)
+                {
+                    throw new GitHubApiException("GitHub's codespaces list changed while checking deletion. Refresh to check again.");
+                }
+
+                totalCount = count;
+            }
+
+            result.AddRange(batch.Codespaces);
+            page = batch.NextPage;
+        }
+        while (page is not null);
+        var unique = result.DistinctBy(c => c.Name, StringComparer.Ordinal).ToList();
+        if (totalCount is { } expected && unique.Count != expected)
+        {
+            throw new GitHubApiException("GitHub's codespaces list was incomplete. No items were removed.");
+        }
+
+        return unique;
+    }
+
+    private void ApplyReconciliation(List<GitHubCodespace> codespaces, ListLoadState.Operation operation)
+    {
+        _pendingDeletes.RemoveWhere(name => !codespaces.Any(c => c.Name == name));
+        _reconcileDeletes = _pendingDeletes.Count > 0;
+        _items.Clear();
+        _items.AddRange(codespaces.OrderByDescending(c => c.LastUsedAt)
+            .Select(c => new CodespaceItem(this, c, _browser, _time.GetUtcNow())));
+        _load.Succeed(operation, null);
+    }
 
     public override IListItem[] GetItems()
     {
@@ -127,6 +284,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         lock (_lock)
         {
             _load.Invalidate();
+            InvalidateDeleteContext();
         }
 
         return StartLoad(reset: true);
@@ -135,6 +293,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
     internal Task CloseAsync(CodespaceItem item)
         => RunCodespaceActionAsync(
             item,
+            DiagnosticEvent.CodespaceStop,
             "Available",
             "Couldn't close codespace",
             (account, name, token) => _client.StopCodespaceAsync(account, name, token));
@@ -142,6 +301,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
     internal Task StartAsync(CodespaceItem item)
         => RunCodespaceActionAsync(
             item,
+            DiagnosticEvent.CodespaceStart,
             "Shutdown",
             "Couldn't start codespace",
             (account, name, token) => _client.StartCodespaceAsync(account, name, token),
@@ -149,6 +309,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
 
     private Task RunCodespaceActionAsync(
         CodespaceItem item,
+        DiagnosticEvent diagnosticEvent,
         string requiredState,
         string errorTitle,
         Func<GitHubAccount, string, CancellationToken, Task<GitHubCodespace>> action,
@@ -171,7 +332,9 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
 
         _load.Publish(operation, () => IsLoading = true);
         return _load.Run(operation, () => RunCodespaceActionCoreAsync(account, item, operation, action, refreshUntilAvailable),
-            () => PublishLoad(operation), "GitHub took too long to respond. Try refreshing codespaces.", markLoadedOnError: false);
+            () => PublishLoad(operation), "GitHub took too long to respond. Try refreshing codespaces.", markLoadedOnError: false,
+            area: DiagnosticArea.Codespaces, diagnosticEvent: diagnosticEvent, mutation: true,
+            success: DiagnosticOutcome.Accepted, completesOnSuccess: refreshUntilAvailable);
     }
 
     public void Dispose()
@@ -180,6 +343,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         lock (_lock)
         {
             _load.Dispose();
+            InvalidateDeleteContext();
         }
 
         IsLoading = false;
@@ -214,11 +378,38 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
 
         _load.Publish(operation, () => IsLoading = true);
         return _load.Run(operation, () => LoadAsync(account, operation), () => PublishLoad(operation),
-            "GitHub took too long to respond. Try refreshing codespaces.");
+            "GitHub took too long to respond. Try refreshing codespaces.", area: DiagnosticArea.Codespaces);
     }
 
     private async Task LoadAsync(GitHubAccount account, ListLoadState.Operation operation)
     {
+        bool reconcile;
+        lock (_lock)
+        {
+            reconcile = operation.Reset && _reconcileDeletes;
+        }
+
+        if (reconcile)
+        {
+            var codespaces = await GetAllCodespacesAsync(account, operation.Token).ConfigureAwait(false);
+            lock (_lock)
+            {
+                if (!_load.IsCurrent(operation))
+                {
+                    return;
+                }
+
+                ApplyReconciliation(codespaces, operation);
+                if (_pendingDeletes.Count > 0)
+                {
+                    _errorTitle = "Deletion pending";
+                    _load.SetError(operation, "The codespace is still present. Refresh to check again.");
+                }
+            }
+
+            return;
+        }
+
         var result = await _client.GetCodespacesAsync(account, operation.Page, operation.Token).ConfigureAwait(false);
         var now = _time.GetUtcNow();
         lock (_lock)
@@ -308,11 +499,37 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         lock (_lock)
         {
             _load.Invalidate(reset: true);
+            InvalidateDeleteContext();
             _items.Clear();
+            _pendingDeletes.Clear();
+            _reconcileDeletes = false;
         }
 
         HasMoreItems = false;
         IsLoading = false;
         RaiseItemsChanged();
+    }
+
+    private void InvalidateDeleteContext()
+    {
+        _deleteGeneration++;
+        var previous = _deleteCancellation;
+        _deleteCancellation = _load.Disposed ? null : new CancellationTokenSource();
+        if (previous is not null)
+        {
+            _ = CancelDeleteContextAsync(previous);
+        }
+    }
+
+    private static async Task CancelDeleteContextAsync(CancellationTokenSource cancellation)
+    {
+        try
+        {
+            await cancellation.CancelAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            cancellation.Dispose();
+        }
     }
 }

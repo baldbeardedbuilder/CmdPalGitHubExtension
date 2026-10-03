@@ -21,6 +21,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     private readonly ListLoadState _load = new();
     private Lock _lock => _load.SyncRoot;
     private readonly List<WorkflowRunItem> _items = [];
+    private readonly Dictionary<(long Id, int? Attempt), RerunWorkflowPage> _rerunPages = [];
     private string? _repository;
 
     public ActionsPage(AuthService auth, IActionsClient client, IBrowserLauncher browser, TimeProvider? time = null)
@@ -62,6 +63,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
     internal ICommandResult OpenRepository(string repository)
     {
+        ClearRerunPages();
         lock (_lock)
         {
             Reset();
@@ -138,11 +140,42 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         return StartLoad(reset: true);
     }
 
+    internal RerunWorkflowPage RerunPage(string repository, GitHubWorkflowRun run)
+    {
+        lock (_lock)
+        {
+            var key = (run.Id, run.RunAttempt);
+            if (!_rerunPages.TryGetValue(key, out var page))
+            {
+                page = new RerunWorkflowPage(_auth, _client, this, repository, run);
+                _rerunPages.Add(key, page);
+            }
+
+            return page;
+        }
+    }
+
     public void Dispose()
     {
         _auth.AccountChanged -= OnAccountChanged;
+        ClearRerunPages();
         _load.Dispose();
         IsLoading = false;
+    }
+
+    private void ClearRerunPages()
+    {
+        RerunWorkflowPage[] pages;
+        lock (_lock)
+        {
+            pages = [.. _rerunPages.Values];
+            _rerunPages.Clear();
+        }
+
+        foreach (var page in pages)
+        {
+            page.Dispose();
+        }
     }
 
     private CommandItem Empty(string title, string subtitle, bool refresh = false) =>
@@ -167,7 +200,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
         _load.Publish(operation, () => IsLoading = true);
         return _load.Run(operation, () => LoadAsync(account, repository, operation), () => PublishLoad(operation),
-            "GitHub took too long to respond. Try refreshing workflow runs.");
+            "GitHub took too long to respond. Try refreshing workflow runs.", area: DiagnosticArea.Actions);
     }
 
     private async Task LoadAsync(GitHubAccount account, string repository, ListLoadState.Operation operation)
@@ -207,6 +240,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
     private void OnAccountChanged(object? sender, EventArgs e)
     {
+        ClearRerunPages();
         lock (_lock)
         {
             Reset();

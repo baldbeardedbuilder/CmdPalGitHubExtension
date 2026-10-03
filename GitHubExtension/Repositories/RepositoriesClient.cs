@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Text.Json;
+using BaldBeardedBuilder.CmdPal.GitHub.Api;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using static BaldBeardedBuilder.CmdPal.GitHub.Api.GitHubRest;
 
@@ -27,7 +28,8 @@ internal sealed class RepositoriesClient(HttpClient httpClient) : IRepositoriesC
     internal const int PageSize = 50;
     internal const int SearchPageSize = 30;
 
-    public async Task<RepositoriesPageResult> GetMyRepositoriesAsync(GitHubAccount account, Uri? page, CancellationToken cancellationToken)
+    public Task<RepositoriesPageResult> GetMyRepositoriesAsync(GitHubAccount account, Uri? page, CancellationToken cancellationToken) =>
+        DomainDiagnostics.RunAsync(DiagnosticArea.Repositories, async () =>
     {
         var uri = page ?? new Uri(
             account.Host.ApiUrl,
@@ -37,39 +39,53 @@ internal sealed class RepositoriesClient(HttpClient httpClient) : IRepositoriesC
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
 
         return new RepositoriesPageResult(ParseRepositories(json.RootElement), NextPage(response));
-    }
+    }, cancellationToken: cancellationToken);
 
-    public async Task<IReadOnlyList<GitHubRepository>> SearchAsync(GitHubAccount account, string query, CancellationToken cancellationToken)
+    public Task<IReadOnlyList<GitHubRepository>> SearchAsync(GitHubAccount account, string query, CancellationToken cancellationToken) =>
+        DomainDiagnostics.RunAsync<IReadOnlyList<GitHubRepository>>(DiagnosticArea.Repositories, async () =>
     {
         var uri = new Uri(account.Host.ApiUrl, $"search/repositories?q={Uri.EscapeDataString(query)}&per_page={SearchPageSize}");
 
         using var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken).ConfigureAwait(false);
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
 
-        if (json.RootElement.ValueKind != JsonValueKind.Object
-            || !json.RootElement.TryGetProperty("items", out var items)
-            || items.ValueKind != JsonValueKind.Array)
+        return ParseSearch(json.RootElement);
+    }, name: DiagnosticEvent.PageSearch, cancellationToken: cancellationToken);
+
+    internal static List<GitHubRepository> ParseSearch(JsonElement root)
+    {
+        if (root.ValueKind == JsonValueKind.Object
+            && root.TryGetProperty("items", out var searchItems)
+            && searchItems.ValueKind == JsonValueKind.Array
+            && root.TryGetProperty("incomplete_results", out var incompleteResult)
+            && incompleteResult.ValueKind == JsonValueKind.True)
         {
-            throw new GitHubApiException("GitHub sent back a repository search we couldn't read. Try refreshing.");
+            throw new GitHubApiException("GitHub returned incomplete repository search results. Try a more specific search.");
         }
 
-        if (json.RootElement.TryGetProperty("incomplete_results", out var incomplete))
+        return DomainDiagnostics.Read(DiagnosticArea.Repositories, () =>
         {
-            if (incomplete.ValueKind == JsonValueKind.True)
-            {
-                throw new GitHubApiException("GitHub returned incomplete repository search results. Try a more specific search.");
-            }
-
-            if (incomplete.ValueKind != JsonValueKind.False)
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("items", out var items)
+                || items.ValueKind != JsonValueKind.Array)
             {
                 throw new GitHubApiException("GitHub sent back a repository search we couldn't read. Try refreshing.");
             }
-        }
 
-        return ParseRepositories(items);
+            if (root.TryGetProperty("incomplete_results", out var incomplete))
+            {
+                if (incomplete.ValueKind != JsonValueKind.False)
+                {
+                    throw new GitHubApiException("GitHub sent back a repository search we couldn't read. Try refreshing.");
+                }
+            }
+
+            return ParseRepositories(items);
+        });
     }
 
-    internal static List<GitHubRepository> ParseRepositories(JsonElement array)
+    internal static List<GitHubRepository> ParseRepositories(JsonElement array) =>
+        DomainDiagnostics.Read(DiagnosticArea.Repositories, () =>
     {
         if (array.ValueKind != JsonValueKind.Array)
         {
@@ -83,9 +99,10 @@ internal sealed class RepositoriesClient(HttpClient httpClient) : IRepositoriesC
         }
 
         return repositories;
-    }
+    });
 
-    internal static GitHubRepository ParseRepository(JsonElement element)
+    internal static GitHubRepository ParseRepository(JsonElement element) =>
+        DomainDiagnostics.Read(DiagnosticArea.Repositories, () =>
     {
         if (element.ValueKind != JsonValueKind.Object
             || GetString(element, "full_name") is not { Length: > 0 } fullName
@@ -109,5 +126,5 @@ internal sealed class RepositoriesClient(HttpClient httpClient) : IRepositoriesC
             GetInt(element, "forks_count"),
             GetDate(element, "pushed_at"),
             GetUri(element, "clone_url"));
-    }
+    });
 }

@@ -54,13 +54,25 @@ internal sealed partial class ListLoadState : IDisposable
         }
     }
 
-    public Task Run(Operation operation, Func<Task> work, Action completed, string timeoutMessage, bool markLoadedOnError = true)
+    public void SetError(Operation operation, string message)
+    {
+        if (IsCurrent(operation))
+        {
+            Error = message;
+        }
+    }
+
+    public Task Run(Operation operation, Func<Task> work, Action completed, string timeoutMessage, bool markLoadedOnError = true,
+        DiagnosticArea area = DiagnosticArea.None, DiagnosticEvent diagnosticEvent = DiagnosticEvent.PageLoad,
+        bool mutation = false, DiagnosticOutcome? success = null, bool completesOnSuccess = false)
     {
         lock (SyncRoot)
         {
             _ = Task.Run(async () =>
             {
+                using var diagnostics = OperationDiagnostics.Begin(diagnosticEvent, area, verbose: !mutation);
                 Exception? failure = null;
+                Exception? operationFailure = null;
                 try
                 {
                     bool current;
@@ -77,8 +89,9 @@ internal sealed partial class ListLoadState : IDisposable
                 catch (OperationCanceledException) when (operation.Token.IsCancellationRequested)
                 {
                 }
-                catch (Exception ex) when (ex is GitHubApiException or HttpRequestException or IOException or OperationCanceledException)
+                catch (Exception ex)
                 {
+                    operationFailure = ex;
                     lock (SyncRoot)
                     {
                         if (IsCurrent(operation))
@@ -87,10 +100,6 @@ internal sealed partial class ListLoadState : IDisposable
                             Loaded |= markLoadedOnError;
                         }
                     }
-                }
-                catch (Exception ex)
-                {
-                    failure = ex;
                 }
                 finally
                 {
@@ -114,6 +123,25 @@ internal sealed partial class ListLoadState : IDisposable
                     catch (Exception ex)
                     {
                         failure ??= ex;
+                    }
+
+                    lock (SyncRoot)
+                    {
+                        publish = IsCurrent(operation);
+                    }
+
+                    if (mutation && publish && diagnostics.ChildOutcome == DiagnosticOutcome.Failed)
+                    {
+                        diagnostics.Complete();
+                    }
+                    else if (completesOnSuccess && publish && operationFailure is null && failure is null)
+                    {
+                        diagnostics.Complete(DiagnosticOutcome.Completed);
+                    }
+                    else
+                    {
+                        PageDiagnostics.Finish(diagnostics, operationFailure ?? failure, publish, success,
+                            mutation, operation.Token);
                     }
 
                     Task cancelCallbacks;

@@ -30,8 +30,10 @@ internal sealed partial class NotificationsPage : DynamicListPage
     private bool _loaded;
     private bool _fetching;
     private string? _error;
+    private string? _mutationError;
     private int _generation;
     private Task _currentLoad = Task.CompletedTask;
+    private Task _currentMutation = Task.CompletedTask;
 
     public NotificationsPage(AuthService auth, INotificationsClient client, IBrowserLauncher browser, TimeProvider? time = null, IssueDetailsPage? issueDetails = null)
     {
@@ -64,16 +66,29 @@ internal sealed partial class NotificationsPage : DynamicListPage
         }
     }
 
+    internal Task CurrentMutation
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _currentMutation;
+            }
+        }
+    }
+
     public override IListItem[] GetItems()
     {
         bool needsLoad;
         NotificationItem[] snapshot;
         string? error;
+        string? mutationError;
         lock (_lock)
         {
             needsLoad = !_loaded && !_fetching;
             snapshot = [.. _items];
             error = _error;
+            mutationError = _mutationError;
         }
 
         if (needsLoad)
@@ -81,14 +96,27 @@ internal sealed partial class NotificationsPage : DynamicListPage
             StartLoad(reset: true);
         }
 
-        EmptyContent = error is not null
-            ? _emptyContent.Get("Couldn't load notifications", error, refresh: true)
-            : _emptyContent.Get("You're all caught up", "No notifications to show");
+        EmptyContent = mutationError is not null
+            ? _emptyContent.Get("Couldn't update notification", mutationError, refresh: true)
+            : error is not null
+                ? _emptyContent.Get("Couldn't load notifications", error, refresh: true)
+                : _emptyContent.Get("You're all caught up", "No notifications to show");
 
         var terms = SearchText.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return terms.Length == 0
+        IListItem[] result = terms.Length == 0
             ? snapshot
             : [.. snapshot.Where(i => terms.All(t => i.SearchText.Contains(t, StringComparison.OrdinalIgnoreCase)))];
+        if (mutationError is not null && result.Length > 0)
+        {
+            result = [.. result, new ListItem(new RefreshNotificationsCommand(this))
+            {
+                Title = "Couldn't update notification",
+                Subtitle = mutationError,
+                Icon = Icons.Notifications,
+            }];
+        }
+
+        return result;
     }
 
     public override void UpdateSearchText(string oldSearch, string newSearch) => RaiseItemsChanged();
@@ -124,18 +152,18 @@ internal sealed partial class NotificationsPage : DynamicListPage
             return;
         }
 
-        item.SetUnread(false);
-        _ = Task.Run(async () =>
+        int generation;
+        lock (_lock)
         {
-            try
-            {
-                await _client.MarkAsReadAsync(account, item.Notification.Id, CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (GitHubApiException)
-            {
-                item.SetUnread(true);
-            }
-        });
+            generation = _generation;
+            _mutationError = null;
+        }
+
+        item.SetUnread(false);
+        lock (_lock)
+        {
+            _currentMutation = Task.Run(() => MutateAsync(account, item, generation, done: false));
+        }
     }
 
     internal void MarkAsDone(NotificationItem item)
@@ -145,23 +173,73 @@ internal sealed partial class NotificationsPage : DynamicListPage
             return;
         }
 
+        int generation;
         lock (_lock)
         {
+            generation = _generation;
+            _mutationError = null;
             _items.Remove(item);
         }
 
         RaiseItemsChanged();
-        _ = Task.Run(async () =>
+        lock (_lock)
         {
-            try
+            _currentMutation = Task.Run(() => MutateAsync(account, item, generation, done: true));
+        }
+    }
+
+    private async Task MutateAsync(GitHubAccount account, NotificationItem item, int generation, bool done)
+    {
+        using var operation = OperationDiagnostics.Begin(
+            done ? DiagnosticEvent.NotificationDone : DiagnosticEvent.NotificationRead, DiagnosticArea.Notifications);
+        Exception? failure = null;
+        try
+        {
+            if (done)
             {
                 await _client.MarkAsDoneAsync(account, item.Notification.Id, CancellationToken.None).ConfigureAwait(false);
             }
-            catch (GitHubApiException)
+            else
             {
-                await RefreshAsync().ConfigureAwait(false);
+                await _client.MarkAsReadAsync(account, item.Notification.Id, CancellationToken.None).ConfigureAwait(false);
             }
-        });
+        }
+        catch (Exception ex)
+        {
+            failure = ex;
+        }
+
+        bool current;
+        lock (_lock)
+        {
+            current = generation == _generation;
+            if (current && failure is not null)
+            {
+                _mutationError = done ? "Couldn't mark notification as done. Refresh and try again."
+                    : "Couldn't mark notification as read. Refresh and try again.";
+                if (done && !_items.Any(i => i.Notification.Id == item.Notification.Id))
+                {
+                    _items.Add(item);
+                }
+            }
+        }
+
+        if (current)
+        {
+            if (failure is not null && !done)
+            {
+                item.SetUnread(true);
+            }
+
+            RaiseItemsChanged();
+        }
+
+        lock (_lock)
+        {
+            current = generation == _generation;
+        }
+
+        PageDiagnostics.Finish(operation, failure, current, mutation: true);
     }
 
     private Task StartLoad(bool reset)
@@ -197,6 +275,8 @@ internal sealed partial class NotificationsPage : DynamicListPage
 
     private async Task LoadAsync(GitHubAccount account, Uri? page, bool reset, int generation)
     {
+        using var operation = OperationDiagnostics.Begin(DiagnosticEvent.PageLoad, DiagnosticArea.Notifications, verbose: true);
+        Exception? failure = null;
         List<NotificationItem> added = [];
         try
         {
@@ -248,12 +328,14 @@ internal sealed partial class NotificationsPage : DynamicListPage
                 _nextPage = result.NextPage;
                 _loaded = true;
                 _error = null;
+                _mutationError = null;
             }
 
             HasMoreItems = result.NextPage is not null;
         }
-        catch (GitHubApiException ex)
+        catch (Exception ex)
         {
+            failure = ex;
             lock (_lock)
             {
                 if (generation != _generation)
@@ -281,10 +363,19 @@ internal sealed partial class NotificationsPage : DynamicListPage
             {
                 IsLoading = false;
                 RaiseItemsChanged();
+                if (failure is null)
+                {
+                    await LoadSubjectsAsync(account, added, generation).ConfigureAwait(false);
+                }
             }
-        }
 
-        await LoadSubjectsAsync(account, added, generation).ConfigureAwait(false);
+            lock (_lock)
+            {
+                publish = generation == _generation;
+            }
+
+            PageDiagnostics.Finish(operation, failure, publish);
+        }
     }
 
     private async Task LoadSubjectsAsync(GitHubAccount account, List<NotificationItem> items, int generation)
@@ -295,6 +386,8 @@ internal sealed partial class NotificationsPage : DynamicListPage
             .Select(async item =>
             {
                 await throttle.WaitAsync().ConfigureAwait(false);
+                using var operation = OperationDiagnostics.Begin(DiagnosticEvent.SchemaRead, DiagnosticArea.Notifications, verbose: true);
+                Exception? failure = null;
                 try
                 {
                     var details = await _client.GetSubjectAsync(account, item.Notification.SubjectApiUrl!, CancellationToken.None).ConfigureAwait(false);
@@ -315,18 +408,20 @@ internal sealed partial class NotificationsPage : DynamicListPage
                     {
                         if (!HasSubjectDetails(item.Notification.SubjectType, details))
                         {
-                            GitHubRest.LogError($"GitHub API error: {item.Notification.SubjectType.ToLowerInvariant()} details missing; endpoint={GitHubRest.LogEndpoint(item.Notification.SubjectApiUrl)}.");
+                            failure = new System.Text.Json.JsonException();
                         }
 
                         item.ApplySubject(details);
                     }
                     else
                     {
+                        failure = new System.Text.Json.JsonException();
                         item.SetSubjectError(UnavailableSubjectMessage(item.Notification.SubjectType));
                     }
                 }
-                catch (GitHubApiException ex)
+                catch (Exception ex)
                 {
+                    failure = ex;
                     lock (_lock)
                     {
                         if (generation != _generation)
@@ -335,11 +430,18 @@ internal sealed partial class NotificationsPage : DynamicListPage
                         }
                     }
 
-                    item.SetSubjectError(ex.Message, ex.AuthorizeUrl);
+                    item.SetSubjectError(ex.Message, (ex as GitHubApiException)?.AuthorizeUrl);
                 }
                 finally
                 {
                     throttle.Release();
+                    bool current;
+                    lock (_lock)
+                    {
+                        current = generation == _generation;
+                    }
+
+                    PageDiagnostics.Finish(operation, failure, current);
                 }
             })).ConfigureAwait(false);
     }
@@ -355,6 +457,7 @@ internal sealed partial class NotificationsPage : DynamicListPage
             _loaded = false;
             _fetching = false;
             _error = null;
+            _mutationError = null;
         }
 
         HasMoreItems = false;
