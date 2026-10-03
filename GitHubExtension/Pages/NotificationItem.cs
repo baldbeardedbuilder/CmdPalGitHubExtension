@@ -22,6 +22,8 @@ internal sealed partial class NotificationItem : ListItem
     public NotificationItem(NotificationsPage page, GitHubNotification notification, Uri webUrl, IBrowserLauncher browser, DateTimeOffset now)
     {
         _page = page;
+        Account = page.CurrentAccount;
+        AccountGeneration = page.AccountGeneration;
         _browser = browser;
         Notification = notification;
         Unread = notification.Unread;
@@ -47,6 +49,10 @@ internal sealed partial class NotificationItem : ListItem
 
     public GitHubNotification Notification { get; }
 
+    internal GitHubAccount? Account { get; }
+
+    internal int AccountGeneration { get; }
+
     public bool Unread { get; private set; }
 
     public Uri WebUrl { get; private set; }
@@ -64,16 +70,16 @@ internal sealed partial class NotificationItem : ListItem
         _subject?.State.ToString() ?? string.Empty,
         Unread ? "unread" : string.Empty);
 
-    public void SetUnread(bool unread)
+    public void SetUnread(bool unread, Action<Action>? publish = null)
     {
         if (Unread != unread)
         {
             Unread = unread;
-            Refresh();
+            Refresh(publish);
         }
     }
 
-    public void ApplySubject(SubjectDetails subject)
+    public void ApplySubject(SubjectDetails subject, Action<Action>? publish = null)
     {
         _subject = subject;
         AuthorizeUrl = null;
@@ -84,39 +90,41 @@ internal sealed partial class NotificationItem : ListItem
 
         if (Notification.SubjectType == "PullRequest")
         {
-            Details = subject.PullRequest is { } pullRequest
+            var details = subject.PullRequest is { } pullRequest
                 ? new PullRequestDetails(pullRequest)
                 : PullRequestDetails.Unavailable(Notification.Title, "Couldn't load pull request details. Try refreshing notifications or open it on GitHub.");
+            Publish(publish, () => Details = details);
         }
         else if (Notification.SubjectType == "Issue")
         {
-            Details = subject.Issue is { } issue
+            var details = subject.Issue is { } issue
                 ? new IssueDetails(issue, Notification.RepositoryFullName)
                 : IssueDetails.Unavailable(Notification.Title, "Couldn't load issue details. Try refreshing notifications or open it on GitHub.");
+            Publish(publish, () => Details = details);
         }
 
-        Refresh();
+        Refresh(publish);
     }
 
-    public void SetSubjectError(string message, Uri? authorizeUrl = null)
+    public void SetSubjectError(string message, Uri? authorizeUrl = null, Action<Action>? publish = null)
     {
         AuthorizeUrl = authorizeUrl;
         if (Notification.SubjectType == "PullRequest")
         {
-            Details = PullRequestDetails.Unavailable(Notification.Title, message, authorizeUrl);
+            Publish(publish, () => Details = PullRequestDetails.Unavailable(Notification.Title, message, authorizeUrl));
         }
         else if (Notification.SubjectType == "Issue")
         {
-            Details = IssueDetails.Unavailable(Notification.Title, message, authorizeUrl);
+            Publish(publish, () => Details = IssueDetails.Unavailable(Notification.Title, message, authorizeUrl));
         }
 
-        Refresh();
+        Refresh(publish);
     }
 
-    private void Refresh()
+    private void Refresh(Action<Action>? publish = null)
     {
-        Icon = Icons.NotificationIcon(NotificationFormatting.Glyph(Notification.SubjectType), Unread);
-        Tags = NotificationFormatting.StateTag(Notification.SubjectType, _subject?.State ?? SubjectState.Unknown) is { } tag ? [tag] : [];
+        Publish(publish, () => Icon = Icons.NotificationIcon(NotificationFormatting.Glyph(Notification.SubjectType), Unread));
+        Publish(publish, () => Tags = NotificationFormatting.StateTag(Notification.SubjectType, _subject?.State ?? SubjectState.Unknown) is { } tag ? [tag] : []);
 
         var more = new List<IContextItem>();
         if (AuthorizeUrl is { } authorize)
@@ -142,6 +150,18 @@ internal sealed partial class NotificationItem : ListItem
 
         more.Add(new CommandContextItem(new CopyTextCommand(WebUrl.AbsoluteUri) { Name = "Copy link", Icon = Icons.Copy }));
         more.Add(new CommandContextItem(new RefreshNotificationsCommand(_page)));
-        MoreCommands = [.. more];
+        Publish(publish, () => MoreCommands = [.. more]);
+    }
+
+    private static void Publish(Action<Action>? publish, Action notification)
+    {
+        if (publish is null)
+        {
+            notification();
+        }
+        else
+        {
+            publish(notification);
+        }
     }
 }

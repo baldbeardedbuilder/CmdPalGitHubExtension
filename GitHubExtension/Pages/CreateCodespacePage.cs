@@ -16,14 +16,13 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
     private readonly AuthService _auth;
     private readonly ICodespacesClient _client;
     private readonly IBrowserLauncher _browser;
-    private readonly Lock _lock = new();
+    private readonly ListLoadState _load = new();
+    private Lock _lock => _load.SyncRoot;
     private CreateCodespaceForm _form;
     private GitHubCodespace? _createdCodespace;
     private readonly MutationExecutor _mutations;
     private (GitHubAccount Account, string Repository, string? Branch)? _review;
-    private Task _currentCreate = Task.CompletedTask;
-    private int _generation;
-    private bool _disposed;
+    private bool _disposed => _load.Disposed;
     private bool _creating;
     private GitHubAccount? _unknownAccount;
 
@@ -47,7 +46,7 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
         {
             lock (_lock)
             {
-                return _currentCreate;
+                return _load.CurrentLoad;
             }
         }
     }
@@ -173,8 +172,12 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
         _auth.AccountChanged -= OnAccountChanged;
         lock (_lock)
         {
-            _disposed = true;
-            _generation++;
+            if (_disposed)
+            {
+                return;
+            }
+
+            _load.Dispose();
         }
         _mutations.Dispose();
         IsLoading = false;
@@ -182,7 +185,7 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
 
     private void StartCreate(GitHubAccount account, string repository, string? branch)
     {
-        int generation;
+        ListLoadState.Operation request;
         lock (_lock)
         {
             if (_disposed || _creating || !_mutations.IsCurrent(account))
@@ -190,30 +193,24 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
                 return;
             }
 
-            generation = ++_generation;
+            _load.TryBegin(true, out request);
             _creating = true;
             _createdCodespace = null;
             _form = new CreateCodespaceForm(this, CreateCodespaceCards.Creating(repository));
         }
 
-        IsLoading = true;
-        RaiseItemsChanged();
-        lock (_lock)
-        {
-            if (generation != _generation || _disposed || !_mutations.IsCurrent(account))
-            {
-                return;
-            }
-
-            _currentCreate = Task.Run(() => CreateAsync(account, repository, branch, generation));
-        }
+        _load.Publish(request, () => IsLoading = true);
+        _load.Publish(request, () => RaiseItemsChanged());
+        _load.Run(request, () => CreateAsync(account, repository, branch, request), () => { },
+            "GitHub took too long to respond. Check GitHub before creating another Codespace.",
+            area: DiagnosticArea.Codespaces, mutation: true, diagnose: false);
     }
 
     private async Task CreateAsync(
         GitHubAccount account,
         string repository,
         string? branch,
-        int generation)
+        ListLoadState.Operation request)
     {
         using var operation = OperationDiagnostics.Begin(DiagnosticEvent.CodespaceCreate, DiagnosticArea.Codespaces);
         Exception? failure = null;
@@ -241,7 +238,7 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
                     }
 
                     return new MutationResult<GitHubCodespace>(MutationState.Completed, codespace);
-                }).ConfigureAwait(false);
+                }, cancellationToken: request.Token).ConfigureAwait(false);
             var outcome = result.State switch
             {
                 MutationState.Completed => DiagnosticOutcome.Accepted,
@@ -260,7 +257,7 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
             }
             lock (_lock)
             {
-                if (generation != _generation || _disposed || result.State == MutationState.Stale || !_mutations.IsCurrent(account))
+                if (!_load.IsCurrent(request) || result.State == MutationState.Stale || !_mutations.IsCurrent(account))
                 {
                     return;
                 }
@@ -285,7 +282,7 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
             bool publish;
             lock (_lock)
             {
-                publish = generation == _generation && !_disposed;
+                publish = _load.IsCurrent(request);
                 if (publish)
                 {
                     _creating = false;
@@ -294,8 +291,8 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
 
             if (publish)
             {
-                IsLoading = false;
-                RaiseItemsChanged();
+                _load.Publish(request, () => IsLoading = false);
+                _load.Publish(request, () => RaiseItemsChanged());
             }
         }
     }
@@ -314,7 +311,12 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
     {
         lock (_lock)
         {
-            _generation++;
+            if (_disposed)
+            {
+                return;
+            }
+
+            _load.Invalidate(reset: true);
             _review = null;
             _creating = false;
             _unknownAccount = null;

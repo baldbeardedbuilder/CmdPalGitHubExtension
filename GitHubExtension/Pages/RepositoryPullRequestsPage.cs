@@ -14,6 +14,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     public const string PageId = "com.baldbeardedbuilder.cmdpal.github.repository-pull-requests";
 
     private readonly AuthService _auth;
+    private readonly IDisposable _accountSubscription;
     private readonly IPullRequestsClient _client;
     private readonly IBrowserLauncher _browser;
     private readonly TimeProvider _time;
@@ -49,7 +50,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         _filters.CurrentFilterId = PullRequestFilters.Open;
         _filters.PropChanged += (_, _) => RaiseItemsChanged();
         Filters = _filters;
-        _auth.AccountChanged += OnAccountChanged;
+        _accountSubscription = auth.Subscribe(this, static page => page.OnAccountChanged(null, EventArgs.Empty));
     }
 
     internal Task CurrentLoad
@@ -63,12 +64,15 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         }
     }
 
-    internal RepositoryPullRequestsPage ForRepository(string repository) =>
+    internal RepositoryPage? Owner { get; private init; }
+
+    internal RepositoryPullRequestsPage ForRepository(string repository, RepositoryPage? owner = null) =>
         new(_auth, _client, _browser, _time, _mergeClient)
         {
             Id = $"{PageId}.{Uri.EscapeDataString(repository)}",
             Title = $"{repository} pull requests",
             _repository = repository,
+            Owner = owner,
         };
 
     internal ICommandResult Open(string repository)
@@ -192,7 +196,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
 
     public void Dispose()
     {
-        _auth.AccountChanged -= OnAccountChanged;
+        _accountSubscription.Dispose();
         MergePullRequestPage[] mergePages;
         lock (_lock)
         {
@@ -259,7 +263,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
                     MergePullRequestPage? mergePage = null;
                     if (_mergeClient is not null && pullRequest.State == SubjectState.Open)
                     {
-                        mergePage = new MergePullRequestPage(_auth, _mergeClient, account, repository, pullRequest.Number, pullRequest.WebUrl);
+                        mergePage = new MergePullRequestPage(_auth, _mergeClient, account, repository, pullRequest.Number, pullRequest.WebUrl) { Owner = this };
                         _mergePages.Add(mergePage);
                     }
 

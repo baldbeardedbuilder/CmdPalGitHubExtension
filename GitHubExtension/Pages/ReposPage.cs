@@ -33,11 +33,12 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     private readonly ListLoadState _searchLoad;
     private Lock _lock => _load.SyncRoot;
     private readonly List<RepoItem> _mine = [];
-    private readonly Dictionary<string, RepositoryPage> _repositoryPages = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, WeakReference<RepositoryPage>> _repositoryPages = new(StringComparer.OrdinalIgnoreCase);
 
     private string _searchQuery = string.Empty;
     private List<RepoItem> _searchResults = [];
     private int? _searchTotalCount;
+    private int _accountGeneration;
 
     public ReposPage(
         AuthService auth,
@@ -72,6 +73,29 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     }
 
     internal ActionsPage? Actions { get; }
+
+    internal GitHubAccount? CurrentAccount => _auth.CurrentAccount;
+
+    internal int AccountGeneration => _accountGeneration;
+
+    internal bool CanNavigate(GitHubAccount? account, int generation)
+    {
+        lock (_lock)
+        {
+            return !_load.Disposed && account is not null && _auth.CurrentAccount == account && _accountGeneration == generation;
+        }
+    }
+
+    internal int LiveRepositoryPages
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _repositoryPages.Values.Count(reference => reference.TryGetTarget(out _));
+            }
+        }
+    }
 
     /// <summary>
     /// The in flight load of your repos. Handy for tests.
@@ -114,6 +138,11 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         int? searchTotalCount;
         lock (_lock)
         {
+            if (_load.Disposed)
+            {
+                return [];
+            }
+
             needsLoad = _load.NeedsLoad;
             mine = [.. _mine];
             remote = [.. _searchResults];
@@ -234,6 +263,11 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     {
         lock (_lock)
         {
+            if (_load.Disposed)
+            {
+                return _load.CurrentLoad;
+            }
+
             _load.Invalidate();
         }
 
@@ -248,10 +282,16 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         RepositoryPage[] repositoryPages;
         lock (_lock)
         {
+            if (_load.Disposed)
+            {
+                return;
+            }
+
             _load.Dispose();
             _searchLoad.Dispose();
-            repositoryPages = [.. _repositoryPages.Values];
-            _repositoryPages.Clear();
+            repositoryPages = TakeRepositoryPages();
+            _mine.Clear();
+            _searchResults.Clear();
         }
 
         foreach (var page in repositoryPages)
@@ -260,6 +300,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         }
 
         IsLoading = false;
+        HasMoreItems = false;
     }
 
     private CommandItem Empty(string title, string subtitle, bool refresh = false) =>
@@ -269,36 +310,31 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     {
         lock (_lock)
         {
-            if (_repositoryPages.TryGetValue(repository.FullName, out var existing))
+            ObjectDisposedException.ThrowIf(_load.Disposed, this);
+            foreach (var key in _repositoryPages.Where(entry => !entry.Value.TryGetTarget(out _)).Select(entry => entry.Key).ToArray())
             {
+                _repositoryPages.Remove(key);
+            }
+
+            if (_repositoryPages.TryGetValue(repository.FullName, out var reference)
+                && reference.TryGetTarget(out var existing) && !existing.IsDisposed)
+            {
+                existing.UpdateRepository(repository);
                 return existing;
             }
-        }
 
-        var page = new RepositoryPage(_browser, Actions, repository, _repositoryIssuesPage, _repositoryPullRequestsPage, _auth, _agentsClient);
-        RepositoryPage result = page;
+            var page = new RepositoryPage(_browser, Actions, repository, _repositoryIssuesPage, _repositoryPullRequestsPage, _auth, _agentsClient);
+            _repositoryPages[repository.FullName] = new(page);
+            return page;
+        }
+    }
+
+    internal RepositoryPage? CreateRepositoryPage(GitHubRepository repository, GitHubAccount? account, int generation)
+    {
         lock (_lock)
         {
-            if (_load.Disposed)
-            {
-                result = page;
-            }
-            else if (_repositoryPages.TryGetValue(repository.FullName, out var existing))
-            {
-                result = existing;
-            }
-            else
-            {
-                _repositoryPages.Add(repository.FullName, page);
-            }
+            return CanNavigate(account, generation) ? CreateRepositoryPage(repository) : null;
         }
-
-        if (!ReferenceEquals(page, result) || _load.Disposed)
-        {
-            page.Dispose();
-        }
-
-        return result;
     }
 
     private Task StartSearch(bool reset)
@@ -346,7 +382,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
 
             var seen = _searchResults.Select(item => item.Repository.FullName).ToHashSet(StringComparer.OrdinalIgnoreCase);
             _searchResults.AddRange(results.Repositories.Where(r => seen.Add(r.FullName))
-                .Select(r => new RepoItem(this, r, _browser, now)));
+                .Select(r => new RepoItem(this, r, _browser, now, account)));
             _searchTotalCount = results.TotalCount;
             _searchLoad.Succeed(operation, results.NextPage);
         }
@@ -401,7 +437,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
             var known = _mine.Select(i => i.Repository.FullName).ToHashSet(StringComparer.OrdinalIgnoreCase);
             _mine.AddRange(result.Repositories
                 .Where(r => known.Add(r.FullName))
-                .Select(r => new RepoItem(this, r, _browser, now)));
+                .Select(r => new RepoItem(this, r, _browser, now, account)));
             _load.Succeed(operation, result.NextPage);
         }
     }
@@ -426,16 +462,23 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     private void Reset()
     {
         RepositoryPage[] repositoryPages;
+        long revision;
         lock (_lock)
         {
-            repositoryPages = [.. _repositoryPages.Values];
-            _repositoryPages.Clear();
+            if (_load.Disposed)
+            {
+                return;
+            }
+
+            repositoryPages = TakeRepositoryPages();
+            _accountGeneration++;
             _load.Invalidate(reset: true);
             _mine.Clear();
             _searchLoad.Invalidate(reset: true);
             _searchQuery = string.Empty;
             _searchResults = [];
             _searchTotalCount = null;
+            revision = _load.Revision;
         }
 
         foreach (var repositoryPage in repositoryPages)
@@ -443,8 +486,16 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
             repositoryPage.Reset();
         }
 
-        HasMoreItems = false;
-        IsLoading = false;
-        RaiseItemsChanged();
+        _load.Publish(revision, () => HasMoreItems = false);
+        _load.Publish(revision, () => IsLoading = false);
+        _load.Publish(revision, () => RaiseItemsChanged());
+    }
+
+    private RepositoryPage[] TakeRepositoryPages()
+    {
+        var pages = _repositoryPages.Values.Select(reference => reference.TryGetTarget(out var page) ? page : null)
+            .OfType<RepositoryPage>().ToArray();
+        _repositoryPages.Clear();
+        return pages;
     }
 }

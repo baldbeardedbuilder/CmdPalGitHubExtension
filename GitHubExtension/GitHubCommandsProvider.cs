@@ -29,12 +29,12 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
     private readonly CreateCodespacePage _createCodespacePage;
     private readonly HomePage _homePage;
     private readonly CommandItem _topLevel;
-    private readonly HttpClient? _httpClient;
-    private readonly Lock _disposeLock = new();
-    private volatile bool _disposed;
+    private readonly HttpClient? _ownedHttp;
+    private readonly bool _ownsAuth;
+    private int _disposed;
 
     public GitHubCommandsProvider()
-        : this(AuthService.CreateDefault())
+        : this(AuthService.CreateDefault(), ownsAuth: true)
     {
     }
 
@@ -48,12 +48,15 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         ICodespacesClient? codespacesClient = null,
         IActionsClient? actionsClient = null,
         IAgentsClient? agentsClient = null,
-        IPullRequestsClient? pullRequestsClient = null)
+        IPullRequestsClient? pullRequestsClient = null,
+        bool ownsAuth = false,
+        Func<HttpClient>? httpFactory = null)
     {
         _auth = auth;
+        _ownsAuth = ownsAuth;
         browser ??= new ShellBrowserLauncher();
         HttpClient? http = null;
-        HttpClient Http() => http ??= new HttpClient();
+        HttpClient Http() => http ??= httpFactory?.Invoke() ?? new HttpClient();
         _signInPage = new SignInPage(auth, logoProvider);
         issuesClient ??= new IssuesClient(Http());
         _issueDetailsPage = new IssueDetailsPage(auth, issuesClient, browser);
@@ -76,7 +79,6 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         _createCodespacePage = new CreateCodespacePage(auth, codespacesClient, browser);
         _codespacesPage = new CodespacesPage(auth, codespacesClient, browser, createPage: _createCodespacePage);
         _homePage = new HomePage(auth, _notificationsPage, _reposPage, _agentsPage, _codespacesPage, _createCodespacePage);
-        _httpClient = http;
 
         Id = "com.baldbeardedbuilder.cmdpal.github";
         DisplayName = "GitHub";
@@ -90,6 +92,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         UpdateTopLevel();
 
         _auth.AccountChanged += OnAccountChanged;
+        _ownedHttp = http;
     }
 
     private ICommand CurrentPage => _auth.IsSignedIn ? _homePage : _signInPage;
@@ -114,19 +117,14 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
 
     public override void Dispose()
     {
-        lock (_disposeLock)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
-            if (_disposed)
-            {
-                return;
-            }
-
-            _disposed = true;
+            return;
         }
 
         _auth.AccountChanged -= OnAccountChanged;
-        _signInPage.Dispose();
         _homePage.Dispose();
+        _signInPage.Dispose();
         _notificationsPage.Dispose();
         _issueDetailsPage.Dispose();
         _reposPage.Dispose();
@@ -136,15 +134,18 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         _createCodespacePage.Dispose();
         _repositoryIssuesPage.Dispose();
         _repositoryPullRequestsPage.Dispose();
-        _httpClient?.Dispose();
-        _auth.Dispose();
+        _ownedHttp?.Dispose();
+        if (_ownsAuth)
+        {
+            _auth.Dispose();
+        }
         base.Dispose();
         GC.SuppressFinalize(this);
     }
 
     private void OnAccountChanged(object? sender, EventArgs e)
     {
-        if (_disposed)
+        if (_disposed != 0)
         {
             return;
         }

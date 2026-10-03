@@ -15,9 +15,10 @@ internal sealed partial class AuthService : IDisposable
     private readonly IBrowserLauncher _browser;
     private readonly OAuthOptions _options;
     private readonly Func<LoopbackCallbackListener> _listenerFactory;
-    private readonly HttpClient? _ownedHttpClient;
     private readonly Lock _lock = new();
     private GitHubAccount? _currentAccount;
+    private readonly List<IAccountSubscription> _subscriptions = [];
+    private HttpClient? _ownedHttp;
 
     internal const string OAuthNotConfiguredMessage = "This build doesn't have a GitHub OAuth app configured. See CONTRIBUTING.md to set one up.";
 
@@ -34,7 +35,7 @@ internal sealed partial class AuthService : IDisposable
         _browser = browser;
         _options = options;
         _listenerFactory = listenerFactory ?? (() => new LoopbackCallbackListener());
-        _ownedHttpClient = ownedHttpClient;
+        _ownedHttp = ownedHttpClient;
         _currentAccount = store.Load();
     }
 
@@ -55,18 +56,37 @@ internal sealed partial class AuthService : IDisposable
 
     public bool IsOAuthConfigured => _options.IsConfigured;
 
-    public static AuthService CreateDefault()
+    public static AuthService CreateDefault() => CreateWithOwnedHttp(
+        new PasswordVaultAccountStore(), new HttpClient(), new ShellBrowserLauncher(), OAuthOptions.FromAssembly());
+
+    internal static AuthService CreateWithOwnedHttp(
+        IAccountStore store, HttpClient http, IBrowserLauncher browser, OAuthOptions options) =>
+        new(store, new GitHubAuthClient(http), browser, options) { _ownedHttp = http };
+
+    internal IDisposable Subscribe<T>(T target, Action<T> changed) where T : class
     {
-        var httpClient = new HttpClient();
-        return new AuthService(
-            new PasswordVaultAccountStore(),
-            new GitHubAuthClient(httpClient),
-            new ShellBrowserLauncher(),
-            OAuthOptions.FromAssembly(),
-            ownedHttpClient: httpClient);
+        var subscription = new AccountSubscription<T>(this, target, changed);
+        lock (_lock)
+        {
+            _subscriptions.RemoveAll(entry => !entry.IsAlive);
+            _subscriptions.Add(subscription);
+        }
+
+        return subscription;
     }
 
-    public void Dispose() => _ownedHttpClient?.Dispose();
+    internal void Unsubscribe(IAccountSubscription subscription)
+    {
+        lock (_lock)
+        {
+            _subscriptions.Remove(subscription);
+        }
+    }
+
+    public void Dispose()
+    {
+        Interlocked.Exchange(ref _ownedHttp, null)?.Dispose();
+    }
 
     internal static Uri BuildAuthorizeUri(GitHubHost host, string clientId, Uri redirectUri, string state, string codeChallenge)
     {
@@ -167,9 +187,14 @@ internal sealed partial class AuthService : IDisposable
     private async Task<GitHubAccount> CompleteSignInAsync(GitHubHost host, string token, CancellationToken cancellationToken)
     {
         var login = await _client.GetLoginAsync(host, token, cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
         var account = new GitHubAccount(host, login, token);
 
-        UpdateAccount(() => _store.Save(account), account);
+        UpdateAccount(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _store.Save(account);
+        }, account);
         return account;
     }
 
@@ -212,6 +237,17 @@ internal sealed partial class AuthService : IDisposable
             if (changed)
             {
                 AccountChanged?.Invoke(this, EventArgs.Empty);
+                IAccountSubscription[] subscriptions;
+                lock (_lock)
+                {
+                    _subscriptions.RemoveAll(entry => !entry.IsAlive);
+                    subscriptions = [.. _subscriptions];
+                }
+
+                foreach (var subscription in subscriptions)
+                {
+                    subscription.Notify();
+                }
             }
         }
     }

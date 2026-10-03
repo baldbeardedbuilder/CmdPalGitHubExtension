@@ -49,7 +49,7 @@ internal sealed partial class HomePage : ListPage, IDisposable
     public override IListItem[] GetItems()
     {
         var account = _auth.CurrentAccount;
-        if (account is null)
+        if (_disposed || account is null)
         {
             return [];
         }
@@ -79,17 +79,17 @@ internal sealed partial class HomePage : ListPage, IDisposable
     private static ListItem ComingSoon(string title, IIconInfo icon, IContextItem[] more) =>
         new(new NoOpCommand()) { Title = title, Subtitle = "Coming soon", Icon = icon, MoreCommands = more };
 
-    public void Dispose()
-    {
-        _disposed = true;
-        _auth.AccountChanged -= OnAccountChanged;
-    }
-
     private void OnAccountChanged(object? sender, EventArgs e)
     {
         if (!_disposed)
         {
             RaiseItemsChanged();
         }
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _auth.AccountChanged -= OnAccountChanged;
     }
 }

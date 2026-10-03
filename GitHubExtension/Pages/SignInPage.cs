@@ -20,10 +20,11 @@ internal sealed partial class SignInPage : ContentPage, IDisposable
     private readonly AuthService _auth;
     private readonly Func<string> _logoProvider;
     private readonly Action<string> _showError;
-    private readonly Lock _lock = new();
+    private readonly ListLoadState _load = new();
+    private Lock _lock => _load.SyncRoot;
     private SignInForm _form;
-    private CancellationTokenSource? _signInCancellation;
-    private volatile bool _disposed;
+
+    internal Task CurrentSignIn => _load.CurrentLoad;
 
     public SignInPage(AuthService auth, Func<string>? logoProvider = null, Action<string>? showError = null)
     {
@@ -51,6 +52,11 @@ internal sealed partial class SignInPage : ContentPage, IDisposable
 
     internal ICommandResult HandleSubmit(string action, string inputs)
     {
+        if (_load.Disposed)
+        {
+            return CommandResult.KeepOpen();
+        }
+
         switch (action)
         {
             case SignInActions.GitHub:
@@ -73,9 +79,13 @@ internal sealed partial class SignInPage : ContentPage, IDisposable
                 break;
 
             case SignInActions.Cancel:
-                CancelSignIn();
-                Show(SignInView.Start);
+                lock (_lock)
+                {
+                    _load.Invalidate(reset: true);
+                }
+
                 IsLoading = false;
+                Show(SignInView.Start);
                 break;
 
             case SignInActions.Back:
@@ -91,93 +101,51 @@ internal sealed partial class SignInPage : ContentPage, IDisposable
 
     private void StartSignIn(Func<CancellationToken, Task<GitHubAccount>> signIn, SignInView waitingView, string? serverUrl = null)
     {
-        CancellationTokenSource? previous;
-        var cancellation = new CancellationTokenSource();
+        ListLoadState.Operation request;
         lock (_lock)
         {
-            if (_disposed)
+            if (_load.Disposed)
             {
-                cancellation.Dispose();
                 return;
             }
 
-            previous = _signInCancellation;
-            _signInCancellation = cancellation;
+            _load.Invalidate(reset: true);
+            _load.TryBegin(true, out request);
         }
 
-        previous?.Cancel();
-        var token = cancellation.Token;
         var returnView = waitingView == SignInView.Verifying ? SignInView.Enterprise : SignInView.Start;
 
-        Show(waitingView);
-        IsLoading = true;
+        _load.Publish(request, () => Show(waitingView));
+        _load.Publish(request, () => IsLoading = true);
 
-        _ = Task.Run(async () =>
+        _load.Run(request, async () =>
         {
-            using var operation = OperationDiagnostics.Begin(DiagnosticEvent.Mutation, DiagnosticArea.Auth);
-            Exception? failure = null;
-            try
+            var account = await signIn(request.Token).ConfigureAwait(false);
+            _load.Publish(request, () => Show(SignInView.SignedIn, account: account));
+            _load.Publish(request, () => new ToastStatusMessage($"Signed in as @{account.Login}").Show());
+        }, () =>
+        {
+            string? error;
+            lock (_lock)
             {
-                var account = await signIn(token).ConfigureAwait(false);
-                if (!IsCurrentSignIn(cancellation))
-                {
-                    return;
-                }
+                error = _load.Error;
+            }
 
-                Show(SignInView.SignedIn, account: account);
-                new ToastStatusMessage($"Signed in as @{account.Login}").Show();
-            }
-            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            if (error is not null)
             {
-                // The user hit cancel, and we already moved them back.
+                _load.Publish(request, () => Show(returnView, error, serverUrl));
             }
-            catch (GitHubAuthException ex)
-            {
-                failure = ex;
-                if (IsCurrentSignIn(cancellation))
-                {
-                    Show(returnView, ex.Message, serverUrl);
-                }
-            }
-            catch (Exception ex)
-            {
-                failure = ex;
-                if (IsCurrentSignIn(cancellation))
-                {
-                    Show(returnView, $"Something went wrong signing in. {ex.Message}", serverUrl);
-                }
-            }
-            finally
-            {
-                bool current;
-                lock (_lock)
-                {
-                    current = ReferenceEquals(_signInCancellation, cancellation);
-                    if (current)
-                    {
-                        _signInCancellation = null;
-                    }
-                }
 
-                cancellation.Dispose();
-                if (current)
-                {
-                    if (!_disposed)
-                    {
-                        IsLoading = false;
-                    }
-                }
-
-                PageDiagnostics.Finish(operation, failure, current, cancellationToken: token);
-            }
-        });
+            _load.Publish(request, () => IsLoading = false);
+        }, "GitHub took too long to respond. Try signing in again.", area: DiagnosticArea.Auth,
+            diagnosticEvent: DiagnosticEvent.Mutation);
     }
 
     private void Show(SignInView view, string? error = null, string? serverUrl = null, GitHubAccount? account = null)
     {
         lock (_lock)
         {
-            if (_disposed)
+            if (_load.Disposed)
             {
                 return;
             }
@@ -192,29 +160,17 @@ internal sealed partial class SignInPage : ContentPage, IDisposable
 
     public void Dispose()
     {
-        _disposed = true;
-        CancelSignIn();
+        lock (_lock)
+        {
+            if (_load.Disposed)
+            {
+                return;
+            }
+
+            _load.Dispose();
+        }
+
         IsLoading = false;
-    }
-
-    private void CancelSignIn()
-    {
-        CancellationTokenSource? cancellation;
-        lock (_lock)
-        {
-            cancellation = _signInCancellation;
-            _signInCancellation = null;
-        }
-
-        cancellation?.Cancel();
-    }
-
-    private bool IsCurrentSignIn(CancellationTokenSource cancellation)
-    {
-        lock (_lock)
-        {
-            return !_disposed && ReferenceEquals(_signInCancellation, cancellation);
-        }
     }
 
     private SignInForm CreateForm(SignInView view, string? error = null, string? serverUrl = null, GitHubAccount? account = null)

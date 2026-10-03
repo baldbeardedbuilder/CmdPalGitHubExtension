@@ -14,6 +14,7 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
     public const string PageId = "com.baldbeardedbuilder.cmdpal.github.repository-issues";
 
     private readonly AuthService _auth;
+    private readonly IDisposable _accountSubscription;
     private readonly IIssuesClient _client;
     private readonly IBrowserLauncher _browser;
     private readonly TimeProvider _time;
@@ -41,7 +42,7 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         _filters.CurrentFilterId = IssueFilters.Open;
         _filters.PropChanged += (_, _) => RaiseItemsChanged();
         Filters = _filters;
-        _auth.AccountChanged += OnAccountChanged;
+        _accountSubscription = auth.Subscribe(this, static page => page.OnAccountChanged(null, EventArgs.Empty));
     }
 
     internal Task CurrentLoad
@@ -55,12 +56,15 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         }
     }
 
-    internal RepositoryIssuesPage ForRepository(string repository) =>
+    internal RepositoryPage? Owner { get; private init; }
+
+    internal RepositoryIssuesPage ForRepository(string repository, RepositoryPage? owner = null) =>
         new(_auth, _client, _browser, _time)
         {
             Id = $"{PageId}.{Uri.EscapeDataString(repository)}",
             Title = $"{repository} issues",
             _repository = repository,
+            Owner = owner,
         };
 
     internal ICommandResult Open(string repository)
@@ -171,7 +175,7 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
 
     public void Dispose()
     {
-        _auth.AccountChanged -= OnAccountChanged;
+        _accountSubscription.Dispose();
         _load.Dispose();
         IsLoading = false;
     }

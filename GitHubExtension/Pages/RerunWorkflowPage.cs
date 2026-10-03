@@ -11,13 +11,14 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 internal sealed partial class RerunWorkflowPage : ContentPage, IDisposable
 {
     private readonly AuthService _auth;
+    private readonly IDisposable _accountSubscription;
     private readonly IActionsClient _client;
     private readonly ActionsPage _parent;
     private readonly string _repository;
     private readonly GitHubAccount? _account;
     private readonly GitHubWorkflowRun _original;
-    private readonly Lock _lock = new();
-    private readonly CancellationTokenSource _cancellation = new();
+    private readonly ListLoadState _load = new();
+    private Lock _lock => _load.SyncRoot;
     private FormContent _form;
     private Task _currentOperation = Task.CompletedTask;
     private bool _busy;
@@ -38,7 +39,7 @@ internal sealed partial class RerunWorkflowPage : ContentPage, IDisposable
         Title = $"Rerun {run.Name}";
         Icon = Icons.Actions;
         _form = new RerunForm(this, RerunWorkflowCards.Confirm(repository, run));
-        _auth.AccountChanged += OnAccountChanged;
+        _accountSubscription = auth.Subscribe(this, static page => page.Dispose());
     }
 
     internal Task CurrentOperation
@@ -93,7 +94,16 @@ internal sealed partial class RerunWorkflowPage : ContentPage, IDisposable
                 }
 
                 _busy = true;
-                _currentOperation = Task.Run(() => OperateAsync(refresh, failedOnly, debug, _cancellation.Token));
+                _load.TryBegin(true, out var operation);
+                _currentOperation = _load.Run(operation, () => OperateAsync(refresh, failedOnly, debug, operation.Token),
+                    () =>
+                    {
+                        if (_load.Error is { } error)
+                        {
+                            _load.Publish(operation, () => Show($"The operation wasn't confirmed. Refresh Actions before trying again. {error}"));
+                        }
+                    }, "GitHub took too long to respond. Refresh the Actions list before trying again.",
+                    area: DiagnosticArea.Actions, mutation: !refresh);
             }
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException)
@@ -205,8 +215,6 @@ internal sealed partial class RerunWorkflowPage : ContentPage, IDisposable
         }
     }
 
-    private void OnAccountChanged(object? sender, EventArgs e) => Dispose();
-
     public void Dispose()
     {
         lock (_lock)
@@ -217,11 +225,11 @@ internal sealed partial class RerunWorkflowPage : ContentPage, IDisposable
             }
 
             _invalid = true;
+            _load.Dispose();
             _form = new RerunForm(this, RerunWorkflowCards.Status(_repository, _original.Id, "Account changed or page closed. Reopen Actions to continue."));
         }
 
-        _auth.AccountChanged -= OnAccountChanged;
-        _cancellation.Cancel();
+        _accountSubscription.Dispose();
         RaiseItemsChanged();
     }
 
