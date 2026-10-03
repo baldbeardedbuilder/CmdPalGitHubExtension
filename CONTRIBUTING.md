@@ -23,7 +23,7 @@ MSIX packaging needs a Windows runtime identifier, so always pass one:
 dotnet build GitHubExtension/GitHubExtension.csproj -r win-x64
 ```
 
-If you want to test the github.com sign in, set up your own OAuth app first. The [README](README.md#building-with-your-own-oauth-app) walks through it. Enterprise sign in works without it.
+If you want to test the github.com sign in, set up your own OAuth app first. The [installation guide](docs/src/content/docs/getting-started/installation.md#configure-githubcom-sign-in) walks through it. Enterprise sign in works without it.
 
 #### Recovering from a locked executable
 
@@ -72,6 +72,43 @@ Notification refresh keeps submitted mutations alive. Deduplicate writes for the
 Open `GitHubExtension.slnx` in Visual Studio, set **GitHubExtension** as the startup project, and deploy it. Then open Command Palette and run **Reload Command Palette extensions**.
 
 ## How to contribute
+
+### Documentation site
+
+The user documentation lives in `docs\` and uses Astro Starlight. Use **Node.js 24 LTS** and npm. From the repository root:
+
+```powershell
+Set-Location docs
+npm ci
+npm run dev
+```
+
+Open `http://localhost:4321/CmdPalGitHubExtension/`. The project URL prefix also applies locally, so links and search use the same paths as GitHub Pages.
+
+Before submitting changes:
+
+```powershell
+npm run check
+npm test
+npm run build
+npm run validate
+```
+
+The validator checks generated links, anchors, local assets, the Pages prefix, and Pagefind search artifacts. `npm test` checks the validator itself. To try the production build, run `npm run preview` and open the same URL. Search uses the generated production index, so check it in preview rather than relying only on the development server.
+
+Write user guides in `docs\src\content\docs\` and update the sidebar in `docs\astro.config.mjs` when adding a page. Keep instructions aligned with the current extension, not planned features. The extension mark comes from `GitHubExtension\Assets\GHCmdPalMark.svg` under the repository's MIT license; `docs\public\favicon.svg` is a copy of that mark.
+
+#### Enable GitHub Pages
+
+A repository owner must select **Settings > Pages > Build and deployment > Source > GitHub Actions** once. Check that the `github-pages` environment permits deployment from `main`.
+
+[The documentation workflow](.github/workflows/docs.yml) validates documentation pull requests without deploying them. Relevant changes pushed to `main` publish at `https://baldbeardedbuilder.github.io/CmdPalGitHubExtension/`. You can also run **Documentation** manually from `main` in Actions.
+
+The workflow doesn't need OAuth or signing secrets. It uses the built-in GitHub token and the Pages deployment identity. Keep the root privacy policy and contributor/release guides as the canonical repository documents.
+
+#### Dependency advisory
+
+Astro currently brings in `http-cache-semantics@4.2.0`, which has an unpatched [shared-cache disclosure advisory](https://github.com/advisories/GHSA-ch52-4w7c-c8xp). `npm audit` reports it and its dependent packages. This site uses local images and deploys only static files to Pages, not an Astro server or a shared authenticated cache. Keep local previews bound to localhost, and review this advisory before adding credentialed remote image fetching or server rendering. Dependabot monitors the documentation dependencies for updates.
 
 ### Reporting bugs
 

@@ -1,0 +1,60 @@
+---
+title: Your GitHub work, one keystroke away
+description: Check notifications, find repositories, and follow your GitHub work without leaving Command Palette.
+template: splash
+hero:
+  tagline: Check your inbox, find a repo, and see how your work is going. GitHub for Command Palette puts the next action right where you're already typing.
+  image:
+    file: ../../../../GitHubExtension/Assets/GHCmdPalMark.svg
+    alt: GitHub for Command Palette extension mark
+  actions:
+    - text: Get started
+      link: /CmdPalGitHubExtension/getting-started/installation/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/baldbeardedbuilder/CmdPalGitHubExtension
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## Start with your next task
+
+<CardGrid>
+  <Card title="Catch up on your inbox" icon="email">
+    Preview issues and pull requests, open a notification, or mark it done.
+    [Use notifications](/CmdPalGitHubExtension/guides/notifications/)
+  </Card>
+  <Card title="Find the right repository" icon="magnifier">
+    Search the repos you can access, then browse their issues, pull requests, and workflow runs.
+    [Explore repositories](/CmdPalGitHubExtension/guides/repositories/)
+  </Card>
+  <Card title="Follow your Copilot tasks" icon="rocket">
+    Check agent task status or start a task from a repository.
+    [Work with agents](/CmdPalGitHubExtension/guides/agents/)
+  </Card>
+  <Card title="Manage your development environment" icon="laptop">
+    Open, start, close, or create a Codespace. Review the account and billing details before starting compute.
+    [Use Codespaces](/CmdPalGitHubExtension/guides/codespaces/)
+  </Card>
+</CardGrid>
+
+## A small extension, not a browser replacement
+
+You can do the quick checks in Command Palette and open GitHub when you need the full conversation, editor, or workflow logs. You'll need Windows and PowerToys with Command Palette enabled.
+
+This extension is still early. Installation currently starts with a source build, and **Saved Queries** is a placeholder, not a working feature.
+
+<CardGrid>
+  <LinkCard
+    title="Sign in to your GitHub host"
+    description="Use browser sign-in for github.com or a token for Enterprise Server."
+    href="/CmdPalGitHubExtension/getting-started/sign-in/"
+  />
+  <LinkCard
+    title="Something didn't work?"
+    description="Check permissions, search limits, and pending requests before retrying."
+    href="/CmdPalGitHubExtension/reference/troubleshooting/"
+  />
+</CardGrid>
