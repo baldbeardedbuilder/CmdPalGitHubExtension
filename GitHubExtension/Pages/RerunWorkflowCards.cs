@@ -9,9 +9,10 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 
 internal static class RerunWorkflowCards
 {
-    internal static string Confirm(string repository, GitHubWorkflowRun run) => Card(
+    internal static string Confirm(string repository, GitHubWorkflowRun run, string? message = null) => Card(
         Text($"Rerun {repository} / {run.Name} (run {run.Id}, attempt {run.RunAttempt?.ToString(System.Globalization.CultureInfo.CurrentCulture) ?? "unknown"})?"),
         Text("This uses GitHub Actions compute and may incur charges. Confirm only if you want to run these jobs again."),
+        message is null ? string.Empty : Text(message),
         $$"""
         { "type": "Input.ChoiceSet", "id": "jobs", "label": "Jobs to rerun", "value": "all", "choices": [
             { "title": "All jobs", "value": "all" }
@@ -31,6 +32,6 @@ internal static class RerunWorkflowCards
 
     private static string Card(params string[] elements) => $$"""
         { "$schema": "http://adaptivecards.io/schemas/adaptive-card.json", "type": "AdaptiveCard", "version": "1.6",
-          "body": [{{string.Join(",\n", elements)}}] }
+          "body": [{{string.Join(",\n", elements.Where(e => !string.IsNullOrEmpty(e)))}}] }
         """;
 }

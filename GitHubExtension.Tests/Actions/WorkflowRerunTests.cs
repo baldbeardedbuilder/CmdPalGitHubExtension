@@ -273,6 +273,49 @@ public class WorkflowRerunTests
         client.Verify(c => c.RerunAsync(Account, "o/r", Run.Id, false, false, It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    [TestMethod]
+    public async Task RefreshAfterPreflightFailureRestoresConfirmationWithoutDuplicatePost()
+    {
+        var client = Client(Run);
+        client.SetupSequence(c => c.GetRunAsync(Account, "o/r", Run.Id, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new GitHubApiException("Unavailable"))
+            .ReturnsAsync(Run).ReturnsAsync(Run).ReturnsAsync(Run with { Status = "queued", RunAttempt = 3 });
+        using var parent = await Parent(client.Object, Auth());
+        var page = parent.RerunPage("o/r", Run);
+        page.HandleSubmit("{}", Confirm);
+        await page.CurrentOperation;
+        StringAssert.Contains(Template(page), "Unavailable");
+        client.Verify(c => c.RerunAsync(It.IsAny<GitHubAccount>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        page.HandleSubmit("{}", Refresh);
+        await page.CurrentOperation;
+        StringAssert.Contains(Template(page), "Confirm rerun");
+        Assert.AreSame(page, parent.RerunPage("o/r", Run));
+        page.HandleSubmit("{}", Confirm);
+        await page.CurrentOperation;
+        page.HandleSubmit("{}", Confirm);
+        await page.CurrentOperation;
+        client.Verify(c => c.RerunAsync(Account, "o/r", Run.Id, false, false, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task NotificationsAllowHostToReadContentFromAnotherThread()
+    {
+        using var parent = await Parent(Client(Run).Object, Auth());
+        var page = parent.RerunPage("o/r", Run);
+        var notifications = 0;
+        page.ItemsChanged += (_, _) =>
+        {
+            var content = Task.Run(page.GetContent).WaitAsync(TimeSpan.FromSeconds(10)).GetAwaiter().GetResult();
+            Assert.HasCount(1, content);
+            Interlocked.Increment(ref notifications);
+        };
+        page.HandleSubmit("{}", Confirm);
+        await page.CurrentOperation;
+        page.Dispose();
+        Assert.IsGreaterThan(0, notifications);
+    }
+
     private static string Template(RerunWorkflowPage page) => ((FormContent)page.GetContent().Single()).TemplateJson;
 
     private static AuthService Auth() =>

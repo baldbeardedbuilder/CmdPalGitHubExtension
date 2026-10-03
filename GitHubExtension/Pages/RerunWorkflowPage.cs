@@ -106,6 +106,7 @@ internal sealed partial class RerunWorkflowPage : ContentPage, IDisposable
     private async Task OperateAsync(bool refresh, bool failedOnly, bool debug, CancellationToken token)
     {
         var message = "Checking workflow run...";
+        GitHubWorkflowRun? confirmation = null;
         Show(message);
         try
         {
@@ -145,6 +146,10 @@ internal sealed partial class RerunWorkflowPage : ContentPage, IDisposable
             else
             {
                 message = $"Attempt {run.RunAttempt?.ToString(System.Globalization.CultureInfo.CurrentCulture) ?? "unknown"}: {WorkflowRunFormatting.State(run)}.";
+                if (!_submitted && run.CanRerun && run.RunAttempt == _original.RunAttempt)
+                {
+                    confirmation = run;
+                }
             }
 
             if (IsCurrent())
@@ -171,11 +176,11 @@ internal sealed partial class RerunWorkflowPage : ContentPage, IDisposable
                 _busy = false;
             }
 
-            Show(message);
+            Show(message, confirmation);
         }
     }
 
-    private void Show(string message)
+    private void Show(string message, GitHubWorkflowRun? confirmation = null)
     {
         lock (_lock)
         {
@@ -184,7 +189,9 @@ internal sealed partial class RerunWorkflowPage : ContentPage, IDisposable
                 return;
             }
 
-            _form = new RerunForm(this, RerunWorkflowCards.Status(_repository, _original.Id, message));
+            _form = new RerunForm(this, confirmation is null
+                ? RerunWorkflowCards.Status(_repository, _original.Id, message)
+                : RerunWorkflowCards.Confirm(_repository, confirmation, message));
         }
 
         RaiseItemsChanged();
