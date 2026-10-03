@@ -18,16 +18,11 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     private readonly TimeProvider _time;
     private readonly PageEmptyContent _emptyContent;
     private readonly ActionFilters _filters = new();
-    private readonly Lock _lock = new();
+    private readonly ListLoadState _load = new();
+    private Lock _lock => _load.SyncRoot;
     private readonly List<WorkflowRunItem> _items = [];
     private readonly Dictionary<(long Id, int? Attempt), RerunWorkflowPage> _rerunPages = [];
     private string? _repository;
-    private Uri? _nextPage;
-    private bool _loaded;
-    private bool _fetching;
-    private string? _error;
-    private int _generation;
-    private Task _currentLoad = Task.CompletedTask;
 
     public ActionsPage(AuthService auth, IActionsClient client, IBrowserLauncher browser, TimeProvider? time = null)
     {
@@ -53,7 +48,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         {
             lock (_lock)
             {
-                return _currentLoad;
+                return _load.CurrentLoad;
             }
         }
     }
@@ -87,7 +82,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         bool needsLoad;
         lock (_lock)
         {
-            needsLoad = !_loaded && !_fetching;
+            needsLoad = _load.NeedsLoad;
         }
 
         if (needsLoad)
@@ -103,9 +98,9 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
             var filter = _filters.CurrentFilterId;
             empty = _auth.CurrentAccount is null
                 ? Empty("Sign in to view workflow runs", "Open GitHub to sign in")
-                : _error is not null
-                    ? Empty("Couldn't load workflow runs", _error, refresh: true)
-                    : _fetching && _items.Count == 0
+                : _load.Error is not null
+                    ? Empty("Couldn't load workflow runs", _load.Error, refresh: true)
+                    : _load.Fetching && _items.Count == 0
                         ? Empty("Loading workflow runs...", _repository ?? string.Empty)
                         : terms.Length > 0
                             ? Empty("No workflow runs found", $"Nothing matches \"{SearchText.Trim()}\"", refresh: true)
@@ -114,12 +109,12 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
                 .Where(i => ActionFilters.Matches(i.Run, filter))
                 .Where(i => terms.All(t => i.SearchText.Contains(t, StringComparison.OrdinalIgnoreCase)))
                 .Cast<IListItem>().ToList();
-            if (_error is not null && _items.Count > 0)
+            if (_load.Error is not null && _items.Count > 0)
             {
                 matches.Add(new ListItem(new RefreshActionsCommand(this))
                 {
                     Title = "Couldn't load workflow runs",
-                    Subtitle = _error,
+                    Subtitle = _load.Error,
                     Icon = Icons.Actions,
                 });
             }
@@ -139,8 +134,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     {
         lock (_lock)
         {
-            _generation++;
-            _fetching = false;
+            _load.Invalidate();
         }
 
         return StartLoad(reset: true);
@@ -165,6 +159,8 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     {
         _auth.AccountChanged -= OnAccountChanged;
         ClearRerunPages();
+        _load.Dispose();
+        IsLoading = false;
     }
 
     private void ClearRerunPages()
@@ -189,108 +185,57 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     {
         GitHubAccount account;
         string repository;
-        int generation;
-        Uri? nextPage;
+        ListLoadState.Operation operation;
         lock (_lock)
         {
             if (_auth.CurrentAccount is not { } currentAccount || _repository is not { } currentRepository
-                || _fetching || (!reset && _nextPage is null))
+                || !_load.TryBegin(reset, out operation))
             {
-                return _currentLoad;
+                return _load.CurrentLoad;
             }
 
-            _fetching = true;
-            _error = null;
             account = currentAccount;
             repository = currentRepository;
-            generation = _generation;
-            nextPage = reset ? null : _nextPage;
         }
 
-        IsLoading = true;
+        _load.Publish(operation, () => IsLoading = true);
+        return _load.Run(operation, () => LoadAsync(account, repository, operation), () => PublishLoad(operation),
+            "GitHub took too long to respond. Try refreshing workflow runs.", area: DiagnosticArea.Actions);
+    }
+
+    private async Task LoadAsync(GitHubAccount account, string repository, ListLoadState.Operation operation)
+    {
+        var result = await _client.GetRunsAsync(account, repository, operation.Page, operation.Token).ConfigureAwait(false);
+        var now = _time.GetUtcNow();
         lock (_lock)
         {
-            if (generation != _generation)
+            if (!_load.IsCurrent(operation))
             {
-                return _currentLoad;
+                return;
             }
 
-            _currentLoad = Task.Run(() => LoadAsync(account, repository, nextPage, reset, generation));
-            return _currentLoad;
+            if (operation.Reset)
+            {
+                _items.Clear();
+            }
+
+            var known = _items.Select(i => i.Run.Id).ToHashSet();
+            _items.AddRange(result.Runs.Where(r => known.Add(r.Id)).Select(r => new WorkflowRunItem(this, repository, r, _browser, now)));
+            _load.Succeed(operation, result.NextPage);
         }
     }
 
-    private async Task LoadAsync(GitHubAccount account, string repository, Uri? page, bool reset, int generation)
+    private void PublishLoad(ListLoadState.Operation operation)
     {
-        using var operation = OperationDiagnostics.Begin(DiagnosticEvent.PageLoad, DiagnosticArea.Actions, verbose: true);
-        Exception? failure = null;
-        try
+        bool hasMore;
+        lock (_lock)
         {
-            var result = await _client.GetRunsAsync(account, repository, page, CancellationToken.None).ConfigureAwait(false);
-            var now = _time.GetUtcNow();
-            bool hasMore;
-            lock (_lock)
-            {
-                if (generation != _generation)
-                {
-                    return;
-                }
-
-                if (reset)
-                {
-                    _items.Clear();
-                }
-
-                var known = _items.Select(i => i.Run.Id).ToHashSet();
-                _items.AddRange(result.Runs.Where(r => known.Add(r.Id)).Select(r => new WorkflowRunItem(this, repository, r, _browser, now)));
-                _nextPage = result.NextPage;
-                hasMore = _nextPage is not null;
-                _loaded = true;
-            }
-
-            HasMoreItems = hasMore;
+            hasMore = _load.Error is null && _load.NextPage is not null;
         }
-        catch (Exception ex)
-        {
-            failure = ex;
-            lock (_lock)
-            {
-                if (generation != _generation)
-                {
-                    return;
-                }
 
-                _error = ex.Message;
-                _loaded = true;
-            }
-
-            HasMoreItems = false;
-        }
-        finally
-        {
-            bool publish;
-            lock (_lock)
-            {
-                publish = generation == _generation;
-                if (publish)
-                {
-                    _fetching = false;
-                }
-            }
-
-            if (publish)
-            {
-                IsLoading = false;
-                RaiseItemsChanged();
-            }
-
-            lock (_lock)
-            {
-                publish = generation == _generation;
-            }
-
-            PageDiagnostics.Finish(operation, failure, publish);
-        }
+        _load.Publish(operation, () => HasMoreItems = hasMore);
+        _load.Publish(operation, () => IsLoading = false);
+        _load.Publish(operation, () => RaiseItemsChanged());
     }
 
     private void OnAccountChanged(object? sender, EventArgs e)
@@ -309,12 +254,8 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
     private void Reset()
     {
-        _generation++;
+        _load.Invalidate(reset: true);
         _items.Clear();
-        _nextPage = null;
-        _loaded = false;
-        _fetching = false;
-        _error = null;
     }
 }
 
