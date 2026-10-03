@@ -351,7 +351,7 @@ public sealed class PageNotificationTests
             CheckRead(() => page.GetContent(), "ItemsChanged", blocked);
         };
 
-        page.Open(Account, new Uri("https://api.github.com/repos/o/r/issues/1"), "o/r");
+        page.LoadIssue(Account, new Uri("https://api.github.com/repos/o/r/issues/1"), "o/r");
         await page.CurrentLoad;
 
         Assert.IsFalse(page.IsLoading);

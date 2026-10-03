@@ -253,8 +253,8 @@ internal sealed partial class IssueFilters : Filters
 
     public override IFilterItem[] GetFilters() =>
     [
-        new Filter { Id = Open, Name = "Open" },
-        new Filter { Id = Closed, Name = "Closed" },
+        new Filter { Id = Open, Name = "Open", Icon = Icons.StateOpenIssue },
+        new Filter { Id = Closed, Name = "Closed", Icon = Icons.StateClosedIssue },
     ];
 }
 

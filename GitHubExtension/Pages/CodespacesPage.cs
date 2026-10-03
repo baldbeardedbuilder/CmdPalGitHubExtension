@@ -144,13 +144,15 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
             item,
             "Shutdown",
             "Couldn't start codespace",
-            (account, name, token) => _client.StartCodespaceAsync(account, name, token));
+            (account, name, token) => _client.StartCodespaceAsync(account, name, token),
+            refreshUntilAvailable: true);
 
     private Task RunCodespaceActionAsync(
         CodespaceItem item,
         string requiredState,
         string errorTitle,
-        Func<GitHubAccount, string, CancellationToken, Task<GitHubCodespace>> action)
+        Func<GitHubAccount, string, CancellationToken, Task<GitHubCodespace>> action,
+        bool refreshUntilAvailable = false)
     {
         GitHubAccount account;
         ListLoadState.Operation operation;
@@ -168,7 +170,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         }
 
         _load.Publish(operation, () => IsLoading = true);
-        return _load.Run(operation, () => RunCodespaceActionCoreAsync(account, item, operation, action),
+        return _load.Run(operation, () => RunCodespaceActionCoreAsync(account, item, operation, action, refreshUntilAvailable),
             () => PublishLoad(operation), "GitHub took too long to respond. Try refreshing codespaces.", markLoadedOnError: false);
     }
 
@@ -242,21 +244,49 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         GitHubAccount account,
         CodespaceItem item,
         ListLoadState.Operation operation,
-        Func<GitHubAccount, string, CancellationToken, Task<GitHubCodespace>> action)
+        Func<GitHubAccount, string, CancellationToken, Task<GitHubCodespace>> action,
+        bool refreshUntilAvailable)
     {
-        var codespace = await action(account, item.Codespace.Name, operation.Token).ConfigureAwait(false);
-        lock (_lock)
+        var token = operation.Token;
+        var name = item.Codespace.Name;
+        var codespace = await action(account, name, token).ConfigureAwait(false);
+        for (var attempt = 0; ; attempt++)
         {
-            if (!_load.IsCurrent(operation))
+            token.ThrowIfCancellationRequested();
+            lock (_lock)
             {
-                return;
+                if (!_load.IsCurrent(operation))
+                {
+                    return;
+                }
+
+                var index = _items.IndexOf(item);
+                if (index >= 0)
+                {
+                    item = new CodespaceItem(this, codespace, _browser, _time.GetUtcNow());
+                    _items[index] = item;
+                }
             }
 
-            var index = _items.IndexOf(item);
-            if (index >= 0)
+            if (!refreshUntilAvailable || codespace.State == "Available")
             {
-                _items[index] = new CodespaceItem(this, codespace, _browser, _time.GetUtcNow());
+                break;
             }
+
+            _load.Publish(operation, () => RaiseItemsChanged());
+            if (codespace.State is not ("Shutdown" or "Created" or "Queued" or "Provisioning" or "Starting" or "Updating" or "Awaiting" or "Rebuilding"))
+            {
+                throw new GitHubApiException("This codespace couldn't become available. Refresh to check its state.");
+            }
+
+            if (attempt >= 60)
+            {
+                throw new GitHubApiException("This codespace is still starting. Refresh to check its state.");
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(2), _time, token).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            codespace = await _client.GetCodespaceAsync(account, name, token).ConfigureAwait(false);
         }
     }
 
