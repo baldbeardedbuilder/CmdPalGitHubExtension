@@ -190,15 +190,15 @@ public sealed class ListLoadStateTests
         Assert.IsTrue(state.TryBegin(true, out var operation));
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var callback = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var registration = operation.Token.Register(() =>
+        {
+            lock (state.SyncRoot)
+            {
+                callback.SetResult();
+            }
+        });
         var load = state.Run(operation, async () =>
         {
-            using var registration = operation.Token.Register(() =>
-            {
-                lock (state.SyncRoot)
-                {
-                    callback.SetResult();
-                }
-            });
             started.SetResult();
             await Task.Delay(Timeout.InfiniteTimeSpan, operation.Token);
         }, () => Assert.Fail("Canceled operations must not publish"), "timeout");
