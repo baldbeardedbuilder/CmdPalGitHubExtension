@@ -50,12 +50,18 @@ public sealed class CollectionPayloadTests
     [DataRow("""{"items":{}}""")]
     [DataRow("""{"items":[null]}""")]
     [DataRow("""{"items":[],"incomplete_results":"false"}""")]
+    [DataRow("""{"items":[]}""")]
+    [DataRow("""{"items":[],"total_count":"0"}""")]
+    [DataRow("""{"items":[],"total_count":-1}""")]
+    [DataRow("""{"items":[],"total_count":0.5}""")]
+    [DataRow("""{"items":[],"total_count":null}""")]
+    [DataRow("""{"items":[],"total_count":2147483648}""")]
     public async Task RepositorySearch_RejectsMalformedPayload(string body)
     {
         using var http = new HttpClient(new JsonHandler(() => body));
 
         await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
-            new RepositoriesClient(http).SearchAsync(Account, "repo", TestContext.CancellationToken));
+            new RepositoriesClient(http).SearchAsync(Account, "repo", null, TestContext.CancellationToken));
     }
 
     [TestMethod]
@@ -65,7 +71,7 @@ public sealed class CollectionPayloadTests
             $$"""{"items":[{{RepositoryJson}}],"incomplete_results":true}"""));
 
         var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
-            new RepositoriesClient(http).SearchAsync(Account, "repo", TestContext.CancellationToken));
+            new RepositoriesClient(http).SearchAsync(Account, "repo", null, TestContext.CancellationToken));
 
         Assert.Contains("Try a more specific search", error.Message);
     }
@@ -82,7 +88,7 @@ public sealed class CollectionPayloadTests
         if (search)
         {
             await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
-                client.SearchAsync(Account, "repo", TestContext.CancellationToken));
+                client.SearchAsync(Account, "repo", null, TestContext.CancellationToken));
         }
         else
         {
@@ -163,14 +169,16 @@ public sealed class CollectionPayloadTests
         using var http = new HttpClient(new JsonHandler(() => "[]"));
         var repositories = await new RepositoriesClient(http).GetMyRepositoriesAsync(Account, null, TestContext.CancellationToken);
         var notifications = await new NotificationsClient(http).GetNotificationsAsync(Account, null, TestContext.CancellationToken);
-        using var searchHttp = new HttpClient(new JsonHandler(() => """{"items":[],"incomplete_results":false}"""));
-        var search = await new RepositoriesClient(searchHttp).SearchAsync(Account, "repo", TestContext.CancellationToken);
+        using var searchHttp = new HttpClient(new JsonHandler(() => """{"items":[],"incomplete_results":false,"total_count":0}"""));
+        var search = await new RepositoriesClient(searchHttp).SearchAsync(Account, "repo", null, TestContext.CancellationToken);
 
         Assert.IsEmpty(repositories.Repositories);
         Assert.IsNull(repositories.NextPage);
         Assert.IsEmpty(notifications.Notifications);
         Assert.IsNull(notifications.NextPage);
-        Assert.IsEmpty(search);
+        Assert.IsEmpty(search.Repositories);
+        Assert.AreEqual(0, search.TotalCount);
+        Assert.IsNull(search.NextPage);
     }
 
     [TestMethod]
@@ -241,7 +249,7 @@ public sealed class CollectionPayloadTests
         Assert.AreEqual("Couldn't search GitHub", page.EmptyContent!.Title);
         Assert.Contains("Try refreshing", page.EmptyContent!.Subtitle);
 
-        body = $$"""{"items":[{{RepositoryJson}}]}""";
+        body = $$"""{"items":[{{RepositoryJson}}],"total_count":1}""";
         await page.RefreshAsync();
         await page.CurrentSearch;
 

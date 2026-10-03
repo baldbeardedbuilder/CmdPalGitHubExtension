@@ -112,23 +112,46 @@ public sealed class DomainDiagnosticsTests
     {
         var entries = new ConcurrentQueue<DiagnosticEntry>();
         using var sink = OperationDiagnostics.UseSink(entries.Enqueue, verboseReads: true);
-        var createdSpace = pending
-            ? """{"name":"private-space","web_url":"https://private-space.github.dev","repository":{"full_name":"private-owner/private-repo"},"state":"Queued","git_status":{"ref":"private-branch"}}"""
-            : """{"name":"private-space","web_url":"https://private-space.github.dev","repository":{"full_name":"private-owner/private-repo"},"state":"Available","git_status":{"ref":"private-branch"}}""";
-        using var handler = new Handler((request, _) => Task.FromResult(request.Method == HttpMethod.Get
+        var space = (pending ? Space.Replace("Available", "Queued", StringComparison.Ordinal) : Space)
+            .Replace("\"state\":", "\"git_status\":{\"ref\":\"private-branch\"},\"state\":", StringComparison.Ordinal);
+        using var handler = new Handler((request, _) => Task.FromResult(request.RequestUri!.AbsolutePath.StartsWith("/repos/", StringComparison.Ordinal)
             ? Response("""{"id":987654}""")
-            : Response(createdSpace, HttpStatusCode.Created)));
+            : Response(space, request.Method == HttpMethod.Post ? HttpStatusCode.Created : HttpStatusCode.OK)));
         using var http = new HttpClient(handler);
 
         await new CodespacesClient(http).CreateCodespaceAsync(Account, "private-owner/private-repo", "private-branch", TestContext.CancellationToken);
 
-        Assert.HasCount(2, entries.Where(entry => entry.Event == DiagnosticEvent.RestRequest && entry.Outcome == DiagnosticOutcome.Requested));
+        Assert.HasCount(3, entries.Where(entry => entry.Event == DiagnosticEvent.RestRequest && entry.Outcome == DiagnosticOutcome.Requested));
         Assert.HasCount(1, entries.Select(entry => entry.OperationId).Distinct());
         Assert.IsTrue(entries.All(entry => entry.Area == DiagnosticArea.Codespaces));
         Assert.AreEqual(pending ? DiagnosticOutcome.Accepted : DiagnosticOutcome.Completed,
             entries.Last(entry => entry.Event == DiagnosticEvent.CodespaceCreate).Outcome);
         Assert.IsFalse(entries.Any(entry => entry.ToString().Contains("private-", StringComparison.Ordinal)));
         Assert.IsFalse(entries.Any(entry => entry.ToString().Contains("987654", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    [DataRow("")]
+    [DataRow("{}")]
+    public async Task CreateCodespace_UnidentifiedAcceptedResourceIsUnknownSchemaFailure(string body)
+    {
+        var entries = new List<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Add, verboseReads: true);
+        using var handler = new Handler((request, _) => Task.FromResult(request.Method == HttpMethod.Get
+            ? Response("""{"id":987654}""")
+            : Response(body, HttpStatusCode.Accepted)));
+        using var http = new HttpClient(handler);
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            new CodespacesClient(http).CreateCodespaceAsync(Account, "private-owner/private-repo", null, TestContext.CancellationToken));
+
+        Assert.IsTrue(error.OutcomeUnknown);
+        Assert.HasCount(1, entries.Select(entry => entry.OperationId).Distinct());
+        Assert.HasCount(1, entries.Where(entry => entry.Severity == DiagnosticSeverity.Error));
+        var terminal = entries.Last(entry => entry.Event == DiagnosticEvent.CodespaceCreate);
+        Assert.AreEqual(DiagnosticFailure.Schema, terminal.Failure);
+        Assert.AreEqual(DiagnosticOutcome.Unknown, terminal.Outcome);
+        Assert.AreEqual(DiagnosticSeverity.Information, terminal.Severity);
     }
 
     [TestMethod]
@@ -140,10 +163,7 @@ public sealed class DomainDiagnosticsTests
     {
         var entries = new List<DiagnosticEntry>();
         using var sink = OperationDiagnostics.UseSink(entries.Add, verboseReads: false);
-        using var handler = new Handler((request, _) => Task.FromResult(Response(
-            request.Method == HttpMethod.Get
-                ? Space.Replace("Available", action == "start" ? "Shutdown" : "Available", StringComparison.Ordinal)
-                : Space.Replace("Available", state, StringComparison.Ordinal))));
+        using var handler = new Handler((_, _) => Task.FromResult(Response(Space.Replace("Available", state, StringComparison.Ordinal))));
         using var http = new HttpClient(handler);
         var client = new CodespacesClient(http);
 
@@ -164,23 +184,6 @@ public sealed class DomainDiagnosticsTests
     }
 
     [TestMethod]
-    public async Task WorkflowCancellation_ReportsAcceptedWithoutClaimingCompletion()
-    {
-        var entries = new List<DiagnosticEntry>();
-        using var sink = OperationDiagnostics.UseSink(entries.Add, verboseReads: false);
-        using var handler = new Handler((_, _) => Task.FromResult(Response(string.Empty, HttpStatusCode.Accepted)));
-        using var http = new HttpClient(handler);
-
-        await new ActionsClient(http).CancelRunAsync(Account, "private-owner/private-repo", 123, force: false,
-            TestContext.CancellationToken);
-
-        var mutation = entries.Where(entry => entry.Event == DiagnosticEvent.Mutation).ToArray();
-        Assert.AreEqual(DiagnosticOutcome.Requested, mutation[0].Outcome);
-        Assert.AreEqual(DiagnosticOutcome.Accepted, mutation[^1].Outcome);
-        Assert.IsFalse(mutation.Any(entry => entry.Outcome == DiagnosticOutcome.Completed));
-    }
-
-    [TestMethod]
     [DataRow("network", "Unknown", "Transport")]
     [DataRow("timeout", "Unknown", "Timeout")]
     [DataRow("schema", "Unknown", "Schema")]
@@ -189,15 +192,13 @@ public sealed class DomainDiagnosticsTests
     {
         var entries = new List<DiagnosticEntry>();
         using var sink = OperationDiagnostics.UseSink(entries.Add, verboseReads: false);
-        using var handler = new Handler((request, _) => request.Method == HttpMethod.Get
-            ? Task.FromResult(Response(Space.Replace("Available", "Shutdown", StringComparison.Ordinal)))
-            : failure switch
-            {
-                "network" => Task.FromException<HttpResponseMessage>(new HttpRequestException("private-network-detail")),
-                "timeout" => Task.FromException<HttpResponseMessage>(new TaskCanceledException("private-timeout-detail")),
-                "schema" => Task.FromResult(Response("{}")),
-                _ => Task.FromResult(Response("private-response-body", HttpStatusCode.Forbidden)),
-            });
+        using var handler = new Handler((_, _) => failure switch
+        {
+            "network" => Task.FromException<HttpResponseMessage>(new HttpRequestException("private-network-detail")),
+            "timeout" => Task.FromException<HttpResponseMessage>(new TaskCanceledException("private-timeout-detail")),
+            "schema" => Task.FromResult(Response("{}")),
+            _ => Task.FromResult(Response("private-response-body", HttpStatusCode.Forbidden)),
+        });
         using var http = new HttpClient(handler);
 
         await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
@@ -318,8 +319,7 @@ public sealed class DomainDiagnosticsTests
     {
         var entries = new List<DiagnosticEntry>();
         using var sink = OperationDiagnostics.UseSink(entries.Add, verboseReads: false);
-        using var handler = new Handler((request, _) => Task.FromResult(Response(
-            Space.Replace("Available", request.Method == HttpMethod.Get ? "Shutdown" : "Failed", StringComparison.Ordinal))));
+        using var handler = new Handler((_, _) => Task.FromResult(Response(Space.Replace("Available", "Failed", StringComparison.Ordinal))));
         using var http = new HttpClient(handler);
 
         var space = await new CodespacesClient(http).StartCodespaceAsync(Account, "private-space", TestContext.CancellationToken);

@@ -9,7 +9,12 @@ internal sealed partial class ListLoadState : IDisposable
 {
     private Operation? _operation;
 
-    public Lock SyncRoot { get; } = new();
+    public ListLoadState(Lock? syncRoot = null)
+    {
+        SyncRoot = syncRoot ?? new();
+    }
+
+    public Lock SyncRoot { get; }
 
     public bool Loaded { get; private set; }
 
@@ -17,11 +22,15 @@ internal sealed partial class ListLoadState : IDisposable
 
     public bool Disposed { get; private set; }
 
+    public long Revision { get; private set; }
+
     public bool NeedsLoad => !Disposed && !Loaded && !Fetching;
 
     public Uri? NextPage { get; private set; }
 
     public string? Error { get; private set; }
+
+    public Uri? AuthorizeUrl { get; private set; }
 
     public Task CurrentLoad { get; private set; } = Task.CompletedTask;
 
@@ -33,10 +42,12 @@ internal sealed partial class ListLoadState : IDisposable
             return false;
         }
 
+        Invalidate();
         operation = new Operation(reset, reset ? null : NextPage);
         _operation = operation;
         Fetching = true;
         Error = null;
+        AuthorizeUrl = null;
         CurrentLoad = operation.Completion.Task;
         return true;
     }
@@ -51,6 +62,7 @@ internal sealed partial class ListLoadState : IDisposable
             NextPage = nextPage;
             Loaded = true;
             Error = null;
+            AuthorizeUrl = null;
         }
     }
 
@@ -64,13 +76,14 @@ internal sealed partial class ListLoadState : IDisposable
 
     public Task Run(Operation operation, Func<Task> work, Action completed, string timeoutMessage, bool markLoadedOnError = true,
         DiagnosticArea area = DiagnosticArea.None, DiagnosticEvent diagnosticEvent = DiagnosticEvent.PageLoad,
-        bool mutation = false, DiagnosticOutcome? success = null, bool completesOnSuccess = false)
+        bool mutation = false, DiagnosticOutcome? success = null, bool completesOnSuccess = false, Action? retired = null,
+        bool diagnose = true)
     {
         lock (SyncRoot)
         {
             _ = Task.Run(async () =>
             {
-                using var diagnostics = OperationDiagnostics.Begin(diagnosticEvent, area, verbose: !mutation);
+                using var diagnostics = diagnose ? OperationDiagnostics.Begin(diagnosticEvent, area, verbose: !mutation) : null;
                 Exception? failure = null;
                 Exception? operationFailure = null;
                 try
@@ -97,6 +110,7 @@ internal sealed partial class ListLoadState : IDisposable
                         if (IsCurrent(operation))
                         {
                             Error = ex is OperationCanceledException ? timeoutMessage : ex.Message;
+                            AuthorizeUrl = (ex as GitHubApiException)?.AuthorizeUrl;
                             Loaded |= markLoadedOnError;
                         }
                     }
@@ -130,18 +144,21 @@ internal sealed partial class ListLoadState : IDisposable
                         publish = IsCurrent(operation);
                     }
 
-                    if (mutation && publish && diagnostics.ChildOutcome == DiagnosticOutcome.Failed)
+                    if (diagnostics is not null)
                     {
-                        diagnostics.Complete();
-                    }
-                    else if (completesOnSuccess && publish && operationFailure is null && failure is null)
-                    {
-                        diagnostics.Complete(DiagnosticOutcome.Completed);
-                    }
-                    else
-                    {
-                        PageDiagnostics.Finish(diagnostics, operationFailure ?? failure, publish, success,
-                            mutation, operation.Token);
+                        if (mutation && publish && diagnostics.ChildOutcome == DiagnosticOutcome.Failed)
+                        {
+                            diagnostics.Complete();
+                        }
+                        else if (completesOnSuccess && publish && operationFailure is null && failure is null)
+                        {
+                            diagnostics.Complete(DiagnosticOutcome.Completed);
+                        }
+                        else
+                        {
+                            PageDiagnostics.Finish(diagnostics, operationFailure ?? failure, publish, success,
+                                mutation, operation.Token);
+                        }
                     }
 
                     Task cancelCallbacks;
@@ -161,6 +178,15 @@ internal sealed partial class ListLoadState : IDisposable
                     }
 
                     operation.Cancellation.Dispose();
+                    try
+                    {
+                        retired?.Invoke();
+                    }
+                    catch (Exception ex)
+                    {
+                        failure ??= ex;
+                    }
+
                     if (failure is null)
                     {
                         operation.Completion.TrySetResult();
@@ -171,7 +197,7 @@ internal sealed partial class ListLoadState : IDisposable
                     }
                 }
             });
-            return CurrentLoad;
+            return operation.Completion.Task;
         }
     }
 
@@ -190,6 +216,7 @@ internal sealed partial class ListLoadState : IDisposable
 
     public void Invalidate(bool reset = false)
     {
+        Revision++;
         if (_operation is { } operation)
         {
             // CancelAsync marks the token immediately without running client callbacks under the page lock.
@@ -206,7 +233,21 @@ internal sealed partial class ListLoadState : IDisposable
             NextPage = null;
             Loaded = false;
             Error = null;
+            AuthorizeUrl = null;
         }
+    }
+
+    public void Publish(long revision, Action notification)
+    {
+        lock (SyncRoot)
+        {
+            if (Disposed || Revision != revision)
+            {
+                return;
+            }
+        }
+
+        notification();
     }
 
     public void Dispose()

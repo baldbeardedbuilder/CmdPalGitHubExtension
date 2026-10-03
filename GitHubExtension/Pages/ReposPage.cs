@@ -26,18 +26,19 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     private readonly IAgentsClient? _agentsClient;
     private readonly TimeProvider _time;
     private readonly PageEmptyContent _emptyContent;
+    private readonly PageListContent _searchFailureContent;
+    private readonly PagedListPresentation _searchPagination;
     private readonly TimeSpan _searchDelay;
     private readonly ListLoadState _load = new();
+    private readonly ListLoadState _searchLoad;
     private Lock _lock => _load.SyncRoot;
     private readonly List<RepoItem> _mine = [];
-    private readonly List<RepositoryPage> _repositoryPages = [];
+    private readonly Dictionary<string, WeakReference<RepositoryPage>> _repositoryPages = new(StringComparer.OrdinalIgnoreCase);
 
-    private CancellationTokenSource? _searchCts;
     private string _searchQuery = string.Empty;
     private List<RepoItem> _searchResults = [];
-    private string? _searchError;
-    private bool _searching;
-    private Task _currentSearch = Task.CompletedTask;
+    private int? _searchTotalCount;
+    private int _accountGeneration;
 
     public ReposPage(
         AuthService auth,
@@ -57,18 +58,44 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         _repositoryPullRequestsPage = repositoryPullRequestsPage;
         _agentsClient = agentsClient;
         _time = time ?? TimeProvider.System;
+        _searchLoad = new ListLoadState(_lock);
         _emptyContent = new PageEmptyContent(Icons.Repos, new RefreshReposCommand(this));
+        _searchFailureContent = new PageListContent(Icons.Repos, new RefreshReposCommand(this));
+        _searchPagination = new PagedListPresentation(Icons.Repos, () => StartSearch(reset: false));
         _searchDelay = searchDelay ?? DefaultSearchDelay;
         Actions = actions;
         Id = PageId;
         Name = "Open";
         Title = "Repos";
         Icon = Icons.Repos;
-        PlaceholderText = "Filter repos...";
+        PlaceholderText = "Filter repos and search GitHub...";
         _auth.AccountChanged += OnAccountChanged;
     }
 
     internal ActionsPage? Actions { get; }
+
+    internal GitHubAccount? CurrentAccount => _auth.CurrentAccount;
+
+    internal int AccountGeneration => _accountGeneration;
+
+    internal bool CanNavigate(GitHubAccount? account, int generation)
+    {
+        lock (_lock)
+        {
+            return !_load.Disposed && account is not null && _auth.CurrentAccount == account && _accountGeneration == generation;
+        }
+    }
+
+    internal int LiveRepositoryPages
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _repositoryPages.Values.Count(reference => reference.TryGetTarget(out _));
+            }
+        }
+    }
 
     /// <summary>
     /// The in flight load of your repos. Handy for tests.
@@ -93,7 +120,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         {
             lock (_lock)
             {
-                return _currentSearch;
+                return _searchLoad.CurrentLoad;
             }
         }
     }
@@ -107,15 +134,24 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         string? searchError;
         bool searching;
         string searchQuery;
+        Uri? searchNextPage;
+        int? searchTotalCount;
         lock (_lock)
         {
+            if (_load.Disposed)
+            {
+                return [];
+            }
+
             needsLoad = _load.NeedsLoad;
             mine = [.. _mine];
             remote = [.. _searchResults];
             error = _load.Error;
-            searchError = _searchError;
-            searching = _searching;
+            searchError = _searchLoad.Error;
+            searching = _searchLoad.Fetching;
             searchQuery = _searchQuery;
+            searchNextPage = _searchLoad.NextPage;
+            searchTotalCount = _searchTotalCount;
         }
 
         if (needsLoad)
@@ -140,11 +176,35 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
             local.AddRange(remote.Where(i => seen.Add(i.Repository.FullName)));
         }
 
+        var partialSearch = searchQuery == query && (searchNextPage is not null || searchTotalCount > remote.Length);
         EmptyContent = searching
             ? Empty("Searching GitHub...", string.Empty)
             : searchError is not null
                 ? Empty("Couldn't search GitHub", searchError, refresh: true)
+                : partialSearch
+                    ? Empty("No loaded repos found", "More repository search results may be available")
                 : Empty("No repos found", $"Nothing matches \"{query}\"");
+
+        if (searchQuery == query && (partialSearch || searching))
+        {
+            var scope = searchTotalCount is { } total
+                ? $"Showing {remote.Length} of {total} GitHub results, plus matching loaded personal repos."
+                : "Filtering loaded personal repos while GitHub search runs.";
+            var limited = searchTotalCount > RepositoriesClient.SearchResultLimit;
+            if (limited)
+            {
+                scope = $"Narrow your search to find more. {scope}";
+            }
+
+            return _searchPagination.Append([.. local],
+                limited ? "GitHub search is limited to 1,000 results" : searching ? "Searching GitHub..." : "Repository search results",
+                scope, searchNextPage is not null, searching, searchError);
+        }
+
+        if (searchError is not null && local.Count > 0)
+        {
+            return [.. local, _searchFailureContent.Get("Couldn't search GitHub", searchError)];
+        }
 
         return [.. local];
     }
@@ -157,9 +217,6 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
             return;
         }
 
-        GitHubAccount? account;
-        CancellationTokenSource? cts = null;
-        CancellationToken token = default;
         bool hasMore;
         bool fetching;
         lock (_lock)
@@ -169,40 +226,22 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
                 return;
             }
 
-            _searchCts?.Cancel();
-            _searchCts?.Dispose();
-            _searchCts = null;
-            _searchError = null;
-            account = _auth.CurrentAccount;
+            _searchLoad.Invalidate(reset: true);
+            _searchQuery = query;
+            _searchResults = [];
+            _searchTotalCount = null;
             hasMore = _load.NextPage is not null;
             fetching = _load.Fetching;
-
-            if (query.Length == 0 || account is null)
-            {
-                _searching = false;
-                _searchQuery = string.Empty;
-                _searchResults = [];
-            }
-            else
-            {
-                cts = _searchCts = new CancellationTokenSource();
-                _searching = true;
-                token = cts.Token;
-            }
         }
 
-        // Only your own list pages; search results come back in one shot.
-        HasMoreItems = cts is null && hasMore;
-        IsLoading = cts is not null || fetching;
-        if (cts is not null && account is not null)
+        HasMoreItems = query.Length == 0 && hasMore;
+        if (query.Length == 0)
         {
-            lock (_lock)
-            {
-                if (!token.IsCancellationRequested)
-                {
-                    _currentSearch = Task.Run(() => SearchAsync(account, query, token));
-                }
-            }
+            IsLoading = fetching;
+        }
+        else
+        {
+            StartSearch(reset: true);
         }
 
         RaiseItemsChanged();
@@ -214,12 +253,21 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         {
             StartLoad(reset: false);
         }
+        else
+        {
+            StartSearch(reset: false);
+        }
     }
 
     public Task RefreshAsync()
     {
         lock (_lock)
         {
+            if (_load.Disposed)
+            {
+                return _load.CurrentLoad;
+            }
+
             _load.Invalidate();
         }
 
@@ -234,12 +282,16 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         RepositoryPage[] repositoryPages;
         lock (_lock)
         {
+            if (_load.Disposed)
+            {
+                return;
+            }
+
             _load.Dispose();
-            _searchCts?.Cancel();
-            _searchCts?.Dispose();
-            _searchCts = null;
-            repositoryPages = [.. _repositoryPages];
-            _repositoryPages.Clear();
+            _searchLoad.Dispose();
+            repositoryPages = TakeRepositoryPages();
+            _mine.Clear();
+            _searchResults.Clear();
         }
 
         foreach (var page in repositoryPages)
@@ -248,6 +300,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         }
 
         IsLoading = false;
+        HasMoreItems = false;
     }
 
     private CommandItem Empty(string title, string subtitle, bool refresh = false) =>
@@ -255,76 +308,96 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
 
     internal RepositoryPage CreateRepositoryPage(GitHubRepository repository)
     {
-        var page = new RepositoryPage(_browser, Actions, repository, _repositoryIssuesPage, _repositoryPullRequestsPage, _auth, _agentsClient);
         lock (_lock)
         {
-            _repositoryPages.Add(page);
-        }
+            ObjectDisposedException.ThrowIf(_load.Disposed, this);
+            foreach (var key in _repositoryPages.Where(entry => !entry.Value.TryGetTarget(out _)).Select(entry => entry.Key).ToArray())
+            {
+                _repositoryPages.Remove(key);
+            }
 
-        return page;
+            if (_repositoryPages.TryGetValue(repository.FullName, out var reference)
+                && reference.TryGetTarget(out var existing) && !existing.IsDisposed)
+            {
+                existing.UpdateRepository(repository);
+                return existing;
+            }
+
+            var page = new RepositoryPage(_browser, Actions, repository, _repositoryIssuesPage, _repositoryPullRequestsPage, _auth, _agentsClient);
+            _repositoryPages[repository.FullName] = new(page);
+            return page;
+        }
     }
 
-    private async Task SearchAsync(GitHubAccount account, string query, CancellationToken cancellationToken)
+    internal RepositoryPage? CreateRepositoryPage(GitHubRepository repository, GitHubAccount? account, int generation)
     {
-        using var operation = OperationDiagnostics.Begin(DiagnosticEvent.PageSearch, DiagnosticArea.Repositories, verbose: true);
-        Exception? failure = null;
-        try
+        lock (_lock)
         {
-            try
-            {
-                await Task.Delay(_searchDelay, cancellationToken).ConfigureAwait(false);
-                var results = await _client.SearchAsync(account, query, cancellationToken).ConfigureAwait(false);
-                var now = _time.GetUtcNow();
-                lock (_lock)
-                {
-                    if (cancellationToken.IsCancellationRequested)
-                    {
-                        return;
-                    }
+            return CanNavigate(account, generation) ? CreateRepositoryPage(repository) : null;
+        }
+    }
 
-                    _searchQuery = query;
-                    _searchResults = [.. results.Select(r => new RepoItem(this, r, _browser, now))];
-                }
+    private Task StartSearch(bool reset)
+    {
+        GitHubAccount? account;
+        string query;
+        ListLoadState.Operation operation;
+        lock (_lock)
+        {
+            account = _auth.CurrentAccount;
+            query = _searchQuery;
+            if (account is null || query.Length == 0 || query != SearchText.Trim()
+                || !_searchLoad.TryBegin(reset, out operation))
+            {
+                return _searchLoad.CurrentLoad;
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        }
+
+        _searchLoad.Publish(operation, () => IsLoading = true);
+        return _searchLoad.Run(operation, () => SearchAsync(account, query, operation), () => PublishSearch(operation),
+            "GitHub took too long to respond. Try searching again.", area: DiagnosticArea.Repositories,
+            diagnosticEvent: DiagnosticEvent.PageSearch);
+    }
+
+    private async Task SearchAsync(GitHubAccount account, string query, ListLoadState.Operation operation)
+    {
+        if (operation.Reset)
+        {
+            await Task.Delay(_searchDelay, operation.Token).ConfigureAwait(false);
+        }
+
+        var results = await _client.SearchAsync(account, query, operation.Page, operation.Token).ConfigureAwait(false);
+        var now = _time.GetUtcNow();
+        lock (_lock)
+        {
+            if (!_searchLoad.IsCurrent(operation))
             {
                 return;
             }
-            catch (Exception ex)
-            {
-                failure = ex;
-                lock (_lock)
-                {
-                    if (cancellationToken.IsCancellationRequested)
-                    {
-                        return;
-                    }
 
-                    _searchQuery = query;
-                    _searchResults = [];
-                    _searchError = ex is OperationCanceledException ? "GitHub took too long to respond. Try searching again." : ex.Message;
-                }
+            if (operation.Reset)
+            {
+                _searchResults.Clear();
             }
 
-            bool fetching;
-            lock (_lock)
-            {
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    return;
-                }
-
-                _searching = false;
-                fetching = _load.Fetching;
-            }
-
-            IsLoading = fetching;
-            RaiseItemsChanged();
+            var seen = _searchResults.Select(item => item.Repository.FullName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            _searchResults.AddRange(results.Repositories.Where(r => seen.Add(r.FullName))
+                .Select(r => new RepoItem(this, r, _browser, now, account)));
+            _searchTotalCount = results.TotalCount;
+            _searchLoad.Succeed(operation, results.NextPage);
         }
-        finally
+    }
+
+    private void PublishSearch(ListLoadState.Operation operation)
+    {
+        bool fetching;
+        lock (_lock)
         {
-            PageDiagnostics.Finish(operation, failure, true, cancellationToken: cancellationToken);
+            fetching = _load.Fetching;
         }
+
+        _searchLoad.Publish(operation, () => IsLoading = fetching);
+        _searchLoad.Publish(operation, () => RaiseItemsChanged());
     }
 
     private Task StartLoad(bool reset)
@@ -364,7 +437,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
             var known = _mine.Select(i => i.Repository.FullName).ToHashSet(StringComparer.OrdinalIgnoreCase);
             _mine.AddRange(result.Repositories
                 .Where(r => known.Add(r.FullName))
-                .Select(r => new RepoItem(this, r, _browser, now)));
+                .Select(r => new RepoItem(this, r, _browser, now, account)));
             _load.Succeed(operation, result.NextPage);
         }
     }
@@ -376,7 +449,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         lock (_lock)
         {
             hasMore = _load.NextPage is not null && SearchText.Trim().Length == 0;
-            searching = _searching;
+            searching = _searchLoad.Fetching;
         }
 
         _load.Publish(operation, () => HasMoreItems = hasMore);
@@ -389,19 +462,23 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     private void Reset()
     {
         RepositoryPage[] repositoryPages;
+        long revision;
         lock (_lock)
         {
-            repositoryPages = [.. _repositoryPages];
-            _repositoryPages.Clear();
+            if (_load.Disposed)
+            {
+                return;
+            }
+
+            repositoryPages = TakeRepositoryPages();
+            _accountGeneration++;
             _load.Invalidate(reset: true);
             _mine.Clear();
-            _searchCts?.Cancel();
-            _searchCts?.Dispose();
-            _searchCts = null;
-            _searching = false;
+            _searchLoad.Invalidate(reset: true);
             _searchQuery = string.Empty;
             _searchResults = [];
-            _searchError = null;
+            _searchTotalCount = null;
+            revision = _load.Revision;
         }
 
         foreach (var repositoryPage in repositoryPages)
@@ -409,8 +486,16 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
             repositoryPage.Reset();
         }
 
-        HasMoreItems = false;
-        IsLoading = false;
-        RaiseItemsChanged();
+        _load.Publish(revision, () => HasMoreItems = false);
+        _load.Publish(revision, () => IsLoading = false);
+        _load.Publish(revision, () => RaiseItemsChanged());
+    }
+
+    private RepositoryPage[] TakeRepositoryPages()
+    {
+        var pages = _repositoryPages.Values.Select(reference => reference.TryGetTarget(out var page) ? page : null)
+            .OfType<RepositoryPage>().ToArray();
+        _repositoryPages.Clear();
+        return pages;
     }
 }

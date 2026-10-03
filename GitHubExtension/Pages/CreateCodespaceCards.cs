@@ -2,22 +2,23 @@
 // Bald Bearded Builder LLC licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System.Text.Json;
+using BaldBeardedBuilder.CmdPal.GitHub.Api;
 using BaldBeardedBuilder.CmdPal.GitHub.Codespaces;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 
 internal static class CreateCodespaceCards
 {
-    public static string Form(string? repository, string? branch, string? error) => Card(
+    public static string Form(string? repository, string? branch, string? error, Uri? authorizeUrl = null) => Card(
         """{ "type": "TextBlock", "text": "Create a Codespace", "size": "Large", "weight": "Bolder", "wrap": true }""",
         """{ "type": "TextBlock", "text": "Enter a repository you can access as owner/name. Leave the branch blank to use its default branch.", "wrap": true, "isSubtle": true }""",
         $$"""{ "type": "Input.Text", "id": "repository", "label": "Repository", "placeholder": "microsoft/PowerToys", "isRequired": true, "errorMessage": "Enter a repository as owner/name", "value": {{Str(repository ?? string.Empty)}} }""",
         $$"""{ "type": "Input.Text", "id": "branch", "label": "Branch (optional)", "placeholder": "main", "value": {{Str(branch ?? string.Empty)}} }""",
         Error(error),
+        authorizeUrl is null ? string.Empty : $$"""{ "type": "ActionSet", "actions": [{ "type": "Action.OpenUrl", "title": "Authorize organization access", "url": {{Str(authorizeUrl.AbsoluteUri)}} }] }""",
         $$"""
         { "type": "ActionSet", "spacing": "Large", "actions": [
-            { "type": "Action.Submit", "id": "create", "title": "Create Codespace", "style": "positive", "data": { "action": "{{CreateCodespaceActions.Create}}" } }
+            { "type": "Action.Submit", "id": "create", "title": "Review creation", "style": "positive", "data": { "action": "{{CreateCodespaceActions.Create}}" } }
         ] }
         """);
 
@@ -25,13 +26,14 @@ internal static class CreateCodespaceCards
         """{ "type": "TextBlock", "text": "Creating your Codespace...", "size": "Large", "weight": "Bolder", "wrap": true }""",
         $$""" { "type": "TextBlock", "text": {{Str(repository)}}, "wrap": true, "isSubtle": true } """);
 
-    public static string Confirm(string repository, string? branch, string login, string host, string confirmation) => Card(
-        """{ "type": "TextBlock", "text": "Review Codespace creation", "size": "Large", "weight": "Bolder", "wrap": true }""",
-        $$"""{"type":"TextBlock","text":{{Str($"Create a Codespace for {repository}{(string.IsNullOrWhiteSpace(branch) ? " using the default branch" : $" on branch {branch}")} as {login}@{host}? This uses compute time and may incur charges.")}},"wrap":true}""",
+    public static string Unknown(string error, Uri? authorizeUrl) => Card(
+        """{ "type": "TextBlock", "text": "Creation is blocked", "size": "Large", "weight": "Bolder", "wrap": true }""",
+        Error(error),
+        """{ "type": "TextBlock", "text": "The request may have succeeded or may still be processing. Check Codespaces on GitHub and refresh. Absence from the list cannot prove that a queued creation will not appear later. Creation stays blocked on this page because another request could incur duplicate charges.", "wrap": true }""",
+        authorizeUrl is null ? string.Empty : $$"""{ "type": "ActionSet", "actions": [{ "type": "Action.OpenUrl", "title": "Authorize organization access", "url": {{Str(authorizeUrl.AbsoluteUri)}} }] }""",
         $$"""
-        { "type": "ActionSet", "spacing": "Large", "actions": [
-            { "type": "Action.Submit", "id": "confirm", "title": "Create Codespace", "style": "positive", "data": { "action": "{{CreateCodespaceActions.Confirm}}", "confirmation": "{{confirmation}}" } },
-            { "type": "Action.Submit", "id": "back", "title": "Back", "associatedInputs": "none", "data": { "action": "{{CreateCodespaceActions.Back}}", "confirmation": "{{confirmation}}" } }
+        { "type": "ActionSet", "actions": [
+          { "type": "Action.OpenUrl", "title": "Check Codespaces on GitHub", "url": "https://github.com/codespaces" }
         ] }
         """);
 
@@ -45,16 +47,7 @@ internal static class CreateCodespaceCards
         ] }
         """);
 
-    public static string OutcomeUnknown(string repository, string? branch, string? error = null) => Card(
-        """{ "type": "TextBlock", "text": "Checking Codespace creation", "size": "Large", "weight": "Bolder", "wrap": true }""",
-        $$"""{"type":"TextBlock","text":{{Str($"GitHub may have accepted the request for {repository}{(string.IsNullOrWhiteSpace(branch) ? string.Empty : $" on {branch}")}, but the response was lost. Check the current Codespaces list before taking any further action.{(string.IsNullOrWhiteSpace(error) ? string.Empty : $" {error}")}")}},"wrap":true,"color":"Attention"}""",
-        $$"""
-        { "type": "ActionSet", "spacing": "Large", "actions": [
-            { "type": "Action.Submit", "id": "check", "title": "Check Codespaces", "data": { "action": "{{CreateCodespaceActions.Check}}" } }
-        ] }
-        """);
-
-    internal static string Str(string value) => JsonSerializer.Serialize(value);
+    internal static string Str(string value) => GitHubJson.String(value);
 
     private static string Error(string? error) => string.IsNullOrEmpty(error)
         ? string.Empty
@@ -73,9 +66,7 @@ internal static class CreateCodespaceCards
 internal static class CreateCodespaceActions
 {
     public const string Create = "create";
-    public const string Confirm = "confirm";
-    public const string Back = "back";
-    public const string Check = "check";
+    public const string Confirm = "confirmCreate";
     public const string Open = "open";
     public const string CreateAnother = "createAnother";
 }

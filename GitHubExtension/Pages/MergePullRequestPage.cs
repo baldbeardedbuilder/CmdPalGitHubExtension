@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Text.Json;
+using BaldBeardedBuilder.CmdPal.GitHub.Api;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using BaldBeardedBuilder.CmdPal.GitHub.PullRequests;
 
@@ -11,14 +12,15 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
 {
     private readonly AuthService _auth;
+    private readonly IDisposable _accountSubscription;
     private readonly IPullRequestMergeClient _client;
     private readonly GitHubAccount _account;
     private readonly string _repository;
     private readonly int _number;
     private readonly Uri _webUrl;
-    private readonly Lock _lock = new();
+    private readonly ListLoadState _load = new();
+    private Lock _lock => _load.SyncRoot;
     private string _confirmationId = Guid.NewGuid().ToString();
-    private CancellationTokenSource _cancellation = new();
     private MergeForm _form;
     private PullRequestMergeTarget? _target;
     private PullRequestMergeResult? _result;
@@ -28,6 +30,8 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
     private bool _submitted;
     private bool _invalidated;
     private bool _disposed;
+
+    internal RepositoryPullRequestsPage? Owner { get; init; }
 
     public MergePullRequestPage(
         AuthService auth, IPullRequestMergeClient client, GitHubAccount account, string repository, int number, Uri webUrl)
@@ -43,7 +47,7 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
         Title = $"Merge {repository}#{number}";
         Icon = Icons.PullRequests;
         _form = new MergeForm(this, Card("Loading merge confirmation...", null));
-        _auth.AccountChanged += OnAccountChanged;
+        _accountSubscription = auth.Subscribe(this, static page => page.OnAccountChanged(null, EventArgs.Empty));
     }
 
     internal Task CurrentWork
@@ -89,8 +93,7 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
         lock (_lock)
         {
             if (_disposed || _busy || confirmation != _confirmationId || !ReferenceEquals(_auth.CurrentAccount, _account)) return;
-            _cancellation.Dispose();
-            _cancellation = new CancellationTokenSource();
+            _load.Invalidate();
             _confirmationId = Guid.NewGuid().ToString();
             _invalidated = false;
             _started = false;
@@ -119,21 +122,37 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
             _form = new MergeForm(this, Card(
                 action == "load" ? "Loading merge confirmation..." : "Checking with GitHub. Acceptance does not mean merged.",
                 null, cancel: true));
-            _currentWork = Task.Run(() => WorkAsync(action!, method));
+            _load.TryBegin(true, out var operation);
+            _currentWork = _load.Run(operation, () => WorkAsync(action!, method, operation.Token), () =>
+            {
+                lock (_lock)
+                {
+                    if (!_load.IsCurrent(operation) || _load.Error is not { } error)
+                    {
+                        return;
+                    }
+
+                    _form = new MergeForm(this, Card($"No completion is confirmed. Check GitHub before submitting another merge. {error}", null));
+                }
+
+                _load.Publish(operation, () => RaiseItemsChanged());
+            },
+                "GitHub took too long to respond. Check GitHub before submitting another merge.",
+                area: DiagnosticArea.PullRequests, mutation: action == "confirm");
         }
 
         RaiseItemsChanged();
     }
 
-    private async Task WorkAsync(string action, string? method)
+    private async Task WorkAsync(string action, string? method, CancellationToken token)
     {
         try
         {
-            _cancellation.Token.ThrowIfCancellationRequested();
+            token.ThrowIfCancellationRequested();
             if (!ReferenceEquals(_auth.CurrentAccount, _account)) return;
             if (action == "load")
             {
-                var target = await _client.GetTargetAsync(_account, _repository, _number, _cancellation.Token).ConfigureAwait(false);
+                var target = await _client.GetTargetAsync(_account, _repository, _number, token).ConfigureAwait(false);
                 lock (_lock)
                 {
                     if (_invalidated) return;
@@ -152,8 +171,8 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
                 }
 
                 var result = action == "confirm"
-                    ? await _client.MergeAsync(_account, target, method!, _cancellation.Token).ConfigureAwait(false)
-                    : await _client.GetStatusAsync(_account, target, uuid!, _cancellation.Token).ConfigureAwait(false);
+                    ? await _client.MergeAsync(_account, target, method!, token).ConfigureAwait(false)
+                    : await _client.GetStatusAsync(_account, target, uuid!, token).ConfigureAwait(false);
                 lock (_lock)
                 {
                     if (_invalidated) return;
@@ -162,7 +181,7 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
                 }
             }
         }
-        catch (OperationCanceledException) when (_cancellation.IsCancellationRequested)
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
         }
         catch (GitHubApiException ex)
@@ -197,11 +216,11 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
         {
             if (_disposed) return;
             _disposed = true;
+            _load.Dispose();
         }
 
-        _auth.AccountChanged -= OnAccountChanged;
+        _accountSubscription.Dispose();
         Invalidate("This confirmation is no longer active. Check GitHub for any submitted request.");
-        _ = CurrentWork.ContinueWith(_ => _cancellation.Dispose(), TaskScheduler.Default);
     }
 
     private void OnAccountChanged(object? sender, EventArgs e) =>
@@ -213,12 +232,12 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
         {
             if (_invalidated || (expectedConfirmation is not null && expectedConfirmation != _confirmationId)) return;
             _invalidated = true;
+            _load.Invalidate();
             _target = null;
             _result = null;
             _form = new MergeForm(this, Card(message, allowFresh ? "prepare" : null, includeLink: allowFresh));
         }
 
-        _cancellation.Cancel();
         IsLoading = false;
         RaiseItemsChanged();
     }
@@ -226,21 +245,21 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
     private string Confirmation(PullRequestMergeTarget target)
     {
         var choices = string.Join(',', target.Methods.Select(method =>
-            $$"""{"title":{{JsonSerializer.Serialize(method)}},"value":{{JsonSerializer.Serialize(method)}}}"""));
+            $$"""{"title":{{GitHubJson.String(method)}},"value":{{GitHubJson.String(method)}}}"""));
         var scope = target.StackScope is null
             ? "No stack is currently reported."
             : $"Current stack metadata: {target.StackScope}.";
         return Card(
             $"Confirm {_repository}#{_number} as {_account.Login}@{_account.Host.Name}. Current target branch: {target.BaseRef}. Expected head SHA: {target.HeadSha}. {scope} Scope: this PR and ALL open downstack PRs if it is stacked. GitHub will use the branch merge queue if configured; the queue controls its merge method. Otherwise use the selected direct-merge method. Repository rules are enforced, never bypassed. The API pins only this PR's head SHA, not the target branch or downstack scope. These may change after our final check. If you require a fixed branch or exact downstack PR set, do not confirm; review on GitHub instead.",
             "confirm", cancel: true,
-            input: $$"""{"type":"Input.ChoiceSet","id":"method","label":"Direct-merge method","style":"compact","isRequired":true,"value":{{JsonSerializer.Serialize(target.Methods[0])}},"choices":[{{choices}}]},{"type":"Input.Toggle","id":"scopeAccepted","title":"I authorize the current target and automatic downstack scope, including concurrent changes after the final check.","valueOn":"true","valueOff":"false","value":"false","isRequired":true,"errorMessage":"Review and accept the async API scope before confirming."}""");
+            input: $$"""{"type":"Input.ChoiceSet","id":"method","label":"Direct-merge method","style":"compact","isRequired":true,"value":{{GitHubJson.String(target.Methods[0])}},"choices":[{{choices}}]},{"type":"Input.Toggle","id":"scopeAccepted","title":"I authorize the current target and automatic downstack scope, including concurrent changes after the final check.","valueOn":"true","valueOff":"false","value":"false","isRequired":true,"errorMessage":"Review and accept the async API scope before confirming."}""");
     }
 
     private string Card(string text, string? action, bool cancel = false, string? input = null, bool includeLink = true)
     {
         var elements = new List<string>
         {
-            $$"""{"type":"TextBlock","text":{{JsonSerializer.Serialize(text)}},"wrap":true}""",
+            $$"""{"type":"TextBlock","text":{{GitHubJson.String(text)}},"wrap":true}""",
         };
         if (input is not null) elements.Add(input);
         var actions = new List<string>();
@@ -262,7 +281,7 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
 
         if (includeLink)
         {
-            actions.Add($$"""{"type":"Action.OpenUrl","title":"Open PR on GitHub","url":{{JsonSerializer.Serialize(_webUrl.AbsoluteUri)}}}""");
+            actions.Add($$"""{"type":"Action.OpenUrl","title":"Open PR on GitHub","url":{{GitHubJson.String(_webUrl.AbsoluteUri)}}}""");
         }
 
         return $$"""{"type":"AdaptiveCard","version":"1.6","body":[{{string.Join(',', elements)}}],"actions":[{{string.Join(',', actions)}}]}""";

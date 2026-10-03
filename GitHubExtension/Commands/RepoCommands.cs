@@ -66,3 +66,20 @@ internal sealed partial class RefreshRepositoryItemsCommand : InvokableCommand
         return CommandResult.KeepOpen();
     }
 }
+
+internal sealed partial class LoadMoreResultsCommand : InvokableCommand
+{
+    private readonly Func<Task> _loadMore;
+
+    public LoadMoreResultsCommand(Func<Task> loadMore)
+    {
+        _loadMore = loadMore;
+        Name = "Load more";
+    }
+
+    public override ICommandResult Invoke()
+    {
+        _ = _loadMore();
+        return CommandResult.KeepOpen();
+    }
+}

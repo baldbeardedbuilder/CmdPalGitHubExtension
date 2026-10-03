@@ -29,9 +29,12 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
     private readonly CreateCodespacePage _createCodespacePage;
     private readonly HomePage _homePage;
     private readonly CommandItem _topLevel;
+    private readonly HttpClient? _ownedHttp;
+    private readonly bool _ownsAuth;
+    private int _disposed;
 
     public GitHubCommandsProvider()
-        : this(AuthService.CreateDefault())
+        : this(AuthService.CreateDefault(), ownsAuth: true)
     {
     }
 
@@ -45,12 +48,15 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         ICodespacesClient? codespacesClient = null,
         IActionsClient? actionsClient = null,
         IAgentsClient? agentsClient = null,
-        IPullRequestsClient? pullRequestsClient = null)
+        IPullRequestsClient? pullRequestsClient = null,
+        bool ownsAuth = false,
+        Func<HttpClient>? httpFactory = null)
     {
         _auth = auth;
+        _ownsAuth = ownsAuth;
         browser ??= new ShellBrowserLauncher();
         HttpClient? http = null;
-        HttpClient Http() => http ??= new HttpClient();
+        HttpClient Http() => http ??= httpFactory?.Invoke() ?? new HttpClient();
         _signInPage = new SignInPage(auth, logoProvider);
         issuesClient ??= new IssuesClient(Http());
         _issueDetailsPage = new IssueDetailsPage(auth, issuesClient, browser);
@@ -86,6 +92,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         UpdateTopLevel();
 
         _auth.AccountChanged += OnAccountChanged;
+        _ownedHttp = http;
     }
 
     private ICommand CurrentPage => _auth.IsSignedIn ? _homePage : _signInPage;
@@ -110,7 +117,16 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
 
     public override void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         _auth.AccountChanged -= OnAccountChanged;
+        _homePage.Dispose();
+        _signInPage.Dispose();
+        _notificationsPage.Dispose();
+        _issueDetailsPage.Dispose();
         _reposPage.Dispose();
         _agentsPage.Dispose();
         _actionsPage.Dispose();
@@ -118,12 +134,22 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         _createCodespacePage.Dispose();
         _repositoryIssuesPage.Dispose();
         _repositoryPullRequestsPage.Dispose();
+        _ownedHttp?.Dispose();
+        if (_ownsAuth)
+        {
+            _auth.Dispose();
+        }
         base.Dispose();
         GC.SuppressFinalize(this);
     }
 
     private void OnAccountChanged(object? sender, EventArgs e)
     {
+        if (_disposed != 0)
+        {
+            return;
+        }
+
         UpdateTopLevel();
         RaiseItemsChanged();
     }

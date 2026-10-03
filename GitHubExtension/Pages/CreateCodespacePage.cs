@@ -5,6 +5,7 @@
 using System.Text.Json;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using BaldBeardedBuilder.CmdPal.GitHub.Codespaces;
+using BaldBeardedBuilder.CmdPal.GitHub.Commands;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 
@@ -15,26 +16,22 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
     private readonly AuthService _auth;
     private readonly ICodespacesClient _client;
     private readonly IBrowserLauncher _browser;
-    private readonly Lock _lock = new();
+    private readonly ListLoadState _load = new();
+    private Lock _lock => _load.SyncRoot;
     private CreateCodespaceForm _form;
     private GitHubCodespace? _createdCodespace;
-    private GitHubAccount? _reviewAccount;
-    private string? _reviewRepository;
-    private string? _reviewBranch;
-    private string? _confirmationId;
-    private HashSet<string>? _baselineCodespaceNames;
-    private CancellationTokenSource? _createCancellation;
-    private Task _currentCreate = Task.CompletedTask;
-    private int _generation;
-    private bool _submitting;
-    private bool _outcomeUnknown;
-    private bool _disposed;
+    private readonly MutationExecutor _mutations;
+    private (GitHubAccount Account, string Repository, string? Branch)? _review;
+    private bool _disposed => _load.Disposed;
+    private bool _creating;
+    private GitHubAccount? _unknownAccount;
 
     public CreateCodespacePage(AuthService auth, ICodespacesClient client, IBrowserLauncher browser)
     {
         _auth = auth;
         _client = client;
         _browser = browser;
+        _mutations = new MutationExecutor(auth);
         Id = PageId;
         Name = "Create Codespace";
         Title = "Create Codespace";
@@ -49,7 +46,7 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
         {
             lock (_lock)
             {
-                return _currentCreate;
+                return _load.CurrentLoad;
             }
         }
     }
@@ -62,10 +59,50 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
         }
     }
 
-    internal ICommandResult HandleSubmit(string inputs, string data)
+    private CommandResult HandleSubmit(CreateCodespaceForm source, string inputs, string data)
     {
+        lock (_lock)
+        {
+            if (_disposed || _creating || _unknownAccount is not null || !ReferenceEquals(source, _form))
+            {
+                return CommandResult.KeepOpen();
+            }
+        }
+
         var action = ReadString(data, "action");
-        if (action == CreateCodespaceActions.Open)
+        if (action == "cancel")
+        {
+            lock (_lock)
+            {
+                if (_review is { } review)
+                {
+                    _form = new CreateCodespaceForm(this, CreateCodespaceCards.Form(review.Repository, review.Branch, null));
+                    _review = null;
+                }
+            }
+
+            RaiseItemsChanged();
+        }
+        else if (action == CreateCodespaceActions.Confirm)
+        {
+            (GitHubAccount Account, string Repository, string? Branch)? review;
+            lock (_lock)
+            {
+                // Check identity while capturing the review, not before releasing the lock.
+                if (!ReferenceEquals(source, _form))
+                {
+                    return CommandResult.KeepOpen();
+                }
+
+                review = _review;
+                _review = null;
+            }
+            if (review is { } captured && _mutations.IsCurrent(captured.Account))
+            {
+                StartCreate(captured.Account, captured.Repository, captured.Branch);
+            }
+        }
+        else if (action == CreateCodespaceActions.Open)
         {
             GitHubCodespace? codespace;
             lock (_lock)
@@ -83,23 +120,22 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
         {
             lock (_lock)
             {
-                if (_createdCodespace is not null && !_submitting)
-                {
-                    _createdCodespace = null;
-                    _reviewAccount = null;
-                    _reviewRepository = null;
-                    _reviewBranch = null;
-                    _confirmationId = null;
-                    _baselineCodespaceNames = null;
-                    _outcomeUnknown = false;
-                    _form = new CreateCodespaceForm(this, CreateCodespaceCards.Form(null, null, null));
-                }
+                _createdCodespace = null;
+                _form = new CreateCodespaceForm(this, CreateCodespaceCards.Form(null, null, null));
             }
 
             RaiseItemsChanged();
         }
         else if (action == CreateCodespaceActions.Create)
         {
+            lock (_lock)
+            {
+                if (_unknownAccount is not null)
+                {
+                    return CommandResult.KeepOpen();
+                }
+            }
+
             var (repository, branch) = ReadInputs(inputs);
             if (repository is null || !IsRepositoryName(repository))
             {
@@ -115,32 +151,17 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
             }
             else
             {
-                PrepareConfirmation(account, repository, branch);
-            }
-        }
-        else if (action == CreateCodespaceActions.Confirm)
-        {
-            StartCreate(ReadString(data, "confirmation"));
-        }
-        else if (action == CreateCodespaceActions.Back)
-        {
-            lock (_lock)
-            {
-                if (!_submitting && !_outcomeUnknown && ReadString(data, "confirmation") == _confirmationId)
+                lock (_lock)
                 {
-                    var repository = _reviewRepository;
-                    var branch = _reviewBranch;
-                    _reviewAccount = null;
-                    _confirmationId = null;
-                    _form = new CreateCodespaceForm(this, CreateCodespaceCards.Form(repository, branch, null));
+                    _review = (account, repository, branch);
+                    _form = new CreateCodespaceForm(this, MutationConfirmation.Card(
+                        account, "Create Codespace", $"{repository} ({branch ?? "default branch"})",
+                        "Creating a Codespace uses compute and storage and may incur charges. Review the repository and branch before confirming.",
+                        CreateCodespaceActions.Confirm));
                 }
-            }
 
-            RaiseItemsChanged();
-        }
-        else if (action == CreateCodespaceActions.Check)
-        {
-            StartReconciliation();
+                RaiseItemsChanged();
+            }
         }
 
         return CommandResult.KeepOpen();
@@ -151,126 +172,108 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
         _auth.AccountChanged -= OnAccountChanged;
         lock (_lock)
         {
-            _disposed = true;
-            CancelCreate();
-        }
-    }
-
-    private void PrepareConfirmation(GitHubAccount account, string repository, string? branch)
-    {
-        lock (_lock)
-        {
-            if (_disposed || _submitting || _outcomeUnknown || !ReferenceEquals(_auth.CurrentAccount, account))
+            if (_disposed)
             {
                 return;
             }
 
-            _reviewAccount = account;
-            _reviewRepository = repository;
-            _reviewBranch = branch;
-            _confirmationId = Guid.NewGuid().ToString();
-            _form = new CreateCodespaceForm(this,
-                CreateCodespaceCards.Confirm(repository, branch, account.Login, account.Host.Name, _confirmationId));
+            _load.Dispose();
         }
-
-        RaiseItemsChanged();
+        _mutations.Dispose();
+        IsLoading = false;
     }
 
-    private void StartCreate(string? confirmation)
+    private void StartCreate(GitHubAccount account, string repository, string? branch)
     {
-        GitHubAccount account;
-        string repository;
-        string? branch;
-        int generation;
-        CancellationToken token;
+        ListLoadState.Operation request;
         lock (_lock)
         {
-            if (_disposed || _submitting || _outcomeUnknown || confirmation != _confirmationId
-                || _reviewAccount is not { } reviewedAccount || !ReferenceEquals(_auth.CurrentAccount, reviewedAccount)
-                || _reviewRepository is not { } reviewedRepository)
+            if (_disposed || _creating || !_mutations.IsCurrent(account))
             {
                 return;
             }
 
-            CancelCreate();
-            account = reviewedAccount;
-            repository = reviewedRepository;
-            branch = _reviewBranch;
-            _createCancellation = new CancellationTokenSource();
-            token = _createCancellation.Token;
-            generation = ++_generation;
-            _submitting = true;
-            _baselineCodespaceNames = null;
+            _load.TryBegin(true, out request);
+            _creating = true;
             _createdCodespace = null;
             _form = new CreateCodespaceForm(this, CreateCodespaceCards.Creating(repository));
         }
 
-        IsLoading = true;
-        RaiseItemsChanged();
-        lock (_lock)
-        {
-            _currentCreate = Task.Run(() => CreateAsync(account, repository, branch, generation, token));
-        }
+        _load.Publish(request, () => IsLoading = true);
+        _load.Publish(request, () => RaiseItemsChanged());
+        _load.Run(request, () => CreateAsync(account, repository, branch, request), () => { },
+            "GitHub took too long to respond. Check GitHub before creating another Codespace.",
+            area: DiagnosticArea.Codespaces, mutation: true, diagnose: false);
     }
 
     private async Task CreateAsync(
         GitHubAccount account,
         string repository,
         string? branch,
-        int generation,
-        CancellationToken cancellationToken)
+        ListLoadState.Operation request)
     {
         using var operation = OperationDiagnostics.Begin(DiagnosticEvent.CodespaceCreate, DiagnosticArea.Codespaces);
         Exception? failure = null;
         try
         {
-            var baseline = await CodespaceListReader.GetAllAsync(_client, account, cancellationToken).ConfigureAwait(false);
-            lock (_lock)
-            {
-                if (!CanPublish(generation, account, cancellationToken))
+            var result = await _mutations.ExecuteAsync(
+                account, "create-codespace",
+                _ => Task.FromResult(account.Host.IsGitHubDotCom && IsRepositoryName(repository)),
+                async token =>
                 {
-                    return;
-                }
+                    GitHubCodespace codespace;
+                    try
+                    {
+                        codespace = await _client.CreateCodespaceAsync(account, repository, branch, token).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        failure = ex;
+                        throw;
+                    }
+                    if (!string.Equals(codespace.RepositoryFullName, repository, StringComparison.OrdinalIgnoreCase)
+                        || (branch is not null && !string.Equals(codespace.Branch, branch, StringComparison.Ordinal)))
+                    {
+                        return new MutationResult<GitHubCodespace>(MutationState.Unknown, Error: "GitHub returned a different repository or branch. Check GitHub before creating another Codespace.");
+                    }
 
-                _baselineCodespaceNames = baseline.Select(codespace => codespace.Name).ToHashSet(StringComparer.Ordinal);
-            }
-
-            var codespace = await _client.CreateCodespaceAsync(account, repository, branch, cancellationToken).ConfigureAwait(false);
-            lock (_lock)
+                    return new MutationResult<GitHubCodespace>(MutationState.Completed, codespace);
+                }, cancellationToken: request.Token).ConfigureAwait(false);
+            var outcome = result.State switch
             {
-                if (!CanPublish(generation, account, cancellationToken))
-                {
-                    return;
-                }
-
-                _createdCodespace = codespace;
-                _reviewAccount = null;
-                _outcomeUnknown = false;
-                _form = new CreateCodespaceForm(this, CreateCodespaceCards.Created(codespace));
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex)
-        {
-            failure = ex;
-            if (OperationDiagnostics.FailureOutcome(ex) == DiagnosticOutcome.Unknown)
+                MutationState.Completed => DiagnosticOutcome.Accepted,
+                MutationState.Pending => DiagnosticOutcome.Accepted,
+                MutationState.Unknown => DiagnosticOutcome.Unknown,
+                MutationState.Stale => DiagnosticOutcome.Cancelled,
+                _ => DiagnosticOutcome.Failed,
+            };
+            if (failure is not null && result.State != MutationState.Stale)
             {
-                await ReconcileCreatedCodespaceAsync(account, repository, branch, generation, cancellationToken).ConfigureAwait(false);
+                operation.Fail(failure, outcome: outcome);
             }
             else
             {
-                lock (_lock)
+                operation.Complete(operation.ChildOutcome == outcome ? null : outcome);
+            }
+            lock (_lock)
+            {
+                if (!_load.IsCurrent(request) || result.State == MutationState.Stale || !_mutations.IsCurrent(account))
                 {
-                    if (!CanPublish(generation, account, cancellationToken))
-                    {
-                        return;
-                    }
+                    return;
+                }
 
-                    _reviewAccount = null;
-                    _confirmationId = null;
-                    _form = new CreateCodespaceForm(this, CreateCodespaceCards.Form(repository, branch, ex.Message));
+                if (result.State == MutationState.Completed && result.Value is { } created)
+                {
+                    _createdCodespace = created;
+                    _form = new CreateCodespaceForm(this, CreateCodespaceCards.Created(created));
+                }
+                else
+                {
+                    var error = result.Error ?? "GitHub is still processing this request. Check GitHub before retrying.";
+                    _unknownAccount = result.State is MutationState.Unknown or MutationState.Pending ? account : null;
+                    _form = new CreateCodespaceForm(this, result.State is MutationState.Unknown or MutationState.Pending
+                        ? CreateCodespaceCards.Unknown(error, result.AuthorizeUrl)
+                        : CreateCodespaceCards.Form(repository, branch, error, result.AuthorizeUrl));
                 }
             }
         }
@@ -279,143 +282,17 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
             bool publish;
             lock (_lock)
             {
-                publish = generation == _generation && !_disposed && ReferenceEquals(_auth.CurrentAccount, account);
+                publish = _load.IsCurrent(request);
                 if (publish)
                 {
-                    _submitting = false;
+                    _creating = false;
                 }
             }
 
             if (publish)
             {
-                IsLoading = false;
-                RaiseItemsChanged();
-            }
-
-            lock (_lock)
-            {
-                publish = generation == _generation && !_disposed && ReferenceEquals(_auth.CurrentAccount, account);
-            }
-
-            PageDiagnostics.Finish(operation, failure, publish, DiagnosticOutcome.Accepted, mutation: true, cancellationToken: cancellationToken);
-        }
-    }
-
-    private void StartReconciliation()
-    {
-        GitHubAccount account;
-        string repository;
-        string? branch;
-        int generation;
-        CancellationToken token;
-        lock (_lock)
-        {
-            if (_disposed || _submitting || !_outcomeUnknown || _reviewAccount is not { } reviewedAccount
-                || !ReferenceEquals(_auth.CurrentAccount, reviewedAccount) || _reviewRepository is not { } reviewedRepository)
-            {
-                return;
-            }
-
-            CancelCreate();
-            account = reviewedAccount;
-            repository = reviewedRepository;
-            branch = _reviewBranch;
-            _createCancellation = new CancellationTokenSource();
-            token = _createCancellation.Token;
-            generation = ++_generation;
-            _submitting = true;
-            _form = new CreateCodespaceForm(this, CreateCodespaceCards.OutcomeUnknown(repository, branch));
-        }
-
-        IsLoading = true;
-        RaiseItemsChanged();
-        lock (_lock)
-        {
-            _currentCreate = Task.Run(async () =>
-            {
-                try
-                {
-                    await ReconcileCreatedCodespaceAsync(account, repository, branch, generation, token).ConfigureAwait(false);
-                }
-                finally
-                {
-                    bool publish;
-                    lock (_lock)
-                    {
-                        publish = CanPublish(generation, account, token);
-                        if (publish)
-                        {
-                            _submitting = false;
-                        }
-                    }
-
-                    if (publish)
-                    {
-                        IsLoading = false;
-                        RaiseItemsChanged();
-                    }
-                }
-            });
-        }
-    }
-
-    private async Task ReconcileCreatedCodespaceAsync(
-        GitHubAccount account,
-        string repository,
-        string? branch,
-        int generation,
-        CancellationToken cancellationToken)
-    {
-        GitHubCodespace[] candidates = [];
-        string? reconciliationError = null;
-        try
-        {
-            var current = await CodespaceListReader.GetAllAsync(_client, account, cancellationToken).ConfigureAwait(false);
-            HashSet<string> baseline;
-            lock (_lock)
-            {
-                if (!CanPublish(generation, account, cancellationToken))
-                {
-                    return;
-                }
-
-                baseline = _baselineCodespaceNames ?? [];
-            }
-
-            candidates = current.Where(codespace => !baseline.Contains(codespace.Name)
-                && string.Equals(codespace.RepositoryFullName, repository, StringComparison.OrdinalIgnoreCase)
-                && (string.IsNullOrWhiteSpace(branch) || string.Equals(codespace.Branch, branch, StringComparison.Ordinal)))
-                .ToArray();
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            return;
-        }
-        catch (Exception ex)
-        {
-            reconciliationError = $"Couldn't verify the request. {ex.Message}";
-        }
-
-        lock (_lock)
-        {
-            if (!CanPublish(generation, account, cancellationToken))
-            {
-                return;
-            }
-
-            if (candidates.Length == 1)
-            {
-                _createdCodespace = candidates[0];
-                _outcomeUnknown = false;
-                _reviewAccount = null;
-                _form = new CreateCodespaceForm(this, CreateCodespaceCards.Created(candidates[0]));
-            }
-            else
-            {
-                _outcomeUnknown = true;
-                _reviewAccount = account;
-                _form = new CreateCodespaceForm(this, CreateCodespaceCards.OutcomeUnknown(repository, branch,
-                    candidates.Length > 1 ? "More than one matching new Codespace was found." : reconciliationError));
+                _load.Publish(request, () => IsLoading = false);
+                _load.Publish(request, () => RaiseItemsChanged());
             }
         }
     }
@@ -424,11 +301,6 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
     {
         lock (_lock)
         {
-            _reviewAccount = null;
-            _reviewRepository = repository;
-            _reviewBranch = branch;
-            _confirmationId = null;
-            _outcomeUnknown = false;
             _form = new CreateCodespaceForm(this, CreateCodespaceCards.Form(repository, branch, error));
         }
 
@@ -439,33 +311,22 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
     {
         lock (_lock)
         {
-            CancelCreate();
+            if (_disposed)
+            {
+                return;
+            }
+
+            _load.Invalidate(reset: true);
+            _review = null;
+            _creating = false;
+            _unknownAccount = null;
             _createdCodespace = null;
-            _reviewAccount = null;
-            _reviewRepository = null;
-            _reviewBranch = null;
-            _confirmationId = null;
-            _baselineCodespaceNames = null;
-            _outcomeUnknown = false;
             _form = new CreateCodespaceForm(this, CreateCodespaceCards.Form(null, null, null));
         }
 
         IsLoading = false;
         RaiseItemsChanged();
     }
-
-    private void CancelCreate()
-    {
-        _generation++;
-        _createCancellation?.Cancel();
-        _createCancellation?.Dispose();
-        _createCancellation = null;
-        _submitting = false;
-    }
-
-    private bool CanPublish(int generation, GitHubAccount account, CancellationToken cancellationToken) =>
-        generation == _generation && !_disposed && !cancellationToken.IsCancellationRequested
-        && ReferenceEquals(_auth.CurrentAccount, account);
 
     private static bool IsRepositoryName(string repository)
     {
@@ -520,6 +381,17 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
             TemplateJson = template;
         }
 
-        public override ICommandResult SubmitForm(string inputs, string data) => _page.HandleSubmit(inputs, data);
+        public override ICommandResult SubmitForm(string inputs, string data)
+        {
+            lock (_page._lock)
+            {
+                if (!ReferenceEquals(this, _page._form))
+                {
+                    return CommandResult.KeepOpen();
+                }
+            }
+
+            return _page.HandleSubmit(this, inputs, data);
+        }
     }
 }

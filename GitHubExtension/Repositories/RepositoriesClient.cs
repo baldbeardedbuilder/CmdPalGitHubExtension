@@ -18,15 +18,17 @@ internal interface IRepositoriesClient
     Task<RepositoriesPageResult> GetMyRepositoriesAsync(GitHubAccount account, Uri? page, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Searches every repo on the host you can see.
+    /// Gets one page of accessible repos matching the query, up to GitHub's 1,000-result limit.
+    /// Pass null for the first page, or the NextPage from a previous result for the same query.
     /// </summary>
-    Task<IReadOnlyList<GitHubRepository>> SearchAsync(GitHubAccount account, string query, CancellationToken cancellationToken);
+    Task<RepositorySearchPageResult> SearchAsync(GitHubAccount account, string query, Uri? page, CancellationToken cancellationToken);
 }
 
 internal sealed class RepositoriesClient(HttpClient httpClient) : IRepositoriesClient
 {
     internal const int PageSize = 50;
     internal const int SearchPageSize = 30;
+    internal const int SearchResultLimit = 1000;
 
     public Task<RepositoriesPageResult> GetMyRepositoriesAsync(GitHubAccount account, Uri? page, CancellationToken cancellationToken) =>
         DomainDiagnostics.RunAsync(DiagnosticArea.Repositories, async () =>
@@ -41,16 +43,53 @@ internal sealed class RepositoriesClient(HttpClient httpClient) : IRepositoriesC
         return new RepositoriesPageResult(ParseRepositories(json.RootElement), NextPage(response));
     }, cancellationToken: cancellationToken);
 
-    public Task<IReadOnlyList<GitHubRepository>> SearchAsync(GitHubAccount account, string query, CancellationToken cancellationToken) =>
-        DomainDiagnostics.RunAsync<IReadOnlyList<GitHubRepository>>(DiagnosticArea.Repositories, async () =>
+    public Task<RepositorySearchPageResult> SearchAsync(GitHubAccount account, string query, Uri? page, CancellationToken cancellationToken) =>
+        DomainDiagnostics.RunAsync(DiagnosticArea.Repositories, async () =>
     {
-        var uri = new Uri(account.Host.ApiUrl, $"search/repositories?q={Uri.EscapeDataString(query)}&per_page={SearchPageSize}");
+        var first = new Uri(account.Host.ApiUrl, $"search/repositories?q={Uri.EscapeDataString(query)}&per_page={SearchPageSize}");
+        var uri = page ?? first;
+        var pageNumber = SearchPageNumber(uri, first, query);
 
         using var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken).ConfigureAwait(false);
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
 
-        return ParseSearch(json.RootElement);
+        var repositories = ParseSearch(json.RootElement);
+        var total = DomainDiagnostics.Read(DiagnosticArea.Repositories, () =>
+        {
+            if (!json.RootElement.TryGetProperty("total_count", out var count)
+                || count.ValueKind != JsonValueKind.Number || !count.TryGetInt32(out var value) || value < repositories.Count)
+            {
+                throw new GitHubApiException("GitHub sent back a repository search count we couldn't read. Try refreshing.");
+            }
+
+            return value;
+        });
+        var available = SearchResultLimit - (pageNumber - 1) * SearchPageSize;
+        var next = available <= SearchPageSize ? null : NextPage(response);
+        if (next is not null && SearchPageNumber(next, first, query) != pageNumber + 1)
+        {
+            throw new GitHubApiException("GitHub sent back a repository search page we couldn't read. Try refreshing.");
+        }
+
+        return new RepositorySearchPageResult(repositories.Take(available).ToArray(), next, total);
     }, name: DiagnosticEvent.PageSearch, cancellationToken: cancellationToken);
+
+    private static int SearchPageNumber(Uri uri, Uri first, string query) =>
+        DomainDiagnostics.Read(DiagnosticArea.Repositories, () =>
+    {
+        var parameters = System.Web.HttpUtility.ParseQueryString(uri.Query);
+        var number = parameters["page"] is null ? 1
+            : int.TryParse(parameters["page"], out var parsed) ? parsed : 0;
+        if (uri.GetLeftPart(UriPartial.Path) != first.GetLeftPart(UriPartial.Path)
+            || !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Fragment)
+            || parameters["q"] != query || parameters["per_page"] != SearchPageSize.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            || number < 1 || (number - 1L) * SearchPageSize >= SearchResultLimit)
+        {
+            throw new GitHubApiException("GitHub sent back a repository search page we couldn't read. Try refreshing.");
+        }
+
+        return number;
+    });
 
     internal static List<GitHubRepository> ParseSearch(JsonElement root)
     {

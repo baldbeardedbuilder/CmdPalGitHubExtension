@@ -10,7 +10,7 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 /// <summary>
 /// The signed in landing page. Everything you can do with GitHub starts here.
 /// </summary>
-internal sealed partial class HomePage : ListPage
+internal sealed partial class HomePage : ListPage, IDisposable
 {
     public const string PageId = "com.baldbeardedbuilder.cmdpal.github.home";
 
@@ -21,6 +21,7 @@ internal sealed partial class HomePage : ListPage
     private readonly CodespacesPage _codespaces;
     private readonly CreateCodespacePage _createCodespace;
     private readonly SignOutCommand _signOut;
+    private volatile bool _disposed;
 
     public HomePage(
         AuthService auth,
@@ -42,13 +43,13 @@ internal sealed partial class HomePage : ListPage
         Title = "GitHub";
         Icon = Icons.GitHub;
         PlaceholderText = "Search GitHub...";
-        _auth.AccountChanged += (_, _) => RaiseItemsChanged();
+        _auth.AccountChanged += OnAccountChanged;
     }
 
     public override IListItem[] GetItems()
     {
         var account = _auth.CurrentAccount;
-        if (account is null)
+        if (_disposed || account is null)
         {
             return [];
         }
@@ -77,4 +78,18 @@ internal sealed partial class HomePage : ListPage
 
     private static ListItem ComingSoon(string title, IIconInfo icon, IContextItem[] more) =>
         new(new NoOpCommand()) { Title = title, Subtitle = "Coming soon", Icon = icon, MoreCommands = more };
+
+    private void OnAccountChanged(object? sender, EventArgs e)
+    {
+        if (!_disposed)
+        {
+            RaiseItemsChanged();
+        }
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _auth.AccountChanged -= OnAccountChanged;
+    }
 }

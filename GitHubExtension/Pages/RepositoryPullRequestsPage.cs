@@ -14,12 +14,14 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     public const string PageId = "com.baldbeardedbuilder.cmdpal.github.repository-pull-requests";
 
     private readonly AuthService _auth;
+    private readonly IDisposable _accountSubscription;
     private readonly IPullRequestsClient _client;
     private readonly IBrowserLauncher _browser;
     private readonly TimeProvider _time;
     private readonly IPullRequestMergeClient? _mergeClient;
     private readonly List<MergePullRequestPage> _mergePages = [];
     private readonly PageEmptyContent _emptyContent;
+    private readonly PagedListPresentation _pagination;
     private readonly PullRequestFilters _filters = new();
     private readonly ListLoadState _load = new();
     private Lock _lock => _load.SyncRoot;
@@ -39,15 +41,16 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         _time = time ?? TimeProvider.System;
         _mergeClient = mergeClient;
         _emptyContent = new PageEmptyContent(Icons.PullRequests, new RefreshRepositoryItemsCommand(RefreshAsync, Icons.PullRequests));
+        _pagination = new PagedListPresentation(Icons.PullRequests, () => StartLoad(reset: false));
         Id = PageId;
         Name = "Pull requests";
         Title = "Pull requests";
         Icon = Icons.PullRequests;
-        PlaceholderText = "Filter pull requests...";
+        PlaceholderText = "Filter loaded pull requests...";
         _filters.CurrentFilterId = PullRequestFilters.Open;
         _filters.PropChanged += (_, _) => RaiseItemsChanged();
         Filters = _filters;
-        _auth.AccountChanged += OnAccountChanged;
+        _accountSubscription = auth.Subscribe(this, static page => page.OnAccountChanged(null, EventArgs.Empty));
     }
 
     internal Task CurrentLoad
@@ -61,12 +64,15 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         }
     }
 
-    internal RepositoryPullRequestsPage ForRepository(string repository) =>
+    internal RepositoryPage? Owner { get; private init; }
+
+    internal RepositoryPullRequestsPage ForRepository(string repository, RepositoryPage? owner = null) =>
         new(_auth, _client, _browser, _time, _mergeClient)
         {
             Id = $"{PageId}.{Uri.EscapeDataString(repository)}",
             Title = $"{repository} pull requests",
             _repository = repository,
+            Owner = owner,
         };
 
     internal ICommandResult Open(string repository)
@@ -96,6 +102,9 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         string? repository;
         string? error;
         string filter;
+        bool hasMore;
+        bool loading;
+        bool loaded;
         lock (_lock)
         {
             needsLoad = _repository is not null && _load.NeedsLoad;
@@ -103,6 +112,9 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
             repository = _repository;
             error = _load.Error;
             filter = _filters.CurrentFilterId;
+            hasMore = _load.NextPage is not null;
+            loading = _load.Fetching || needsLoad;
+            loaded = _load.Loaded;
         }
 
         if (needsLoad)
@@ -128,39 +140,38 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
             _ => null,
         };
 
+        var partial = hasMore || !loaded;
         EmptyContent = error is not null
             ? Empty("Couldn't load pull requests", error, refresh: true)
+            : loading
+                ? Empty("Loading pull requests...", "Filtering loaded results")
             : matches.Length == 0
                 ? Empty(
-                    terms.Length == 0 && emptyStatus is null ? "No pull requests found" : "No matching pull requests",
-                    terms.Length == 0
+                    partial ? "No matching loaded pull requests" : terms.Length == 0 && emptyStatus is null ? "No pull requests found" : "No matching pull requests",
+                    partial
+                        ? $"No loaded {emptyStatus ?? "matching"} pull requests match. More pull requests may be available."
+                        : terms.Length == 0
                         ? emptyStatus is null
                             ? $"{repository} doesn't have any pull requests"
                             : $"{repository} doesn't have any {emptyStatus} pull requests"
                         : $"Nothing matches \"{SearchText.Trim()}\"")
                 : Empty("No pull requests found", $"{repository} doesn't have any pull requests");
 
-        return matches;
+        return hasMore || loading || (error is not null && snapshot.Length > 0)
+            ? _pagination.Append(matches, loading ? "Loading pull requests..." : "Filtering loaded pull requests",
+                $"{matches.Length} matching {emptyStatus ?? "all"} pull requests in {snapshot.Length} loaded pull requests. More pull requests may be available.",
+                hasMore, loading, error)
+            : matches;
     }
 
     public override void UpdateSearchText(string oldSearch, string newSearch)
     {
-        bool hasMore;
-        lock (_lock)
-        {
-            hasMore = newSearch.Trim().Length == 0 && _load.NextPage is not null;
-        }
-
-        HasMoreItems = hasMore;
         RaiseItemsChanged();
     }
 
     public override void LoadMore()
     {
-        if (SearchText.Trim().Length == 0)
-        {
-            StartLoad(reset: false);
-        }
+        StartLoad(reset: false);
     }
 
     internal Task RefreshAsync()
@@ -185,7 +196,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
 
     public void Dispose()
     {
-        _auth.AccountChanged -= OnAccountChanged;
+        _accountSubscription.Dispose();
         MergePullRequestPage[] mergePages;
         lock (_lock)
         {
@@ -252,7 +263,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
                     MergePullRequestPage? mergePage = null;
                     if (_mergeClient is not null && pullRequest.State == SubjectState.Open)
                     {
-                        mergePage = new MergePullRequestPage(_auth, _mergeClient, account, repository, pullRequest.Number, pullRequest.WebUrl);
+                        mergePage = new MergePullRequestPage(_auth, _mergeClient, account, repository, pullRequest.Number, pullRequest.WebUrl) { Owner = this };
                         _mergePages.Add(mergePage);
                     }
 
@@ -264,13 +275,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
 
     private void PublishLoad(ListLoadState.Operation operation)
     {
-        bool hasMore;
-        lock (_lock)
-        {
-            hasMore = _load.NextPage is not null && SearchText.Trim().Length == 0;
-        }
-
-        _load.Publish(operation, () => HasMoreItems = hasMore);
+        _load.Publish(operation, () => HasMoreItems = false);
         _load.Publish(operation, () => IsLoading = false);
         _load.Publish(operation, () => RaiseItemsChanged());
     }

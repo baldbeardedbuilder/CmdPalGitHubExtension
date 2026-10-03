@@ -43,8 +43,8 @@ public class ReposPageTests
     public async Task Search_ShowsLocalMatchesThenGitHubResults()
     {
         var client = Client([RepoFormattingTests.Repo("octocat/power-tools"), RepoFormattingTests.Repo("octocat/other")]);
-        client.Setup(c => c.SearchAsync(Account, "power", It.IsAny<CancellationToken>()))
-            .ReturnsAsync([RepoFormattingTests.Repo("microsoft/PowerToys"), RepoFormattingTests.Repo("octocat/power-tools")]);
+        client.Setup(c => c.SearchAsync(Account, "power", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RepositorySearchPageResult([RepoFormattingTests.Repo("microsoft/PowerToys"), RepoFormattingTests.Repo("octocat/power-tools")], null, 2));
         using var page = await LoadedPage(client.Object);
 
         page.SearchText = "power";
@@ -62,10 +62,12 @@ public class ReposPageTests
             RepoFormattingTests.Repo("o/a", language: "Rust", description: "Fast thing"),
             RepoFormattingTests.Repo("o/b", language: "Go", description: "Fast too"),
         ]);
-        client.Setup(c => c.SearchAsync(Account, It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync([]);
+        client.Setup(c => c.SearchAsync(Account, It.IsAny<string>(), null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RepositorySearchPageResult([], null, 0));
         using var page = await LoadedPage(client.Object);
 
         page.SearchText = "fast rust";
+        await page.CurrentSearch;
 
         Assert.AreEqual("o/a", page.GetItems().Single().Title);
     }
@@ -74,7 +76,7 @@ public class ReposPageTests
     public async Task SearchFailure_ShowsTheError()
     {
         var client = Client([]);
-        client.Setup(c => c.SearchAsync(Account, "x", It.IsAny<CancellationToken>()))
+        client.Setup(c => c.SearchAsync(Account, "x", null, It.IsAny<CancellationToken>()))
             .ThrowsAsync(new GitHubApiException("rate limited"));
         using var page = await LoadedPage(client.Object);
 
@@ -89,9 +91,9 @@ public class ReposPageTests
     public async Task SearchTimeout_ClearsLoadingAndRefreshRetries()
     {
         var client = Client([]);
-        client.SetupSequence(c => c.SearchAsync(Account, "remote", It.IsAny<CancellationToken>()))
+        client.SetupSequence(c => c.SearchAsync(Account, "remote", null, It.IsAny<CancellationToken>()))
             .ThrowsAsync(new TaskCanceledException("transport timeout"))
-            .ReturnsAsync([RepoFormattingTests.Repo("o/remote")]);
+            .ReturnsAsync(new RepositorySearchPageResult([RepoFormattingTests.Repo("o/remote")], null, 1));
         using var page = await LoadedPage(client.Object);
 
         page.SearchText = "remote";
@@ -114,15 +116,15 @@ public class ReposPageTests
     {
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var client = Client([]);
-        client.Setup(c => c.SearchAsync(Account, "old", It.IsAny<CancellationToken>()))
-            .Returns(async (GitHubAccount _, string _, CancellationToken token) =>
+        client.Setup(c => c.SearchAsync(Account, "old", null, It.IsAny<CancellationToken>()))
+            .Returns(async (GitHubAccount _, string _, Uri? _, CancellationToken token) =>
             {
                 started.SetResult();
                 await Task.Delay(Timeout.InfiniteTimeSpan, token);
-                return new List<GitHubRepository>();
+                return new RepositorySearchPageResult([], null, 0);
             });
-        client.Setup(c => c.SearchAsync(Account, "new", It.IsAny<CancellationToken>()))
-            .ReturnsAsync([RepoFormattingTests.Repo("o/new")]);
+        client.Setup(c => c.SearchAsync(Account, "new", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RepositorySearchPageResult([RepoFormattingTests.Repo("o/new")], null, 1));
         using var page = await LoadedPage(client.Object);
         page.SearchText = "old";
         var oldSearch = page.CurrentSearch;
@@ -141,7 +143,8 @@ public class ReposPageTests
     public async Task ClearingSearch_RestoresYourRepos()
     {
         var client = Client([RepoFormattingTests.Repo("o/a"), RepoFormattingTests.Repo("o/b")]);
-        client.Setup(c => c.SearchAsync(Account, It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync([]);
+        client.Setup(c => c.SearchAsync(Account, It.IsAny<string>(), null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RepositorySearchPageResult([], null, 0));
         using var page = await LoadedPage(client.Object);
 
         page.SearchText = "o/a";
@@ -402,8 +405,8 @@ public class ReposPageTests
     public async Task SearchResult_OpensRepositoryMenu()
     {
         var client = Client([]);
-        client.Setup(c => c.SearchAsync(Account, "remote", It.IsAny<CancellationToken>()))
-            .ReturnsAsync([RepoFormattingTests.Repo("o/remote")]);
+        client.Setup(c => c.SearchAsync(Account, "remote", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RepositorySearchPageResult([RepoFormattingTests.Repo("o/remote")], null, 1));
         using var page = await LoadedPage(client.Object);
         page.SearchText = "remote";
         await page.CurrentSearch;
@@ -412,6 +415,54 @@ public class ReposPageTests
 
         Assert.AreEqual("o/remote", repository.Title);
         Assert.AreEqual("o/remote", repository.GetItems()[0].Title);
+    }
+
+    [TestMethod]
+    public async Task SearchResults_ReuseRepositoryPageAcrossQueries()
+    {
+        var repository = RepoFormattingTests.Repo("o/remote");
+        var client = Client([]);
+        client.Setup(c => c.SearchAsync(Account, "first", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RepositorySearchPageResult([repository], null, 1));
+        client.Setup(c => c.SearchAsync(Account, "second", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RepositorySearchPageResult([repository], null, 1));
+        using var page = await LoadedPage(client.Object);
+
+        page.SearchText = "first";
+        await page.CurrentSearch;
+        var firstPage = page.GetItems().Single().Command;
+
+        page.SearchText = "second";
+        await page.CurrentSearch;
+
+        Assert.AreSame(firstPage, page.GetItems().Single().Command);
+    }
+
+    [TestMethod]
+    public async Task Dispose_CancelsPendingRepositoryRequest()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new Mock<IRepositoriesClient>();
+        CancellationToken requestToken = default;
+        client.Setup(c => c.GetMyRepositoriesAsync(Account, null, It.IsAny<CancellationToken>()))
+            .Returns(async (GitHubAccount _, Uri? _, CancellationToken token) =>
+            {
+                requestToken = token;
+                started.SetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                return new RepositoriesPageResult([], null);
+            });
+        var page = CreatePage(client.Object, out _);
+
+        page.GetItems();
+        var load = page.CurrentLoad;
+        await started.Task;
+        page.Dispose();
+        await load;
+
+        Assert.IsTrue(requestToken.IsCancellationRequested);
+        Assert.IsFalse(page.IsLoading);
+        Assert.IsEmpty(page.GetItems());
     }
 
     [TestMethod]
@@ -424,6 +475,252 @@ public class ReposPageTests
 
         Assert.IsEmpty(page.GetItems());
         Assert.AreEqual("nope", page.EmptyContent!.Subtitle);
+    }
+
+    [TestMethod]
+    public async Task Search_LoadsExplicitPagesAndDeduplicatesLocalAndRemoteRows()
+    {
+        var next = new Uri("https://api.github.com/search/repositories?q=power&per_page=30&page=2");
+        var client = Client([RepoFormattingTests.Repo("o/power")]);
+        client.Setup(c => c.SearchAsync(Account, "power", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RepositorySearchPageResult([RepoFormattingTests.Repo("o/power"), RepoFormattingTests.Repo("o/first")], next, 3));
+        client.Setup(c => c.SearchAsync(Account, "power", next, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RepositorySearchPageResult([RepoFormattingTests.Repo("o/first"), RepoFormattingTests.Repo("o/second")], null, 3));
+        using var page = await LoadedPage(client.Object);
+        page.SearchText = "power";
+        await page.CurrentSearch;
+
+        Assert.HasCount(2, page.GetItems().OfType<RepoItem>());
+        Assert.Contains("Showing 2 of 3", page.GetItems()[2].Subtitle);
+        Assert.AreEqual("Load more", page.GetItems().Last().Title);
+        Assert.IsFalse(page.HasMoreItems);
+        client.Verify(c => c.SearchAsync(Account, "power", next, It.IsAny<CancellationToken>()), Times.Never);
+        Assert.IsInstanceOfType<InvokableCommand>(page.GetItems().Last().Command).Invoke();
+        await page.CurrentSearch;
+
+        Assert.HasCount(3, page.GetItems());
+        Assert.AreEqual("o/second", page.GetItems().Last().Title);
+        Assert.AreEqual("power", page.SearchText);
+        client.Verify(c => c.SearchAsync(Account, "power", next, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task Search_EmptyPageStillOffersExplicitContinuation()
+    {
+        var next = new Uri("https://api.github.com/search/repositories?q=missing&per_page=30&page=2");
+        var client = Client([]);
+        client.Setup(c => c.SearchAsync(Account, "missing", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RepositorySearchPageResult([], next, 1));
+        client.Setup(c => c.SearchAsync(Account, "missing", next, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RepositorySearchPageResult([RepoFormattingTests.Repo("o/found")], null, 1));
+        using var page = await LoadedPage(client.Object);
+        page.SearchText = "missing";
+        await page.CurrentSearch;
+
+        Assert.IsEmpty(page.GetItems().OfType<RepoItem>());
+        Assert.Contains("Showing 0 of 1", page.GetItems().First().Subtitle);
+        Assert.AreEqual("Load more", page.GetItems().Last().Title);
+        var more = page.GetItems().Last();
+        Assert.AreSame(more, page.GetItems().Last());
+        Assert.IsInstanceOfType<InvokableCommand>(more.Command).Invoke();
+        await page.CurrentSearch;
+        Assert.AreEqual("o/found", page.GetItems().Single().Title);
+    }
+
+    [TestMethod]
+    public async Task Search_PaginationFailureRetainsResultsAndRetriesContinuation()
+    {
+        var next = new Uri("https://api.github.com/search/repositories?q=repo&per_page=30&page=2");
+        var client = Client([]);
+        client.Setup(c => c.SearchAsync(Account, "repo", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RepositorySearchPageResult([RepoFormattingTests.Repo("o/first")], next, 2));
+        client.SetupSequence(c => c.SearchAsync(Account, "repo", next, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new GitHubApiException("rate limited"))
+            .ReturnsAsync(new RepositorySearchPageResult([RepoFormattingTests.Repo("o/second")], null, 2));
+        using var page = await LoadedPage(client.Object);
+        page.SearchText = "repo";
+        await page.CurrentSearch;
+        var first = page.GetItems().First();
+        page.LoadMore();
+        await page.CurrentSearch;
+
+        Assert.AreSame(first, page.GetItems().First());
+        Assert.AreEqual("rate limited", page.GetItems()[1].Subtitle);
+        Assert.AreEqual("Retry loading more", page.GetItems().Last().Title);
+        Assert.IsFalse(page.IsLoading);
+        Assert.IsInstanceOfType<InvokableCommand>(page.GetItems().Last().Command).Invoke();
+        await page.CurrentSearch;
+        Assert.HasCount(2, page.GetItems());
+        client.Verify(c => c.SearchAsync(Account, "repo", next, It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task Search_QueryChangeRejectsLatePaginationResponseAndResetsContinuation(bool failOldPage)
+    {
+        var next = new Uri("https://api.github.com/search/repositories?q=old&per_page=30&page=2");
+        var newNext = new Uri("https://api.github.com/search/repositories?q=new&per_page=30&page=2");
+        var started = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pending = new TaskCompletionSource<RepositorySearchPageResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = Client([]);
+        client.Setup(c => c.SearchAsync(Account, "old", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RepositorySearchPageResult([RepoFormattingTests.Repo("o/old")], next, 2));
+        client.Setup(c => c.SearchAsync(Account, "old", next, It.IsAny<CancellationToken>()))
+            .Returns((GitHubAccount _, string _, Uri? _, CancellationToken token) =>
+            {
+                started.SetResult(token);
+                return pending.Task;
+            });
+        client.Setup(c => c.SearchAsync(Account, "new", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RepositorySearchPageResult([RepoFormattingTests.Repo("o/new")], newNext, 2));
+        client.Setup(c => c.SearchAsync(Account, "new", newNext, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RepositorySearchPageResult([RepoFormattingTests.Repo("o/new-second")], null, 2));
+        using var page = await LoadedPage(client.Object);
+        page.SearchText = "old";
+        await page.CurrentSearch;
+        page.LoadMore();
+        var oldPage = page.CurrentSearch;
+        var token = await started.Task;
+        page.LoadMore();
+        client.Verify(c => c.SearchAsync(Account, "old", next, It.IsAny<CancellationToken>()), Times.Once);
+        page.SearchText = "new";
+        await page.CurrentSearch;
+        Assert.IsTrue(token.IsCancellationRequested);
+        if (failOldPage)
+        {
+            pending.SetException(new GitHubApiException("stale error"));
+        }
+        else
+        {
+            pending.SetResult(new RepositorySearchPageResult([RepoFormattingTests.Repo("o/stale")], null, 9000));
+        }
+        await oldPage;
+
+        Assert.AreEqual("o/new", page.GetItems().OfType<RepoItem>().Single().Title);
+        Assert.DoesNotContain("stale", string.Join(" ", page.GetItems().Select(item => item.Subtitle)));
+        Assert.IsFalse(page.IsLoading);
+        page.LoadMore();
+        await page.CurrentSearch;
+        Assert.HasCount(2, page.GetItems());
+        client.Verify(c => c.SearchAsync(Account, "new", newNext, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task Search_FirstPageErrorRemainsVisibleWithLocalMatches()
+    {
+        var client = Client([RepoFormattingTests.Repo("o/repo")]);
+        client.Setup(c => c.SearchAsync(Account, "repo", null, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new GitHubApiException("rate limited"));
+        using var page = await LoadedPage(client.Object);
+        page.SearchText = "repo";
+        await page.CurrentSearch;
+        Assert.HasCount(1, page.GetItems().OfType<RepoItem>());
+        Assert.AreEqual("Couldn't search GitHub", page.GetItems().Last().Title);
+        Assert.AreEqual("rate limited", page.GetItems().Last().Subtitle);
+        Assert.IsInstanceOfType<RefreshReposCommand>(page.GetItems().Last().Command);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task Search_ResultLimitIsVisibleBeforeAndAfterLastAccessiblePage(bool hasMore)
+    {
+        var client = Client([]);
+        client.Setup(c => c.SearchAsync(Account, "repo", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RepositorySearchPageResult([RepoFormattingTests.Repo("o/repo")],
+                hasMore ? new Uri("https://api.github.com/search/repositories?q=repo&per_page=30&page=2") : null, 1001));
+        using var page = await LoadedPage(client.Object);
+        page.SearchText = "repo";
+        await page.CurrentSearch;
+        Assert.Contains("1,000", page.GetItems()[1].Title);
+        Assert.Contains("Narrow your search", page.GetItems()[1].Subtitle);
+        Assert.AreEqual(hasMore, page.GetItems().Any(item => item.Command is LoadMoreResultsCommand));
+        Assert.IsFalse(page.HasMoreItems);
+    }
+
+    [TestMethod]
+    [DataRow("clear")]
+    [DataRow("sign-out")]
+    [DataRow("dispose")]
+    [DataRow("refresh")]
+    public async Task Search_ScopeResetCancelsPaginationWithoutBlockingHostReads(string action)
+    {
+        var next = new Uri("https://api.github.com/search/repositories?q=repo&per_page=30&page=2");
+        var started = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pending = new TaskCompletionSource<RepositorySearchPageResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = Client([RepoFormattingTests.Repo("o/local")]);
+        client.SetupSequence(c => c.SearchAsync(Account, "repo", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RepositorySearchPageResult([RepoFormattingTests.Repo("o/first")], next, 2))
+            .ReturnsAsync(new RepositorySearchPageResult([RepoFormattingTests.Repo("o/refreshed")], null, 1));
+        var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(),
+            new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
+        var browser = new FakeBrowser(_ => null);
+        using var issues = new RepositoryIssuesPage(auth, Mock.Of<IIssuesClient>(), browser);
+        using var pulls = new RepositoryPullRequestsPage(auth, Mock.Of<IPullRequestsClient>(), browser);
+        using var page = new ReposPage(auth, client.Object, browser, issues, pulls, searchDelay: TimeSpan.Zero);
+        var blocked = false;
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        client.Setup(c => c.SearchAsync(Account, "repo", next, It.IsAny<CancellationToken>()))
+            .Returns(async (GitHubAccount _, string _, Uri? _, CancellationToken token) =>
+            {
+                using var registration = token.Register(() =>
+                {
+                    var read = Task.Factory.StartNew(() =>
+                    {
+                        _ = page.CurrentSearch;
+                        page.GetItems();
+                    }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+                    blocked = !read.Wait(TimeSpan.FromSeconds(2));
+                    cancelled.SetResult();
+                });
+                started.SetResult(token);
+                return await pending.Task;
+            });
+        page.GetItems();
+        await page.CurrentLoad;
+        page.SearchText = "repo";
+        await page.CurrentSearch;
+        page.LoadMore();
+        var oldPage = page.CurrentSearch;
+        var token = await started.Task;
+
+        switch (action)
+        {
+            case "clear":
+                page.SearchText = string.Empty;
+                break;
+            case "sign-out":
+                auth.SignOut();
+                break;
+            case "dispose":
+                page.Dispose();
+                break;
+            case "refresh":
+                await page.RefreshAsync();
+                await page.CurrentSearch;
+                break;
+        }
+        Assert.IsTrue(token.IsCancellationRequested);
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        pending.SetResult(new RepositorySearchPageResult([RepoFormattingTests.Repo("o/stale")], null, 2));
+        await oldPage;
+
+        Assert.IsFalse(blocked, "Cancellation callbacks must be able to read the page from another thread.");
+        Assert.IsFalse(page.IsLoading);
+        Assert.IsFalse(page.GetItems().Any(item => item.Title == "o/stale"));
+        if (action == "clear")
+        {
+            Assert.AreEqual("o/local", page.GetItems().Single().Title);
+        }
+        else if (action == "sign-out")
+        {
+            Assert.IsEmpty(page.GetItems());
+        }
+        else if (action == "refresh")
+        {
+            Assert.AreEqual("o/refreshed", page.GetItems().Single().Title);
+        }
     }
 
     private static Mock<IRepositoriesClient> Client(GitHubRepository[] repos)

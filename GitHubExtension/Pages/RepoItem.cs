@@ -13,15 +13,22 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 /// </summary>
 internal sealed partial class RepoItem : ListItem
 {
+    private readonly ReposPage _page;
+    private readonly GitHubAccount? _account;
+    private readonly int _accountGeneration;
+    private RepositoryPage? _repositoryPage;
+
     public RepoItem(
         ReposPage page,
         GitHubRepository repository,
         IBrowserLauncher browser,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        GitHubAccount? account = null)
     {
+        _page = page;
+        _account = account ?? page.CurrentAccount;
+        _accountGeneration = page.AccountGeneration;
         Repository = repository;
-        RepositoryPage = page.CreateRepositoryPage(repository);
-        Command = RepositoryPage;
         Title = repository.FullName;
         Subtitle = RepoFormatting.Subtitle(repository, now);
         Icon = Icons.Repos;
@@ -35,9 +42,9 @@ internal sealed partial class RepoItem : ListItem
             new CommandContextItem(new OpenInBrowserCommand(browser, new Uri(repoBase + "pulls"), "Open pull requests", Icons.PullRequests)),
         };
 
-        if (RepositoryPage.Actions is { } actions)
+        if (page.Actions is not null)
         {
-            more.Add(new CommandContextItem(actions));
+            more.Add(new RepositoryActionsContextItem(this));
         }
 
         if (repository.CloneUrl is { } clone)
@@ -52,10 +59,39 @@ internal sealed partial class RepoItem : ListItem
 
     public GitHubRepository Repository { get; }
 
-    public RepositoryPage RepositoryPage { get; }
+    public RepositoryPage RepositoryPage => Command as RepositoryPage ?? throw new ObjectDisposedException(nameof(RepoItem));
+
+    public override ICommand? Command
+    {
+        get
+        {
+            if (!_page.CanNavigate(_account, _accountGeneration))
+            {
+                return null;
+            }
+
+            if (_repositoryPage is null || _repositoryPage.IsDisposed)
+            {
+                _repositoryPage = _page.CreateRepositoryPage(Repository, _account, _accountGeneration);
+            }
+
+            return _repositoryPage;
+        }
+
+        set => base.Command = value;
+    }
 
     public bool Matches(string[] terms) => terms.All(t =>
         Repository.FullName.Contains(t, StringComparison.OrdinalIgnoreCase)
         || (Repository.Description?.Contains(t, StringComparison.OrdinalIgnoreCase) ?? false)
         || (Repository.Language?.Equals(t, StringComparison.OrdinalIgnoreCase) ?? false));
+
+    private sealed partial class RepositoryActionsContextItem(RepoItem item) : CommandContextItem(new NoOpCommand())
+    {
+        public override ICommand? Command
+        {
+            get => (item.Command as RepositoryPage)?.Actions;
+            set => base.Command = value;
+        }
+    }
 }

@@ -14,15 +14,15 @@ internal sealed partial class CreateAgentTaskPage : ContentPage, IDisposable
     public const string PageId = "com.baldbeardedbuilder.cmdpal.github.create-agent-task";
 
     private readonly AuthService _auth;
+    private readonly IDisposable _accountSubscription;
     private readonly IAgentsClient _client;
     private readonly GitHubRepository _repository;
-    private readonly Lock _lock = new();
+    private readonly ListLoadState _load = new();
+    private Lock _lock => _load.SyncRoot;
     private CreateAgentTaskForm _form;
     private AgentTaskRequest? _draft;
     private GitHubAccount? _reviewAccount;
     private HashSet<string>? _baselineTaskIds;
-    private CancellationTokenSource? _operationCancellation;
-    private Task _currentOperation = Task.CompletedTask;
     private bool _submitting;
     private bool _outcomeUnknown;
     private bool _priorOutcomeUnknown;
@@ -39,7 +39,7 @@ internal sealed partial class CreateAgentTaskPage : ContentPage, IDisposable
         Title = "Start Copilot task";
         Icon = Icons.Agents;
         _form = NewForm(null, null);
-        _auth.AccountChanged += OnAccountChanged;
+        _accountSubscription = auth.Subscribe(this, static page => page.OnAccountChanged(null, EventArgs.Empty));
     }
 
     internal Task CurrentOperation
@@ -48,10 +48,12 @@ internal sealed partial class CreateAgentTaskPage : ContentPage, IDisposable
         {
             lock (_lock)
             {
-                return _currentOperation;
+                return _load.CurrentLoad;
             }
         }
     }
+
+    internal RepositoryPage? Owner { get; init; }
 
     public override IContent[] GetContent()
     {
@@ -63,6 +65,11 @@ internal sealed partial class CreateAgentTaskPage : ContentPage, IDisposable
 
     internal ICommandResult HandleSubmit(string inputs, string data)
     {
+        if (_disposed)
+        {
+            return CommandResult.KeepOpen();
+        }
+
         var action = ReadString(data, "action");
         if (action == CreateAgentTaskActions.Review)
         {
@@ -139,12 +146,24 @@ internal sealed partial class CreateAgentTaskPage : ContentPage, IDisposable
 
     public void Dispose()
     {
-        _auth.AccountChanged -= OnAccountChanged;
+        _accountSubscription.Dispose();
         lock (_lock)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             _disposed = true;
             CancelOperation();
+            _load.Dispose();
+            _draft = null;
+            _reviewAccount = null;
+            _baselineTaskIds = null;
+            _form = NewForm(null, null);
         }
+
+        IsLoading = false;
     }
 
     private void StartSubmission()
@@ -152,6 +171,7 @@ internal sealed partial class CreateAgentTaskPage : ContentPage, IDisposable
         GitHubAccount? account;
         AgentTaskRequest? draft;
         CancellationToken token;
+        ListLoadState.Operation? operation = null;
         int generation;
         lock (_lock)
         {
@@ -175,8 +195,8 @@ internal sealed partial class CreateAgentTaskPage : ContentPage, IDisposable
             {
                 draft = _draft;
                 CancelOperation();
-                _operationCancellation = new CancellationTokenSource();
-                token = _operationCancellation.Token;
+                _load.TryBegin(true, out operation);
+                token = operation.Token;
                 generation = ++_generation;
                 _submitting = true;
                 _baselineTaskIds = null;
@@ -190,12 +210,11 @@ internal sealed partial class CreateAgentTaskPage : ContentPage, IDisposable
             return;
         }
 
-        IsLoading = true;
-        RaiseItemsChanged();
-        lock (_lock)
-        {
-            _currentOperation = Task.Run(() => SubmitAsync(account, draft, generation, token));
-        }
+        _load.Publish(operation!, () => IsLoading = true);
+        _load.Publish(operation!, () => RaiseItemsChanged());
+        _load.Run(operation!, () => SubmitAsync(account, draft, generation, token), () => PublishError(operation!),
+            "GitHub took too long to respond. Check repository tasks before submitting again.",
+            area: DiagnosticArea.Agents, mutation: true);
     }
 
     private async Task SubmitAsync(
@@ -268,6 +287,7 @@ internal sealed partial class CreateAgentTaskPage : ContentPage, IDisposable
     {
         GitHubAccount? account;
         CancellationToken token;
+        ListLoadState.Operation operation;
         int generation;
         lock (_lock)
         {
@@ -283,19 +303,18 @@ internal sealed partial class CreateAgentTaskPage : ContentPage, IDisposable
             }
 
             CancelOperation();
-            _operationCancellation = new CancellationTokenSource();
-            token = _operationCancellation.Token;
+            _load.TryBegin(true, out operation);
+            token = operation.Token;
             generation = ++_generation;
             _submitting = true;
             _form = NewForm(CreateAgentTaskCards.Starting("Checking repository tasks..."));
         }
 
-        IsLoading = true;
-        RaiseItemsChanged();
-        lock (_lock)
-        {
-            _currentOperation = Task.Run(() => ReconcileAndFinishAsync(account, generation, token));
-        }
+        _load.Publish(operation, () => IsLoading = true);
+        _load.Publish(operation, () => RaiseItemsChanged());
+        _load.Run(operation, () => ReconcileAndFinishAsync(account, generation, token), () => PublishError(operation),
+            "GitHub took too long to respond. Check repository tasks before submitting again.",
+            area: DiagnosticArea.Agents);
     }
 
     private async Task ReconcileAndFinishAsync(GitHubAccount account, int generation, CancellationToken cancellationToken)
@@ -352,6 +371,7 @@ internal sealed partial class CreateAgentTaskPage : ContentPage, IDisposable
     private void FinishOperation(int generation)
     {
         bool publish;
+        long revision;
         lock (_lock)
         {
             publish = generation == _generation && !_disposed;
@@ -359,13 +379,30 @@ internal sealed partial class CreateAgentTaskPage : ContentPage, IDisposable
             {
                 _submitting = false;
             }
+
+            revision = _load.Revision;
         }
 
         if (publish)
         {
-            IsLoading = false;
-            RaiseItemsChanged();
+            _load.Publish(revision, () => IsLoading = false);
+            _load.Publish(revision, () => RaiseItemsChanged());
         }
+    }
+
+    private void PublishError(ListLoadState.Operation operation)
+    {
+        lock (_lock)
+        {
+            if (!_load.IsCurrent(operation) || _load.Error is not { } error)
+            {
+                return;
+            }
+
+            _form = NewForm(CreateAgentTaskCards.Form(_repository.FullName, _draft, error));
+        }
+
+        _load.Publish(operation, () => RaiseItemsChanged());
     }
 
     private void ShowForm(AgentTaskRequest? draft, string error)
@@ -386,6 +423,11 @@ internal sealed partial class CreateAgentTaskPage : ContentPage, IDisposable
     {
         lock (_lock)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             CancelOperation();
             _draft = null;
             _reviewAccount = null;
@@ -406,9 +448,7 @@ internal sealed partial class CreateAgentTaskPage : ContentPage, IDisposable
     private void CancelOperation()
     {
         _generation++;
-        _operationCancellation?.Cancel();
-        _operationCancellation?.Dispose();
-        _operationCancellation = null;
+        _load.Invalidate();
         _submitting = false;
     }
 

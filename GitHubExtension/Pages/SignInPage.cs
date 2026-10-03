@@ -11,7 +11,7 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 /// What folks see before they've signed in. It's one adaptive card that swaps between the
 /// github.com sign in, the GitHub Enterprise form, and the waiting and success states.
 /// </summary>
-internal sealed partial class SignInPage : ContentPage
+internal sealed partial class SignInPage : ContentPage, IDisposable
 {
     public const string PageId = "com.baldbeardedbuilder.cmdpal.github.signin";
 
@@ -20,9 +20,11 @@ internal sealed partial class SignInPage : ContentPage
     private readonly AuthService _auth;
     private readonly Func<string> _logoProvider;
     private readonly Action<string> _showError;
-    private readonly Lock _lock = new();
+    private readonly ListLoadState _load = new();
+    private Lock _lock => _load.SyncRoot;
     private SignInForm _form;
-    private CancellationTokenSource? _signInCancellation;
+
+    internal Task CurrentSignIn => _load.CurrentLoad;
 
     public SignInPage(AuthService auth, Func<string>? logoProvider = null, Action<string>? showError = null)
     {
@@ -50,6 +52,11 @@ internal sealed partial class SignInPage : ContentPage
 
     internal ICommandResult HandleSubmit(string action, string inputs)
     {
+        if (_load.Disposed)
+        {
+            return CommandResult.KeepOpen();
+        }
+
         switch (action)
         {
             case SignInActions.GitHub:
@@ -72,7 +79,12 @@ internal sealed partial class SignInPage : ContentPage
                 break;
 
             case SignInActions.Cancel:
-                _signInCancellation?.Cancel();
+                lock (_lock)
+                {
+                    _load.Invalidate(reset: true);
+                }
+
+                IsLoading = false;
                 Show(SignInView.Start);
                 break;
 
@@ -89,72 +101,76 @@ internal sealed partial class SignInPage : ContentPage
 
     private void StartSignIn(Func<CancellationToken, Task<GitHubAccount>> signIn, SignInView waitingView, string? serverUrl = null)
     {
-        _signInCancellation?.Cancel();
-        var cancellation = new CancellationTokenSource();
-        _signInCancellation = cancellation;
+        ListLoadState.Operation request;
+        lock (_lock)
+        {
+            if (_load.Disposed)
+            {
+                return;
+            }
+
+            _load.Invalidate(reset: true);
+            _load.TryBegin(true, out request);
+        }
+
         var returnView = waitingView == SignInView.Verifying ? SignInView.Enterprise : SignInView.Start;
 
-        Show(waitingView);
-        IsLoading = true;
+        _load.Publish(request, () => Show(waitingView));
+        _load.Publish(request, () => IsLoading = true);
 
-        _ = Task.Run(async () =>
+        _load.Run(request, async () =>
         {
-            using var operation = OperationDiagnostics.Begin(DiagnosticEvent.Mutation, DiagnosticArea.Auth);
-            Exception? failure = null;
-            try
+            var account = await signIn(request.Token).ConfigureAwait(false);
+            _load.Publish(request, () => Show(SignInView.SignedIn, account: account));
+            _load.Publish(request, () => new ToastStatusMessage($"Signed in as @{account.Login}").Show());
+        }, () =>
+        {
+            string? error;
+            lock (_lock)
             {
-                var account = await signIn(cancellation.Token).ConfigureAwait(false);
-                if (cancellation.IsCancellationRequested)
-                {
-                    return;
-                }
+                error = _load.Error;
+            }
 
-                Show(SignInView.SignedIn, account: account);
-                new ToastStatusMessage($"Signed in as @{account.Login}").Show();
-            }
-            catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+            if (error is not null)
             {
-                // The user hit cancel, and we already moved them back.
+                _load.Publish(request, () => Show(returnView, error, serverUrl));
             }
-            catch (GitHubAuthException ex)
-            {
-                failure = ex;
-                if (!cancellation.IsCancellationRequested)
-                {
-                    Show(returnView, ex.Message, serverUrl);
-                }
-            }
-            catch (Exception ex)
-            {
-                failure = ex;
-                if (!cancellation.IsCancellationRequested)
-                {
-                    Show(returnView, $"Something went wrong signing in. {ex.Message}", serverUrl);
-                }
-            }
-            finally
-            {
-                var current = ReferenceEquals(_signInCancellation, cancellation);
-                if (current)
-                {
-                    IsLoading = false;
-                }
 
-                PageDiagnostics.Finish(operation, failure, current, cancellationToken: cancellation.Token);
-            }
-        });
+            _load.Publish(request, () => IsLoading = false);
+        }, "GitHub took too long to respond. Try signing in again.", area: DiagnosticArea.Auth,
+            diagnosticEvent: DiagnosticEvent.Mutation);
     }
 
     private void Show(SignInView view, string? error = null, string? serverUrl = null, GitHubAccount? account = null)
     {
         lock (_lock)
         {
+            if (_load.Disposed)
+            {
+                return;
+            }
+
             CurrentView = view;
             ErrorMessage = error;
             _form = CreateForm(view, error, serverUrl, account);
         }
 
         RaiseItemsChanged();
+    }
+
+    public void Dispose()
+    {
+        lock (_lock)
+        {
+            if (_load.Disposed)
+            {
+                return;
+            }
+
+            _load.Dispose();
+        }
+
+        IsLoading = false;
     }
 
     private SignInForm CreateForm(SignInView view, string? error = null, string? serverUrl = null, GitHubAccount? account = null)

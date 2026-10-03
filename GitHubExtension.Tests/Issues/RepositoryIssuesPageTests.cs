@@ -181,17 +181,19 @@ public sealed class RepositoryIssuesPageTests
         page.Filters!.CurrentFilterId = filter;
         page.Open("octo/tool");
         await page.CurrentLoad;
-        Assert.IsTrue(page.HasMoreItems);
+        Assert.IsFalse(page.HasMoreItems);
+        Assert.AreEqual("Load more", page.GetItems().Last().Title);
 
         var otherFilter = filter == IssueFilters.Open ? IssueFilters.Closed : IssueFilters.Open;
         page.Filters.CurrentFilterId = otherFilter;
-        Assert.IsEmpty(page.GetItems());
-        Assert.IsTrue(page.HasMoreItems);
+        Assert.IsEmpty(page.GetItems().OfType<RepositoryIssueItem>());
+        Assert.AreEqual("No matching loaded issues", page.EmptyContent!.Title);
+        Assert.IsFalse(page.HasMoreItems);
         page.Filters.CurrentFilterId = filter;
         page.SearchText = "First";
         Assert.IsFalse(page.HasMoreItems);
         page.SearchText = string.Empty;
-        Assert.IsTrue(page.HasMoreItems);
+        Assert.IsFalse(page.HasMoreItems);
         page.LoadMore();
         await page.CurrentLoad;
 

@@ -6,7 +6,7 @@ using BaldBeardedBuilder.CmdPal.GitHub.Api;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Auth;
 
-internal sealed class AuthService
+internal sealed partial class AuthService : IDisposable
 {
     public static readonly TimeSpan BrowserSignInTimeout = TimeSpan.FromMinutes(5);
 
@@ -17,6 +17,8 @@ internal sealed class AuthService
     private readonly Func<LoopbackCallbackListener> _listenerFactory;
     private readonly Lock _lock = new();
     private GitHubAccount? _currentAccount;
+    private readonly List<IAccountSubscription> _subscriptions = [];
+    private HttpClient? _ownedHttp;
 
     internal const string OAuthNotConfiguredMessage = "This build doesn't have a GitHub OAuth app configured. See CONTRIBUTING.md to set one up.";
 
@@ -25,13 +27,15 @@ internal sealed class AuthService
         IGitHubAuthClient client,
         IBrowserLauncher browser,
         OAuthOptions options,
-        Func<LoopbackCallbackListener>? listenerFactory = null)
+        Func<LoopbackCallbackListener>? listenerFactory = null,
+        HttpClient? ownedHttpClient = null)
     {
         _store = store;
         _client = client;
         _browser = browser;
         _options = options;
         _listenerFactory = listenerFactory ?? (() => new LoopbackCallbackListener());
+        _ownedHttp = ownedHttpClient;
         _currentAccount = store.Load();
     }
 
@@ -52,11 +56,37 @@ internal sealed class AuthService
 
     public bool IsOAuthConfigured => _options.IsConfigured;
 
-    public static AuthService CreateDefault() => new(
-        new PasswordVaultAccountStore(),
-        new GitHubAuthClient(new HttpClient()),
-        new ShellBrowserLauncher(),
-        OAuthOptions.FromAssembly());
+    public static AuthService CreateDefault() => CreateWithOwnedHttp(
+        new PasswordVaultAccountStore(), new HttpClient(), new ShellBrowserLauncher(), OAuthOptions.FromAssembly());
+
+    internal static AuthService CreateWithOwnedHttp(
+        IAccountStore store, HttpClient http, IBrowserLauncher browser, OAuthOptions options) =>
+        new(store, new GitHubAuthClient(http), browser, options) { _ownedHttp = http };
+
+    internal IDisposable Subscribe<T>(T target, Action<T> changed) where T : class
+    {
+        var subscription = new AccountSubscription<T>(this, target, changed);
+        lock (_lock)
+        {
+            _subscriptions.RemoveAll(entry => !entry.IsAlive);
+            _subscriptions.Add(subscription);
+        }
+
+        return subscription;
+    }
+
+    internal void Unsubscribe(IAccountSubscription subscription)
+    {
+        lock (_lock)
+        {
+            _subscriptions.Remove(subscription);
+        }
+    }
+
+    public void Dispose()
+    {
+        Interlocked.Exchange(ref _ownedHttp, null)?.Dispose();
+    }
 
     internal static Uri BuildAuthorizeUri(GitHubHost host, string clientId, Uri redirectUri, string state, string codeChallenge)
     {
@@ -157,9 +187,14 @@ internal sealed class AuthService
     private async Task<GitHubAccount> CompleteSignInAsync(GitHubHost host, string token, CancellationToken cancellationToken)
     {
         var login = await _client.GetLoginAsync(host, token, cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
         var account = new GitHubAccount(host, login, token);
 
-        UpdateAccount(() => _store.Save(account), account);
+        UpdateAccount(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _store.Save(account);
+        }, account);
         return account;
     }
 
@@ -202,6 +237,17 @@ internal sealed class AuthService
             if (changed)
             {
                 AccountChanged?.Invoke(this, EventArgs.Empty);
+                IAccountSubscription[] subscriptions;
+                lock (_lock)
+                {
+                    _subscriptions.RemoveAll(entry => !entry.IsAlive);
+                    subscriptions = [.. _subscriptions];
+                }
+
+                foreach (var subscription in subscriptions)
+                {
+                    subscription.Notify();
+                }
             }
         }
     }

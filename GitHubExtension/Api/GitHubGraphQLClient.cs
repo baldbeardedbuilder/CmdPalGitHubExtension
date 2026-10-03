@@ -4,6 +4,7 @@
 
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Api;
@@ -13,7 +14,7 @@ internal interface IGitHubGraphQLClient
     Task<GraphQLResult> ExecuteAsync(
         GitHubAccount account,
         string query,
-        object? variables,
+        JsonObject? variables,
         CancellationToken cancellationToken,
         string? operationName = null);
 
@@ -30,12 +31,13 @@ internal sealed class GitHubGraphQLClient(HttpClient httpClient) : IGitHubGraphQ
     public async Task<GraphQLResult> ExecuteAsync(
         GitHubAccount account,
         string query,
-        object? variables,
+        JsonObject? variables,
         CancellationToken cancellationToken,
         string? operationName = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(query);
-        using var content = JsonContent.Create(new { query, variables, operationName });
+        using var content = JsonContent.Create(
+            new GraphQLRequest(query, variables, operationName), GitHubJsonContext.Default.GraphQLRequest);
         using var response = await GitHubRest.SendAsync(
             httpClient, account, HttpMethod.Post, account.Host.GraphQLUrl, cancellationToken,
             content: content).ConfigureAwait(false);
@@ -71,7 +73,7 @@ internal sealed class GitHubGraphQLClient(HttpClient httpClient) : IGitHubGraphQ
             }
             """;
         var result = await ExecuteAsync(
-            account, query, new { owner = parts[0], name = parts[1], number },
+            account, query, new JsonObject { ["owner"] = parts[0], ["name"] = parts[1], ["number"] = number },
             cancellationToken, "NodeId").ConfigureAwait(false);
 
         var nodeId = result.Data is { } data

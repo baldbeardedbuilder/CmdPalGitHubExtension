@@ -34,3 +34,38 @@ jobs:
 
       - name: Test
         run: dotnet test GitHubExtension.Tests/GitHubExtension.Tests.csproj -r win-x64 --no-build
+
+      - name: Test Release
+        run: dotnet test GitHubExtension.Tests\GitHubExtension.Tests.csproj -c Release -r win-x64
+
+  publish-release:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rid: [win-x64, win-arm64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.x
+
+      - name: Publish unsigned Native AOT MSIX
+        shell: pwsh
+        run: |
+          dotnet publish GitHubExtension\GitHubExtension.csproj -c Release -r ${{ matrix.rid }} /p:PublishProfile=${{ matrix.rid }} /p:AppxPackageSigningEnabled=false
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\GitHubExtension.JsonSmoke\Verify-NativePackage.ps1 -RuntimeIdentifier ${{ matrix.rid }}
+
+      - name: Publish and run native JSON smoke checks
+        if: matrix.rid == 'win-x64'
+        shell: pwsh
+        run: |
+          dotnet publish GitHubExtension.JsonSmoke\GitHubExtension.JsonSmoke.csproj -c Release -r win-x64 -o GitHubExtension.JsonSmoke\bin\native
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\GitHubExtension.JsonSmoke\bin\native\GitHubExtension.JsonSmoke.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
