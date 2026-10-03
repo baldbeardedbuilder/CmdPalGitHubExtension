@@ -115,14 +115,6 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
             MarkAsRead(item);
         }
 
-        if (item.Notification.SubjectType == "Issue"
-            && item.Notification.SubjectApiUrl is { } issueApiUrl
-            && _auth.CurrentAccount is { } account
-            && _issueDetails is { } details)
-        {
-            return details.Open(account, issueApiUrl, item.Notification.RepositoryFullName);
-        }
-
         _browser.Open(item.WebUrl);
         return CommandResult.Dismiss();
     }
@@ -295,6 +287,23 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
                 foreach (var notification in result.Notifications.Where(n => known.Add(n.Id)))
                 {
                     var item = new NotificationItem(this, notification, NotificationFormatting.WebUrl(account.Host, notification), _browser, now);
+                    if (_issueDetails is { } issueDetails
+                        && notification.SubjectType == "Issue"
+                        && notification.SubjectApiUrl is { } issueApiUrl)
+                    {
+                        item.Command = issueDetails.ForNotification(
+                            notification.Id,
+                            issueApiUrl,
+                            notification.RepositoryFullName,
+                            () =>
+                            {
+                                if (item.Unread)
+                                {
+                                    MarkAsRead(item);
+                                }
+                            });
+                    }
+
                     if (_subjectCache.TryGetValue(notification.Id, out var cached) && cached.UpdatedAt == notification.UpdatedAt)
                     {
                         item.ApplySubject(cached.Details);

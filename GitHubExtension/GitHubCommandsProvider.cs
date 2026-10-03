@@ -58,9 +58,11 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         issuesClient ??= new IssuesClient(Http());
         _issueDetailsPage = new IssueDetailsPage(auth, issuesClient, browser);
         _repositoryIssuesPage = new RepositoryIssuesPage(auth, issuesClient, browser);
-        _repositoryPullRequestsPage = new RepositoryPullRequestsPage(auth, pullRequestsClient ?? new PullRequestsClient(Http()), browser);
+        _repositoryPullRequestsPage = new RepositoryPullRequestsPage(
+            auth, pullRequestsClient ?? new PullRequestsClient(Http()), browser, mergeClient: new PullRequestMergeClient(Http()));
         _notificationsPage = new NotificationsPage(auth, notificationsClient ?? new NotificationsClient(Http()), browser, issueDetails: _issueDetailsPage);
-        _agentsPage = new AgentsPage(auth, agentsClient ?? new AgentsClient(Http()), browser);
+        agentsClient ??= new AgentsClient(Http());
+        _agentsPage = new AgentsPage(auth, agentsClient, browser);
         _actionsPage = new ActionsPage(auth, actionsClient ?? new ActionsClient(Http()), browser);
         _reposPage = new ReposPage(
             auth,
@@ -68,7 +70,8 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
             browser,
             _repositoryIssuesPage,
             _repositoryPullRequestsPage,
-            actions: _actionsPage);
+            actions: _actionsPage,
+            agentsClient: agentsClient);
         codespacesClient ??= new CodespacesClient(Http());
         _createCodespacePage = new CreateCodespacePage(auth, codespacesClient, browser);
         _codespacesPage = new CodespacesPage(auth, codespacesClient, browser, createPage: _createCodespacePage);

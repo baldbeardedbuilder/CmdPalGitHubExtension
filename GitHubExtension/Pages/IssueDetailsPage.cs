@@ -22,6 +22,8 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
     private Uri? _issueApiUrl;
     private GitHubIssue? _issue;
     private string? _repository;
+    private (Uri ApiUrl, string Repository, Action OnOpened)? _notification;
+    private bool _notificationActivated;
     private int _generation;
     private CancellationTokenSource? _loadCts;
     private volatile bool _disposed;
@@ -29,6 +31,11 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
     private Task _currentLoad = Task.CompletedTask;
 
     public IssueDetailsPage(AuthService auth, IIssuesClient client, IBrowserLauncher browser)
+        : this(auth, client, browser, listenForAccountChanges: true)
+    {
+    }
+
+    private IssueDetailsPage(AuthService auth, IIssuesClient client, IBrowserLauncher browser, bool listenForAccountChanges)
     {
         _auth = auth;
         _client = client;
@@ -38,15 +45,28 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
         Title = "Issue details";
         Icon = Icons.Issues;
         _form = new IssueDetailsForm(this, IssueDetailsCards.SignedOut());
-        _auth.AccountChanged += OnAccountChanged;
+        if (listenForAccountChanges)
+        {
+            _auth.AccountChanged += OnAccountChanged;
+        }
     }
 
     public override IContent[] GetContent()
     {
+        ActivateNotification();
         lock (_lock)
         {
             return [_form];
         }
+    }
+
+    internal IssueDetailsPage ForNotification(string notificationId, Uri issueApiUrl, string repository, Action onOpened)
+    {
+        return new IssueDetailsPage(_auth, _client, _browser, listenForAccountChanges: false)
+        {
+            Id = $"{PageId}.{Uri.EscapeDataString(notificationId)}",
+            _notification = (issueApiUrl, repository, onOpened),
+        };
     }
 
     internal Task CurrentLoad
@@ -62,13 +82,19 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
 
     internal ICommandResult Open(GitHubAccount account, Uri issueApiUrl, string repository)
     {
+        LoadIssue(account, issueApiUrl, repository);
+        return CommandResult.GoToPage(new GoToPageArgs { PageId = PageId });
+    }
+
+    internal void LoadIssue(GitHubAccount account, Uri issueApiUrl, string repository)
+    {
         int generation;
         CancellationToken token;
         lock (_lock)
         {
             if (_disposed)
             {
-                return CommandResult.KeepOpen();
+                return;
             }
 
             CancelLoad();
@@ -86,13 +112,11 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
         {
             if (_disposed || generation != _generation)
             {
-                return CommandResult.KeepOpen();
+                return;
             }
 
             _currentLoad = Task.Run(() => LoadAsync(account, issueApiUrl, repository, generation, token));
         }
-
-        return CommandResult.GoToPage(new GoToPageArgs { PageId = PageId });
     }
 
     internal ICommandResult HandleSubmit(string action)
@@ -123,11 +147,36 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
 
             if (apiUrl is not null && repository is not null)
             {
-                return Open(account, apiUrl, repository);
+                LoadIssue(account, apiUrl, repository);
             }
         }
 
         return CommandResult.KeepOpen();
+    }
+
+    private void ActivateNotification()
+    {
+        (Uri ApiUrl, string Repository, Action OnOpened)? notification;
+        lock (_lock)
+        {
+            if (_notificationActivated || _notification is not { } pending)
+            {
+                return;
+            }
+
+            _notificationActivated = true;
+            notification = pending;
+        }
+
+        if (_auth.CurrentAccount is { } account)
+        {
+            notification.Value.OnOpened();
+            LoadIssue(account, notification.Value.ApiUrl, notification.Value.Repository);
+        }
+        else
+        {
+            OnAccountChanged(this, EventArgs.Empty);
+        }
     }
 
     private async Task LoadAsync(GitHubAccount account, Uri issueApiUrl, string repository, int generation, CancellationToken token)

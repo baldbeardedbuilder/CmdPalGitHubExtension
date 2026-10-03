@@ -37,11 +37,10 @@ public class IssueDetailsPageTests
         var browser = new FakeBrowser(_ => null);
         var page = new IssueDetailsPage(auth, client.Object, browser);
 
-        var result = page.Open(Account, issueApiUrl, "octo/tool");
+        page.LoadIssue(Account, issueApiUrl, "octo/tool");
         await page.CurrentLoad;
         page.HandleSubmit(IssueDetailsActions.OpenInBrowser);
 
-        Assert.IsNotNull(result);
         Assert.AreEqual(issue.WebUrl, browser.LastOpened);
         client.Verify(c => c.GetIssueAsync(Account, issueApiUrl, It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -56,7 +55,7 @@ public class IssueDetailsPageTests
         var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(), new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
         var page = new IssueDetailsPage(auth, client.Object, new FakeBrowser(_ => null));
 
-        page.Open(Account, issueApiUrl, "octo/tool");
+        page.LoadIssue(Account, issueApiUrl, "octo/tool");
         await page.CurrentLoad;
 
         var content = (FormContent)page.GetContent().Single();
@@ -112,7 +111,7 @@ public class IssueDetailsPageTests
         var notificationClient = new Mock<INotificationsClient>();
         notificationClient.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new NotificationsPageResult(
-                [new GitHubNotification("thread", issue.Title, "Issue", issueApiUrl, "octo/tool", null, "subscribed", false, issue.CreatedAt)],
+                [new GitHubNotification("thread", issue.Title, "Issue", issueApiUrl, "octo/tool", null, "subscribed", true, issue.CreatedAt)],
                 null));
         notificationClient.Setup(c => c.GetSubjectAsync(Account, issueApiUrl, It.IsAny<CancellationToken>()))
             .ReturnsAsync((SubjectDetails?)null);
@@ -123,10 +122,24 @@ public class IssueDetailsPageTests
 
         notificationsPage.GetItems();
         await notificationsPage.CurrentLoad;
-        ((InvokableCommand)notificationsPage.GetItems().Single().Command!).Invoke();
-        await detailsPage.CurrentLoad;
+        var item = (NotificationItem)notificationsPage.GetItems().Single();
+        var destinationPage = (IssueDetailsPage)item.Command!;
+        destinationPage.GetContent();
+        await destinationPage.CurrentLoad;
+        await WaitFor(() => notificationClient.Invocations.Any(i => i.Method.Name == nameof(INotificationsClient.MarkAsReadAsync)));
 
+        Assert.IsFalse(item.Unread);
         Assert.IsNull(browser.LastOpened);
         issueClient.Verify(c => c.GetIssueAsync(Account, issueApiUrl, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    private static async Task WaitFor(Func<bool> condition)
+    {
+        for (var i = 0; i < 100 && !condition(); i++)
+        {
+            await Task.Delay(10);
+        }
+
+        Assert.IsTrue(condition());
     }
 }

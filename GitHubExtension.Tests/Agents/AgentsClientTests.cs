@@ -15,6 +15,7 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Tests.Agents;
 public sealed class AgentsClientTests
 {
     private static readonly GitHubAccount Account = new(GitHubHost.GitHubDotCom, "octocat", "test-token");
+    private static readonly string[] CreateOnly = ["POST"];
     private const string TaskJson = """
         {
           "id": "task-1",
@@ -249,6 +250,110 @@ public sealed class AgentsClientTests
     }
 
     [TestMethod]
+    public async Task StartTaskAsync_ListsForTheRepositoryAndPostsOptionalChoices()
+    {
+        var requests = new List<(string Method, string Path, string Body, string Version)>();
+        using var handler = new RequestHandler(async request =>
+        {
+            var body = request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(TestContext.CancellationToken);
+            var version = request.Headers.GetValues("X-GitHub-Api-Version").Single();
+            requests.Add((request.Method.Method, request.RequestUri!.PathAndQuery, body, version));
+            return request.Method == HttpMethod.Get
+                ? Response(HttpStatusCode.OK, """{"tasks":[]}""")
+                : Response(HttpStatusCode.Created, """
+                    {"id":"created-1","name":"Add tests","state":"queued","html_url":"https://github.com/copilot/tasks/created-1"}
+                    """);
+        });
+        using var http = new HttpClient(handler);
+        var client = new AgentsClient(http);
+
+        Assert.IsEmpty(await client.GetRepositoryTasksAsync(Account, "octocat/hello", TestContext.CancellationToken));
+        var task = await client.StartTaskAsync(Account, "octocat/hello",
+            new AgentTaskRequest(" Add tests ", "custom-model", "test-writer", "main", "feature/tests", true),
+            TestContext.CancellationToken);
+
+        Assert.AreEqual("created-1", task.Id);
+        Assert.AreEqual("GET", requests[0].Method);
+        Assert.Contains("/agents/repos/octocat/hello/tasks?per_page=100&sort=created_at&direction=desc", requests[0].Path);
+        Assert.AreEqual("POST", requests[1].Method);
+        Assert.AreEqual("/agents/repos/octocat/hello/tasks", requests[1].Path);
+        Assert.AreEqual("2026-03-10", requests[0].Version);
+        Assert.AreEqual("2026-03-10", requests[1].Version);
+        using var payload = JsonDocument.Parse(requests[1].Body);
+        Assert.AreEqual("Add tests", payload.RootElement.GetProperty("prompt").GetString());
+        Assert.AreEqual("custom-model", payload.RootElement.GetProperty("model").GetString());
+        Assert.AreEqual("test-writer", payload.RootElement.GetProperty("custom_agent").GetString());
+        Assert.AreEqual("main", payload.RootElement.GetProperty("base_ref").GetString());
+        Assert.AreEqual("feature/tests", payload.RootElement.GetProperty("head_ref").GetString());
+        Assert.IsTrue(payload.RootElement.GetProperty("create_pull_request").GetBoolean());
+    }
+
+    [TestMethod]
+    public async Task StartTaskAsync_OmitsOptionalEmptyValuesAndRejectsInvalidDrafts()
+    {
+        var requests = new List<string>();
+        using var handler = new RequestHandler(async request =>
+        {
+            requests.Add(request.Method.Method);
+            if (request.Method == HttpMethod.Get)
+            {
+                return Response(HttpStatusCode.OK, """{"tasks":[]}""");
+            }
+
+            var body = await request.Content!.ReadAsStringAsync(TestContext.CancellationToken);
+            using var json = JsonDocument.Parse(body);
+            Assert.IsFalse(json.RootElement.TryGetProperty("model", out _));
+            Assert.IsFalse(json.RootElement.TryGetProperty("custom_agent", out _));
+            Assert.IsFalse(json.RootElement.TryGetProperty("base_ref", out _));
+            Assert.IsFalse(json.RootElement.TryGetProperty("head_ref", out _));
+            return Response(HttpStatusCode.Created, """{"id":"new","state":"queued"}""");
+        });
+        using var http = new HttpClient(handler);
+        var client = new AgentsClient(http);
+
+        await Assert.ThrowsExactlyAsync<GitHubApiException>(() => client.StartTaskAsync(Account, "octocat/hello",
+            new AgentTaskRequest(" ", null, null, null, null, false), TestContext.CancellationToken));
+        await Assert.ThrowsExactlyAsync<GitHubApiException>(() => client.StartTaskAsync(Account, "not-a-repository",
+            new AgentTaskRequest("prompt", null, null, null, null, false), TestContext.CancellationToken));
+        Assert.IsEmpty(requests);
+
+        var task = await client.StartTaskAsync(Account, "octocat/hello",
+            new AgentTaskRequest("prompt", "  ", "", "", null, false), TestContext.CancellationToken);
+        Assert.AreEqual("new", task.Id);
+        CollectionAssert.AreEqual(CreateOnly, requests);
+    }
+
+    [TestMethod]
+    public async Task StartTaskAsync_ForbiddenExplainsPlanAndWritePermission()
+    {
+        using var handler = new RequestHandler(request => Task.FromResult(request.Method == HttpMethod.Get
+            ? Response(HttpStatusCode.OK, """{"tasks":[]}""")
+            : Response(HttpStatusCode.Forbidden, "{}")));
+        using var http = new HttpClient(handler);
+        var client = new AgentsClient(http);
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            client.StartTaskAsync(Account, "octocat/hello", new AgentTaskRequest("prompt", null, null, null, null, false),
+                TestContext.CancellationToken));
+
+        Assert.Contains("Copilot Business or Enterprise", error.Message);
+        Assert.Contains("Agent tasks: read and write", error.Message);
+    }
+
+    [TestMethod]
+    public async Task StartTaskAsync_TimeoutIsMarkedAsAnUnknownOutcome()
+    {
+        using var handler = new RequestHandler(request => request.Method == HttpMethod.Get
+            ? Task.FromResult(Response(HttpStatusCode.OK, """{"tasks":[]}"""))
+            : Task.FromException<HttpResponseMessage>(new TaskCanceledException("request timed out")));
+        using var http = new HttpClient(handler);
+        var error = await Assert.ThrowsExactlyAsync<AgentTaskOutcomeUnknownException>(() =>
+            new AgentsClient(http).StartTaskAsync(Account, "octocat/hello",
+                new AgentTaskRequest("prompt", null, null, null, null, false), TestContext.CancellationToken));
+
+        Assert.Contains("Check the repository's agent tasks", error.Message);
+    }
+
+    [TestMethod]
     public void ParseTasks_UsesCreatedAtWhenUpdatedAtIsAbsent()
     {
         using var json = JsonDocument.Parse($"{{\"tasks\":[{TaskJson.Replace("\"updated_at\": \"2026-10-02T11:48:00Z\"", "\"updated_at\": null", StringComparison.Ordinal)}]}}");
@@ -401,6 +506,16 @@ public sealed class AgentsClientTests
                 string.Join(",", request.Headers.Accept), request.Headers.GetValues("X-GitHub-Api-Version").Single(),
                 request.Headers.UserAgent.Count > 0));
             return System.Threading.Tasks.Task.FromResult(respond(request));
+        }
+
+    }
+
+    private sealed class RequestHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> respond) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return await respond(request).ConfigureAwait(false);
         }
     }
 

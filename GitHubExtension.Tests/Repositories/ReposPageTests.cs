@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using BaldBeardedBuilder.CmdPal.GitHub.Actions;
+using BaldBeardedBuilder.CmdPal.GitHub.Agents;
 using BaldBeardedBuilder.CmdPal.GitHub.Commands;
 using BaldBeardedBuilder.CmdPal.GitHub.Issues;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
@@ -182,6 +183,21 @@ public class ReposPageTests
         Assert.AreEqual("o/a", repository.Title);
         Assert.AreEqual("Search in o/a...", repository.PlaceholderText);
         CollectionAssert.AreEqual(RepositorySections, repository.GetItems().Select(i => i.Title).ToArray());
+    }
+
+    [TestMethod]
+    public void RepositoryMenu_OffersAgentTaskCreationWhenClientIsAvailable()
+    {
+        var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(),
+            new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
+        using var page = new RepositoryPage(new FakeBrowser(_ => null), null, RepoFormattingTests.Repo("octocat/hello"),
+            auth: auth, agentsClient: Mock.Of<IAgentsClient>());
+
+        var create = Assert.IsInstanceOfType<CreateAgentTaskPage>(
+            page.GetItems().Single(item => item.Title == "Start Copilot task").Command);
+
+        Assert.AreEqual("Start Agent Task", create.Name);
+        Assert.Contains("octocat%2Fhello", create.Id);
     }
 
     [TestMethod]
