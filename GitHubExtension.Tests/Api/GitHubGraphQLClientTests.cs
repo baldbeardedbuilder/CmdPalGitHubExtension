@@ -4,6 +4,7 @@
 
 using System.Net;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Tests.Api;
 
@@ -39,12 +40,36 @@ public sealed class GitHubGraphQLClientTests
         }));
 
         var result = await new GitHubGraphQLClient(http).ExecuteAsync(
-            account, query, new { id = "opaque\"node\nid" }, TestContext.CancellationToken, "Draft");
+            account, query, new JsonObject { ["id"] = "opaque\"node\nid" }, TestContext.CancellationToken, "Draft");
 
         Assert.IsTrue(result.IsSuccess);
         Assert.IsFalse(result.HasPartialData);
         Assert.IsNotNull(result.Data);
         Assert.IsEmpty(result.Errors);
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_PreservesNestedVariableTypesAndNullOperation()
+    {
+        using var http = new HttpClient(new StubHandler(async (request, ct) =>
+        {
+            using var json = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
+            var root = json.RootElement;
+            Assert.AreEqual(JsonValueKind.Null, root.GetProperty("operationName").ValueKind);
+            var input = root.GetProperty("variables").GetProperty("input");
+            var items = input.GetProperty("items");
+            Assert.AreEqual("quote\"\\\n\u263a", items[0].GetString());
+            Assert.AreEqual(42, items[1].GetInt32());
+            Assert.IsFalse(items[2].GetBoolean());
+            Assert.AreEqual(JsonValueKind.Null, items[3].ValueKind);
+            return JsonResponse("""{"data":{"ok":true}}""");
+        }));
+
+        var result = await new GitHubGraphQLClient(http).ExecuteAsync(Account, "query { viewer { id } }",
+            new JsonObject { ["input"] = new JsonObject { ["items"] = new JsonArray("quote\"\\\n\u263a", 42, false, null) } },
+            TestContext.CancellationToken);
+
+        Assert.IsTrue(result.IsSuccess);
     }
 
     [TestMethod]

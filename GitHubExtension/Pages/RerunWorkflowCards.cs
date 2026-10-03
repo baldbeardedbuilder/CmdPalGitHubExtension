@@ -2,8 +2,8 @@
 // Bald Bearded Builder LLC licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System.Text.Json;
 using BaldBeardedBuilder.CmdPal.GitHub.Actions;
+using BaldBeardedBuilder.CmdPal.GitHub.Api;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 
@@ -28,7 +28,7 @@ internal static class RerunWorkflowCards
         Text("A request being accepted does not mean the rerun has finished. Refresh to check the attempt and status."),
         """{ "type": "ActionSet", "actions": [{ "type": "Action.Submit", "title": "Refresh status", "associatedInputs": "none", "data": { "action": "refresh" } }] }""");
 
-    private static string Text(string text) => $$"""{ "type": "TextBlock", "text": {{JsonSerializer.Serialize(text)}}, "wrap": true }""";
+    private static string Text(string text) => $$"""{ "type": "TextBlock", "text": {{GitHubJson.String(text)}}, "wrap": true }""";
 
     private static string Card(params string[] elements) => $$"""
         { "$schema": "http://adaptivecards.io/schemas/adaptive-card.json", "type": "AdaptiveCard", "version": "1.6",

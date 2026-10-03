@@ -5,6 +5,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using BaldBeardedBuilder.CmdPal.GitHub.Api;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using static BaldBeardedBuilder.CmdPal.GitHub.Api.GitHubRest;
 
@@ -103,7 +104,7 @@ internal sealed class PullRequestMergeClient(HttpClient httpClient) : IPullReque
         }
 
         using var content = new StringContent(
-            $$"""{"sha":{{JsonSerializer.Serialize(target.HeadSha)}},"merge_method":{{JsonSerializer.Serialize(method)}},"merge_action":"default","bypass_rules":false}""",
+            $$"""{"sha":{{GitHubJson.String(target.HeadSha)}},"merge_method":{{GitHubJson.String(method)}},"merge_action":"default","bypass_rules":false}""",
             Encoding.UTF8, "application/json");
         using var response = await SendAsync(
             httpClient, account, HttpMethod.Put, new Uri(PullUri(account, target.Repository, target.Number).AbsoluteUri + "/merge-async"),

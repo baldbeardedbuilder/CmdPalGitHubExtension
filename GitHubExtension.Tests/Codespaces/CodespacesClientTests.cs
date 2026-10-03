@@ -497,6 +497,37 @@ public class CodespacesClientTests
     }
 
     [TestMethod]
+    [DataRow(null)]
+    [DataRow("")]
+    [DataRow(" \t ")]
+    [DataRow(" feature/\"branch\\\n\t\u263a ")]
+    public async Task CreateCodespaceAsync_PreservesLongIdAndOptionalEscapedBranch(string? branch)
+    {
+        using var handler = new CreateCodespaceHandler(
+            (HttpStatusCode.OK, """{"id":9223372036854775807}"""),
+            (HttpStatusCode.Created, CodespaceJson));
+        using var http = new HttpClient(handler);
+
+        await new CodespacesClient(http).CreateCodespaceAsync(Account, "octocat/hello", branch, TestContext.CancellationToken);
+
+        Assert.HasCount(2, handler.Requests);
+        using var body = JsonDocument.Parse(handler.Requests[1].Body!);
+        var root = body.RootElement;
+        Assert.AreEqual(JsonValueKind.Number, root.GetProperty("repository_id").ValueKind);
+        Assert.AreEqual(long.MaxValue, root.GetProperty("repository_id").GetInt64());
+        if (string.IsNullOrWhiteSpace(branch))
+        {
+            Assert.IsFalse(root.TryGetProperty("ref", out _));
+            Assert.AreEqual(1, root.EnumerateObject().Count());
+        }
+        else
+        {
+            Assert.AreEqual(branch.Trim(), root.GetProperty("ref").GetString());
+            Assert.AreEqual(2, root.EnumerateObject().Count());
+        }
+    }
+
+    [TestMethod]
     public async Task CreateCodespaceAsync_RejectsInvalidRepositoryBeforeSendingRequest()
     {
         using var handler = new CreateCodespaceHandler((HttpStatusCode.OK, """{"id":12345}"""));

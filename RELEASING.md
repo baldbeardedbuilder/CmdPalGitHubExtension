@@ -2,6 +2,32 @@
 
 Releases are published by [`.github/workflows/release.yml`](.github/workflows/release.yml) when a version tag matching `v*` is pushed. The workflow builds and tests the application, creates signed MSIX packages for GitHub and WinGet, and submits a multi-architecture package to the Microsoft Store.
 
+## Supported publishing configuration
+
+Release packages use .NET 10 Native AOT, trimming, and self-contained deployment for `win-x64` and `win-arm64`. Pass the matching publish profile to generate the MSIX. Both profiles disable single-file publishing and leave signing to the release workflow. Debug builds are for development, not release compatibility checks.
+
+You can validate unsigned packages without release credentials from a Visual Studio Developer PowerShell with the C++ build tools and Windows SDK available:
+
+```powershell
+dotnet build GitHubExtension\GitHubExtension.csproj -r win-x64
+dotnet test GitHubExtension.Tests\GitHubExtension.Tests.csproj -r win-x64
+dotnet test GitHubExtension.Tests\GitHubExtension.Tests.csproj -c Release -r win-x64
+dotnet publish GitHubExtension\GitHubExtension.csproj -c Release -r win-x64 /p:PublishProfile=win-x64 /p:AppxPackageSigningEnabled=false
+dotnet publish GitHubExtension\GitHubExtension.csproj -c Release -r win-arm64 /p:PublishProfile=win-arm64 /p:AppxPackageSigningEnabled=false
+& .\GitHubExtension.JsonSmoke\Verify-NativePackage.ps1 -RuntimeIdentifier win-x64
+& .\GitHubExtension.JsonSmoke\Verify-NativePackage.ps1 -RuntimeIdentifier win-arm64
+dotnet publish GitHubExtension.JsonSmoke\GitHubExtension.JsonSmoke.csproj -c Release -r win-x64 -o GitHubExtension.JsonSmoke\bin\native
+& .\GitHubExtension.JsonSmoke\bin\native\GitHubExtension.JsonSmoke.exe
+```
+
+MSIX files are written under `GitHubExtension\AppPackages`. If native linking cannot locate Visual Studio tools, initialize the installed Visual Studio developer environment and ensure its Installer directory (containing `vswhere.exe`) is on `PATH`. On ARM64 development machines, select the matching target architecture when initializing that environment.
+
+PR CI runs Debug and Release tests, publishes unsigned packages for both architectures, verifies that each MSIX contains a native executable of the expected architecture, and executes the x64 native JSON smoke check. The smoke project links the production JSON metadata, Codespaces and Agent Task cards, workflow cards, and their models. It verifies escaping, optional branch/option omission, numeric repository IDs, action payloads, and GraphQL variable types with reflection serialization disabled. It never makes network requests or creates Codespaces, agent tasks, merges, or workflow reruns.
+
+The investigation for #67 reproduced `IL2026` and `IL3050` errors in a Release build, including Codespaces cards and creation requests. Generated metadata now covers these paths and the related Agent Tasks, GraphQL, merge, and workflow JSON. Keep the analyzers enabled rather than suppressing these failures or disabling AOT.
+
+The native smoke check validates card JSON, not the Command Palette renderer. Before distributing an installed release, open the Create Codespace form in Command Palette and confirm its inputs, optional branch, validation message, and actions render correctly. Leave the branch blank and use a malformed repository to check local validation without sending a creation request. Do not submit a valid creation request just to verify rendering. Unsigned publishing does not verify package signing, Store submission, ARM64 execution, or installed UI behavior.
+
 ## Configure GitHub Actions secrets
 
 Add these as repository secrets under **Settings > Secrets and variables > Actions**. The workflow does not declare a GitHub Actions environment, so repository secrets or accessible organization secrets are appropriate.
