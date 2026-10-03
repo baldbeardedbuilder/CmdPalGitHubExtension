@@ -23,6 +23,12 @@ Repository issue lists start with **Open** selected. Switch to **Closed** to see
 
 Repository pull request lists start with **Open** selected, including drafts. Switch to **Closed** to see closed and merged pull requests. Text search narrows the selected state, and more results load as you scroll.
 
+Use **More > Merge pull request** on an open, non-draft PR to load a confirmation with the account, repository, target branch, expected head SHA, and enabled direct-merge methods. Confirming uses GitHub's async merge API, with repository rules enforced and bypass disabled. If the branch has a merge queue, GitHub enqueues the PR instead and the queue controls the merge method. The head SHA, branch, methods, and stack membership are checked again before submission.
+
+**Pending** means processing, not merged. Use **Check status** to retrieve the async request's result without submitting another merge. **Enqueued** is not **Merged**: follow the queue on GitHub for the final outcome. **Failed** shows the failure returned by GitHub. After a timeout or unknown result, check GitHub before trying another merge. Cancelling or switching accounts only stops local work; it does not undo a submitted merge or remove a queue entry. Refresh the PR list to see its latest state.
+
+Merging currently requires github.com and repository write access; fine-grained tokens need **Contents: write**. Unverified Enterprise Server hosts and unavailable APIs never fall back to the legacy `/merge` operation. Stack merges are deliberately blocked because the async API automatically includes every open downstack PR and provides no opt-out. Merge stacks on GitHub instead.
+
 Actions lists start with **Running** selected, including queued runs; switch to **Succeeded** for successful runs or **Failed** for every other completed outcome, including cancelled and skipped runs. Each filter has a status icon, text search narrows the selected group, and more results load as you scroll.
 
 Codespaces requires a github.com account and the `codespace` token scope. It isn't available on GitHub Enterprise Server. Use **More > Close Codespace** on an active codespace to stop it without deleting its files, or **More > Start Codespace** on a stopped one to start it. The list shows the state GitHub returns, and **Refresh** checks on a start or shutdown. Starting a codespace doesn't open it in your browser. Opening a stopped codespace still takes you to GitHub's browser editor, where it can start the environment.

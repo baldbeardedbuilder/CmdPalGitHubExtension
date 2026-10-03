@@ -55,7 +55,8 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         issuesClient ??= new IssuesClient(Http());
         _issueDetailsPage = new IssueDetailsPage(auth, issuesClient, browser);
         _repositoryIssuesPage = new RepositoryIssuesPage(auth, issuesClient, browser);
-        _repositoryPullRequestsPage = new RepositoryPullRequestsPage(auth, pullRequestsClient ?? new PullRequestsClient(Http()), browser);
+        _repositoryPullRequestsPage = new RepositoryPullRequestsPage(
+            auth, pullRequestsClient ?? new PullRequestsClient(Http()), browser, mergeClient: new PullRequestMergeClient(Http()));
         _notificationsPage = new NotificationsPage(auth, notificationsClient ?? new NotificationsClient(Http()), browser, issueDetails: _issueDetailsPage);
         _agentsPage = new AgentsPage(auth, agentsClient ?? new AgentsClient(Http()), browser);
         _actionsPage = new ActionsPage(auth, actionsClient ?? new ActionsClient(Http()), browser);
