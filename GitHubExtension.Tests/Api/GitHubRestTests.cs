@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Net;
+using System.Net.Http.Json;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Tests.Api;
@@ -313,6 +314,98 @@ public sealed class GitHubRestTests
             GitHubRest.SendMutationAsync(http, Account, HttpMethod.Post, Endpoint, TestContext.CancellationToken, logError: _ => { }));
 
         Assert.AreEqual(unknown, error.OutcomeUnknown);
+    }
+
+    [TestMethod]
+    [DataRow("/graphql", "query { viewer { id } }")]
+    [DataRow("/graphql", "{ viewer { id } }")]
+    [DataRow("/api/graphql", "query NodeId($number: Int!) { node(id: $number) { id } }")]
+    public async Task SendAsync_GraphQLQueryTimeoutIsSafeToRetry(string path, string query)
+    {
+        using var http = new HttpClient(new StubHandler(_ => throw new TaskCanceledException()));
+        using var content = JsonContent.Create(new { query });
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            GitHubRest.SendAsync(http, Account, HttpMethod.Post, new Uri("https://api.github.com" + path),
+                TestContext.CancellationToken, content: content, logError: _ => { }));
+
+        Assert.AreEqual("The request to api.github.com timed out. Try again.", error.Message);
+        Assert.IsFalse(error.OutcomeUnknown);
+    }
+
+    [TestMethod]
+    [DataRow("mutation { updateIssue(input: {}) { clientMutationId } }")]
+    [DataRow("query Read { viewer { id } } mutation Write { updateIssue(input: {}) { clientMutationId } }")]
+    [DataRow("query { viewer { id } } # mutation stays conservative")]
+    public async Task SendAsync_GraphQLMutationDocumentTimeoutRemainsUnknown(string query)
+    {
+        using var http = new HttpClient(new StubHandler(_ => throw new TaskCanceledException()));
+        using var content = JsonContent.Create(new { query, operationName = "Read" });
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            GitHubRest.SendAsync(http, Account, HttpMethod.Post, new Uri("https://api.github.com/graphql"),
+                TestContext.CancellationToken, content: content, logError: _ => { }));
+
+        Assert.IsTrue(error.OutcomeUnknown);
+        Assert.Contains("before retrying", error.Message);
+    }
+
+    [TestMethod]
+    [DataRow(HttpStatusCode.InternalServerError)]
+    [DataRow(HttpStatusCode.BadGateway)]
+    public async Task SendAsync_GraphQLQueryServerFailureDoesNotImplyUncertainWrite(HttpStatusCode status)
+    {
+        using var http = new HttpClient(new StubHandler(_ => new HttpResponseMessage(status)));
+        using var content = JsonContent.Create(new { query = "query { viewer { id } }" });
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            GitHubRest.SendAsync(http, Account, HttpMethod.Post, new Uri("https://api.github.com/graphql"),
+                TestContext.CancellationToken, content: content, logError: _ => { }));
+
+        Assert.IsFalse(error.OutcomeUnknown);
+    }
+
+    [TestMethod]
+    [DataRow("{}")]
+    [DataRow("not JSON")]
+    [DataRow("""{"query":42}""")]
+    [DataRow("""[{"query":"query { viewer { id } }"}]""")]
+    public async Task SendAsync_UnrecognizedGraphQLBodyStaysConservative(string body)
+    {
+        using var http = new HttpClient(new StubHandler(_ => throw new TaskCanceledException()));
+        using var content = new StringContent(body);
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            GitHubRest.SendAsync(http, Account, HttpMethod.Post, new Uri("https://api.github.com/graphql"),
+                TestContext.CancellationToken, content: content, logError: _ => { }));
+
+        Assert.IsTrue(error.OutcomeUnknown);
+    }
+
+    [TestMethod]
+    public async Task SendMutationAsync_ExplicitMutationDoesNotInferReadOnlyFromBody()
+    {
+        using var http = new HttpClient(new StubHandler(_ => throw new TaskCanceledException()));
+        using var content = JsonContent.Create(new { query = "query { viewer { id } }" });
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            GitHubRest.SendMutationAsync(http, Account, HttpMethod.Post, new Uri("https://api.github.com/graphql"),
+                TestContext.CancellationToken, content: content, logError: _ => { }));
+
+        Assert.IsTrue(error.OutcomeUnknown);
+    }
+
+    [TestMethod]
+    public async Task SendAsync_RestPostWithQueryFieldRemainsMutation()
+    {
+        using var http = new HttpClient(new StubHandler(_ => throw new TaskCanceledException()));
+        using var content = JsonContent.Create(new { query = "query { viewer { id } }" });
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            GitHubRest.SendAsync(http, Account, HttpMethod.Post, Endpoint,
+                TestContext.CancellationToken, content: content, logError: _ => { }));
+
+        Assert.IsTrue(error.OutcomeUnknown);
     }
 
     [TestMethod]

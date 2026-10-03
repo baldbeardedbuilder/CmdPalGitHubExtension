@@ -6,6 +6,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Api;
@@ -48,7 +49,8 @@ internal static class GitHubRest
         string apiVersion = "2022-11-28",
         Action<string>? logError = null,
         HttpContent? content = null,
-        string? timeoutMessage = null)
+        string? timeoutMessage = null,
+        bool? isMutation = null)
     {
         logError ??= LogError;
         EnsureSameHost(account, uri);
@@ -63,27 +65,29 @@ internal static class GitHubRest
         HttpResponseMessage response;
         try
         {
+            isMutation ??= IsMutation(method)
+                && !await IsReadOnlyGraphQLAsync(method, uri, content, cancellationToken).ConfigureAwait(false);
             response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
         }
         catch (HttpRequestException ex)
         {
             logError($"GitHub API error: {method} {LogEndpoint(uri)}; transport={ex.HttpRequestError}.");
             throw new GitHubApiException(
-                IsMutation(method)
+                isMutation ?? IsMutation(method)
                     ? $"The outcome of the request to {uri.Host} is unknown. Refresh to check before retrying."
                     : $"Couldn't reach {uri.Host}. {ex.Message}",
                 ex,
-                outcomeUnknown: IsMutation(method));
+                outcomeUnknown: isMutation ?? IsMutation(method));
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
             logError($"GitHub API error: {method} {LogEndpoint(uri)}; transport=Timeout.");
             throw new GitHubApiException(
-                timeoutMessage ?? (IsMutation(method)
+                timeoutMessage ?? ((isMutation ?? IsMutation(method))
                     ? $"The request to {uri.Host} timed out. Its outcome is unknown. Refresh to check before retrying."
                     : $"The request to {uri.Host} timed out. Try again."),
                 ex,
-                outcomeUnknown: IsMutation(method));
+                outcomeUnknown: isMutation ?? IsMutation(method));
         }
 
         if (!response.IsSuccessStatusCode)
@@ -113,7 +117,7 @@ internal static class GitHubRest
                 HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests => new GitHubApiException("GitHub said no. Your token might be missing a scope, or you hit a rate limit."),
                 _ => new GitHubApiException(
                     $"{account.Host.Name} returned {(int)response.StatusCode} {response.ReasonPhrase}.",
-                    outcomeUnknown: IsMutation(method) && (int)response.StatusCode >= 500),
+                    outcomeUnknown: isMutation == true && (int)response.StatusCode >= 500),
             };
         }
     }
@@ -136,7 +140,7 @@ internal static class GitHubRest
 
         using var response = await SendAsync(
             httpClient, account, method, uri, cancellationToken,
-            apiVersion: apiVersion, logError: logError, content: content, timeoutMessage: timeoutMessage).ConfigureAwait(false);
+            apiVersion: apiVersion, logError: logError, content: content, timeoutMessage: timeoutMessage, isMutation: true).ConfigureAwait(false);
         try
         {
             var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
@@ -176,6 +180,32 @@ internal static class GitHubRest
 
     private static bool IsMutation(HttpMethod method) =>
         method != HttpMethod.Get && method != HttpMethod.Head && method != HttpMethod.Options;
+
+    private static async Task<bool> IsReadOnlyGraphQLAsync(HttpMethod method, Uri uri, HttpContent? content, CancellationToken cancellationToken)
+    {
+        if (method != HttpMethod.Post || content is null || uri.AbsolutePath is not ("/graphql" or "/api/graphql"))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var json = JsonDocument.Parse(await content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+            if (json.RootElement.ValueKind != JsonValueKind.Object || GetString(json.RootElement, "query") is not { } query)
+            {
+                return false;
+            }
+
+            // A document containing any mutation token stays conservative, even when
+            // operationName selects a query or the token occurs in a comment/string.
+            return Regex.IsMatch(query, @"^\s*(?:query\b|\{)", RegexOptions.CultureInvariant)
+                && !Regex.IsMatch(query, @"\bmutation\b", RegexOptions.CultureInvariant);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
 
     public static async Task<JsonDocument> ReadJsonAsync(HttpResponseMessage response, CancellationToken cancellationToken, Action<string>? logError = null)
     {
