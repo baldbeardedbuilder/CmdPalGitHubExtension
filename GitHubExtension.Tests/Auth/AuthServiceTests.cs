@@ -2,7 +2,10 @@
 // Bald Bearded Builder LLC licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using System.Runtime.InteropServices;
 using System.Web;
+
+#pragma warning disable CA2201 // Fault injection deliberately simulates COM failures from Windows Credential Locker.
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Tests.Auth;
 
@@ -21,6 +24,133 @@ public class AuthServiceTests
 
         Assert.IsTrue(auth.IsSignedIn);
         Assert.AreEqual(saved, auth.CurrentAccount);
+    }
+
+    [TestMethod]
+    public void Constructor_VaultLoadFailure_IsNotSignedOut()
+    {
+        var vault = new FakeCredentialVault
+        {
+            FindFailure = _ => new COMException(),
+        };
+
+        Assert.Throws<GitHubAuthException>(() => new AuthService(
+            new PasswordVaultAccountStore(vault), Mock.Of<IGitHubAuthClient>(), FakeBrowser.Approving(), Configured));
+    }
+
+    [TestMethod]
+    public async Task SignInWithTokenAsync_ReplacementWriteFailure_KeepsRecoverableAccount()
+    {
+        var vault = new FakeCredentialVault(AccountStoreTests.Saved);
+        var store = new PasswordVaultAccountStore(vault);
+        var client = new Mock<IGitHubAuthClient>();
+        client.Setup(c => c.GetLoginAsync(It.IsAny<GitHubHost>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(AccountStoreTests.Saved.Login);
+        var auth = new AuthService(store, client.Object, FakeBrowser.Approving(), Configured);
+        var raised = 0;
+        auth.AccountChanged += (_, _) => raised++;
+        vault.AddFailure = (resource, _) =>
+        {
+            if (resource == AccountStoreTests.Resource)
+            {
+                throw new COMException();
+            }
+        };
+
+        await Assert.ThrowsAsync<GitHubAuthException>(() =>
+            auth.SignInWithTokenAsync("github.com", "new-token", TestContext.CancellationToken));
+
+        Assert.AreEqual(AccountStoreTests.Saved, auth.CurrentAccount);
+        Assert.AreEqual(store.Load(), auth.CurrentAccount);
+        Assert.IsTrue(auth.IsSignedIn);
+        Assert.AreEqual(0, raised);
+    }
+
+    [TestMethod]
+    public async Task SignInWithGitHubAsync_CleanupFailure_ReloadsPersistedReplacement()
+    {
+        var vault = new FakeCredentialVault(AccountStoreTests.Saved);
+        var store = new PasswordVaultAccountStore(vault);
+        var client = new Mock<IGitHubAuthClient>();
+        client.Setup(c => c.ExchangeCodeAsync(It.IsAny<GitHubHost>(), Configured, It.IsAny<string>(),
+            It.IsAny<Uri>(), It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync("new-token");
+        client.Setup(c => c.GetLoginAsync(It.IsAny<GitHubHost>(), "new-token", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(AccountStoreTests.Saved.Login);
+        var auth = new AuthService(store, client.Object, FakeBrowser.Approving(), Configured);
+        var raised = 0;
+        auth.AccountChanged += (_, _) =>
+        {
+            raised++;
+            Assert.AreEqual(store.Load(), auth.CurrentAccount);
+        };
+        vault.RemoveFailure = (resource, _) =>
+        {
+            if (resource == AccountStoreTests.RecoveryResource)
+            {
+                throw new COMException();
+            }
+        };
+
+        await Assert.ThrowsAsync<GitHubAuthException>(() => auth.SignInWithGitHubAsync(TestContext.CancellationToken));
+
+        Assert.AreEqual(AccountStoreTests.Replacement, auth.CurrentAccount);
+        Assert.AreEqual(1, raised);
+    }
+
+    [TestMethod]
+    public void SignOut_RemoveFailure_RemainsSignedIn()
+    {
+        var vault = new FakeCredentialVault(AccountStoreTests.Saved);
+        var store = new PasswordVaultAccountStore(vault);
+        var auth = new AuthService(store, Mock.Of<IGitHubAuthClient>(), FakeBrowser.Approving(), Configured);
+        var raised = 0;
+        auth.AccountChanged += (_, _) => raised++;
+        vault.RemoveFailure = (_, _) => throw new COMException();
+
+        Assert.Throws<GitHubAuthException>(auth.SignOut);
+
+        Assert.AreEqual(store.Load(), auth.CurrentAccount);
+        Assert.IsTrue(auth.IsSignedIn);
+        Assert.AreEqual(0, raised);
+    }
+
+    [TestMethod]
+    public void SignOut_PartialClearFailure_ReloadsRemainingAccount()
+    {
+        var vault = new FakeCredentialVault(AccountStoreTests.Saved);
+        var remaining = AccountStoreTests.Saved with { Login = "mona" };
+        vault.Add(AccountStoreTests.Resource, $"{remaining.Login}@{remaining.Host.Name}", remaining.Token);
+        var store = new PasswordVaultAccountStore(vault);
+        var auth = new AuthService(store, Mock.Of<IGitHubAuthClient>(), FakeBrowser.Approving(), Configured);
+        var raised = 0;
+        auth.AccountChanged += (_, _) => raised++;
+        vault.RemoveFailure = (_, userName) =>
+        {
+            if (userName.StartsWith("mona@", StringComparison.Ordinal))
+            {
+                throw new COMException();
+            }
+        };
+
+        Assert.Throws<GitHubAuthException>(auth.SignOut);
+
+        Assert.AreEqual(remaining, auth.CurrentAccount);
+        Assert.AreEqual(store.Load(), auth.CurrentAccount);
+        Assert.AreEqual(1, raised);
+    }
+
+    [TestMethod]
+    public void SignOut_ReloadAlsoFails_PreservesLastKnownAccountAndOriginalError()
+    {
+        var store = new Mock<IAccountStore>();
+        store.SetupSequence(s => s.Load()).Returns(AccountStoreTests.Saved)
+            .Throws(new GitHubAuthException("read failed"));
+        var original = new GitHubAuthException("remove failed");
+        store.Setup(s => s.Clear()).Throws(original);
+        var auth = new AuthService(store.Object, Mock.Of<IGitHubAuthClient>(), FakeBrowser.Approving(), Configured);
+
+        Assert.AreSame(original, Assert.Throws<GitHubAuthException>(auth.SignOut));
+        Assert.AreEqual(AccountStoreTests.Saved, auth.CurrentAccount);
     }
 
     [TestMethod]

@@ -15,59 +15,140 @@ internal interface IAccountStore
     void Clear();
 }
 
+internal interface ICredentialVault
+{
+    IReadOnlyList<string> FindUserNames(string resource);
+
+    string RetrievePassword(string resource, string userName);
+
+    void Add(string resource, string userName, string password);
+
+    void Remove(string resource, string userName);
+}
+
+internal sealed class CredentialVault : ICredentialVault
+{
+    public IReadOnlyList<string> FindUserNames(string resource) =>
+        [.. new PasswordVault().FindAllByResource(resource).Select(credential => credential.UserName)];
+
+    public string RetrievePassword(string resource, string userName)
+    {
+        var credential = new PasswordVault().Retrieve(resource, userName);
+        credential.RetrievePassword();
+        return credential.Password;
+    }
+
+    public void Add(string resource, string userName, string password) =>
+        new PasswordVault().Add(new PasswordCredential(resource, userName, password));
+
+    public void Remove(string resource, string userName)
+    {
+        var vault = new PasswordVault();
+        vault.Remove(vault.Retrieve(resource, userName));
+    }
+}
+
 /// <summary>
 /// Keeps the signed in account in the Windows Credential Locker, so the token never touches disk in plain text.
 /// </summary>
 internal sealed class PasswordVaultAccountStore : IAccountStore
 {
     private const string Resource = "BaldBeardedBuilder.CmdPal.GitHub";
+    private const string RecoveryResource = Resource + ".Recovery";
+    private const int NotFound = unchecked((int)0x80070490);
+    private readonly ICredentialVault _vault;
+
+    public PasswordVaultAccountStore(ICredentialVault? vault = null)
+    {
+        _vault = vault ?? new CredentialVault();
+    }
 
     public GitHubAccount? Load()
     {
-        var credentials = FindAll();
-        if (credentials.Count == 0)
+        try
         {
-            return null;
+            return Load(Resource) ?? Load(RecoveryResource);
+        }
+        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException or IOException)
+        {
+            throw new GitHubAuthException("Couldn't read the account from Windows Credential Locker. Try again.");
+        }
+    }
+
+    private GitHubAccount? Load(string resource)
+    {
+        foreach (var userName in FindAll(resource))
+        {
+            var password = _vault.RetrievePassword(resource, userName);
+            var separator = userName.LastIndexOf('@');
+            if (separator > 0
+                && GitHubHost.TryParse(userName[(separator + 1)..], out var host)
+                && !string.IsNullOrEmpty(password))
+            {
+                return new GitHubAccount(host, userName[..separator], password);
+            }
         }
 
-        var credential = credentials[0];
-
-        credential.RetrievePassword();
-        var separator = credential.UserName.LastIndexOf('@');
-        if (separator <= 0
-            || !GitHubHost.TryParse(credential.UserName[(separator + 1)..], out var host)
-            || string.IsNullOrEmpty(credential.Password))
-        {
-            return null;
-        }
-
-        return new GitHubAccount(host, credential.UserName[..separator], credential.Password);
+        return null;
     }
 
     public void Save(GitHubAccount account)
     {
-        Clear();
-        new PasswordVault().Add(new PasswordCredential(Resource, $"{account.Login}@{account.Host.Name}", account.Token));
+        try
+        {
+            var credentials = FindAll(Resource);
+            var userName = $"{account.Login}@{account.Host.Name}";
+            if (credentials.Contains(userName))
+            {
+                // Same-key Add is not transactional. Keep a vault-only recovery copy before replacing it.
+                _vault.Add(RecoveryResource, userName, _vault.RetrievePassword(Resource, userName));
+            }
+
+            _vault.Add(Resource, userName, account.Token);
+            foreach (var previous in credentials.Where(previous => previous != userName))
+            {
+                _vault.Remove(Resource, previous);
+            }
+
+            Clear(RecoveryResource);
+        }
+        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException or IOException)
+        {
+            throw new GitHubAuthException("Couldn't save the account to Windows Credential Locker. Try again.");
+        }
     }
 
     public void Clear()
     {
-        var vault = new PasswordVault();
-        foreach (var credential in FindAll())
+        try
         {
-            vault.Remove(credential);
+            // Remove recovery copies first so a failed sign out cannot resurrect an old account.
+            Clear(RecoveryResource);
+            Clear(Resource);
+        }
+        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException or IOException)
+        {
+            throw new GitHubAuthException("Couldn't remove the account from Windows Credential Locker. Try again.");
         }
     }
 
-    private static IReadOnlyList<PasswordCredential> FindAll()
+    private void Clear(string resource)
+    {
+        foreach (var userName in FindAll(resource))
+        {
+            _vault.Remove(resource, userName);
+        }
+    }
+
+    private IReadOnlyList<string> FindAll(string resource)
     {
         try
         {
-            return [.. new PasswordVault().FindAllByResource(Resource)];
+            return _vault.FindUserNames(resource);
         }
-        catch (COMException)
+        catch (COMException ex) when (ex.HResult == NotFound)
         {
-            // The vault throws when nothing is stored for the resource.
+            // ERROR_NOT_FOUND is the vault's missing-resource result.
             return [];
         }
     }

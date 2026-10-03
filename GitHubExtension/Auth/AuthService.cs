@@ -136,18 +136,7 @@ internal sealed class AuthService
 
     public void SignOut()
     {
-        lock (_lock)
-        {
-            if (_currentAccount is null)
-            {
-                return;
-            }
-
-            _store.Clear();
-            _currentAccount = null;
-        }
-
-        AccountChanged?.Invoke(this, EventArgs.Empty);
+        UpdateAccount(_store.Clear, null);
     }
 
     private async Task<GitHubAccount> CompleteSignInAsync(GitHubHost host, string token, CancellationToken cancellationToken)
@@ -155,13 +144,50 @@ internal sealed class AuthService
         var login = await _client.GetLoginAsync(host, token, cancellationToken).ConfigureAwait(false);
         var account = new GitHubAccount(host, login, token);
 
-        lock (_lock)
-        {
-            _store.Save(account);
-            _currentAccount = account;
-        }
-
-        AccountChanged?.Invoke(this, EventArgs.Empty);
+        UpdateAccount(() => _store.Save(account), account);
         return account;
+    }
+
+    private void UpdateAccount(Action persist, GitHubAccount? account)
+    {
+        var changed = false;
+        try
+        {
+            lock (_lock)
+            {
+                var previous = _currentAccount;
+                var persisted = false;
+                try
+                {
+                    persist();
+                    _currentAccount = account;
+                    persisted = true;
+                }
+                catch
+                {
+                    try
+                    {
+                        _currentAccount = _store.Load();
+                    }
+                    catch
+                    {
+                        // The vault is unavailable. Preserve the last known account and the original error.
+                    }
+
+                    throw;
+                }
+                finally
+                {
+                    changed = previous != _currentAccount || (persisted && account is not null);
+                }
+            }
+        }
+        finally
+        {
+            if (changed)
+            {
+                AccountChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
     }
 }
