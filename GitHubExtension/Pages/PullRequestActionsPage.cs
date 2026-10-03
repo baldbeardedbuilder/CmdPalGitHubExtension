@@ -464,25 +464,23 @@ internal sealed partial class PullRequestActionsPage : ContentPage, IDisposable
     };
 
     private static string Choice(string id, string label, IEnumerable<(string Value, string Title)> choices)
-        => JsonSerializer.Serialize(new
-        {
-            type = "Input.ChoiceSet",
-            id,
-            label,
-            style = "compact",
-            choices = choices.Select(choice => new { title = choice.Title, value = choice.Value }),
-        });
+    {
+        var renderedChoices = string.Join(',', choices.Select(choice =>
+            "{\"title\":" + GitHubJson.String(choice.Title) + ",\"value\":" + GitHubJson.String(choice.Value) + "}"));
+        return "{\"type\":\"Input.ChoiceSet\",\"id\":" + GitHubJson.String(id)
+            + ",\"label\":" + GitHubJson.String(label)
+            + ",\"style\":\"compact\",\"choices\":[" + renderedChoices + "]}";
+    }
 
     private static string Action(string action, string title) =>
-        JsonSerializer.Serialize(new { type = "Action.Submit", title, data = new { action } });
+        "{\"type\":\"Action.Submit\",\"title\":" + GitHubJson.String(title)
+        + ",\"data\":{\"action\":" + GitHubJson.String(action) + "}}";
 
-    private string Card(string text) => JsonSerializer.Serialize(new
-    {
-        type = "AdaptiveCard",
-        version = "1.6",
-        body = new[] { new { type = "TextBlock", text, wrap = true } },
-        actions = new[] { new { type = "Action.OpenUrl", title = "Open on GitHub", url = _webUrl.AbsoluteUri } },
-    });
+    private string Card(string text) =>
+        "{\"type\":\"AdaptiveCard\",\"version\":\"1.6\",\"body\":[{\"type\":\"TextBlock\",\"text\":"
+        + GitHubJson.String(text)
+        + ",\"wrap\":true}],\"actions\":[{\"type\":\"Action.OpenUrl\",\"title\":\"Open on GitHub\",\"url\":"
+        + GitHubJson.String(_webUrl.AbsoluteUri) + "}]}";
 
     private static string Join(IEnumerable<string> values)
     {

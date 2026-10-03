@@ -86,7 +86,7 @@ internal sealed class PullRequestActionsClient(HttpClient httpClient) : IPullReq
         EnsureWrite(target);
         EnsureStateCanChange(target, open);
 
-        using var content = JsonContent(new { state = open ? "open" : "closed" });
+        using var content = JsonContent(new PullRequestStateRequest(open ? "open" : "closed"));
         using var response = await SendAsync(httpClient, account, HttpMethod.Patch, PullUri(account, repository, number),
             cancellationToken, content: content).ConfigureAwait(false);
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
@@ -111,8 +111,8 @@ internal sealed class PullRequestActionsClient(HttpClient httpClient) : IPullReq
         var current = team ? target.RequestedTeams : target.RequestedReviewers;
         EnsureMembership(current, reviewer, shouldExist: !add, "reviewer");
         using var content = JsonContent(team
-            ? new { reviewers = Array.Empty<string>(), team_reviewers = new[] { reviewer } }
-            : new { reviewers = new[] { reviewer }, team_reviewers = Array.Empty<string>() });
+            ? new PullRequestReviewersRequest([], [reviewer])
+            : new PullRequestReviewersRequest([reviewer], []));
         var method = add ? HttpMethod.Post : HttpMethod.Delete;
         using var response = await SendAsync(httpClient, account, method, ReviewersUri(account, repository, number),
             cancellationToken, content: content).ConfigureAwait(false);
@@ -145,7 +145,7 @@ internal sealed class PullRequestActionsClient(HttpClient httpClient) : IPullReq
         var target = await ReadSnapshotAsync(account, repository, number, cancellationToken).ConfigureAwait(false);
         EnsureCanEditIssue(target);
         EnsureMembership(target.Assignees, assignee, shouldExist: !add, "assignee");
-        using var content = JsonContent(new { assignees = new[] { assignee } });
+        using var content = JsonContent(new GitHubNamesRequest(Assignees: [assignee]));
         using var response = await SendAsync(httpClient, account, add ? HttpMethod.Post : HttpMethod.Delete,
             IssueUri(account, repository, number, "assignees"), cancellationToken, content: content).ConfigureAwait(false);
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
@@ -170,7 +170,7 @@ internal sealed class PullRequestActionsClient(HttpClient httpClient) : IPullReq
         EnsureMembership(target.Labels, label, shouldExist: !add, "label");
         if (add)
         {
-            using var content = JsonContent(new { labels = new[] { label } });
+            using var content = JsonContent(new GitHubNamesRequest(Labels: [label]));
             using var response = await SendAsync(httpClient, account, HttpMethod.Post,
                 IssueUri(account, repository, number, "labels"), cancellationToken, content: content).ConfigureAwait(false);
             using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
@@ -336,8 +336,14 @@ internal sealed class PullRequestActionsClient(HttpClient httpClient) : IPullReq
         }
     }
 
-    private static StringContent JsonContent<T>(T payload) =>
-        new(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+    private static StringContent JsonContent(PullRequestStateRequest payload) =>
+        new(JsonSerializer.Serialize(payload, GitHubJsonContext.Default.PullRequestStateRequest), Encoding.UTF8, "application/json");
+
+    private static StringContent JsonContent(PullRequestReviewersRequest payload) =>
+        new(JsonSerializer.Serialize(payload, GitHubJsonContext.Default.PullRequestReviewersRequest), Encoding.UTF8, "application/json");
+
+    private static StringContent JsonContent(GitHubNamesRequest payload) =>
+        new(JsonSerializer.Serialize(payload, GitHubJsonContext.Default.GitHubNamesRequest), Encoding.UTF8, "application/json");
 
     private static Uri RepoUri(GitHubAccount account, string repository, string? endpoint)
     {

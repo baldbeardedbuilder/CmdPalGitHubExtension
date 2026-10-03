@@ -32,8 +32,22 @@ internal sealed record GraphQLRequest(
     [property: JsonPropertyName("variables")] JsonObject? Variables,
     [property: JsonPropertyName("operationName")] string? OperationName);
 
+internal sealed record PullRequestStateRequest(
+    [property: JsonPropertyName("state")] string State);
+
+internal sealed record PullRequestReviewersRequest(
+    [property: JsonPropertyName("reviewers")] string[] Reviewers,
+    [property: JsonPropertyName("team_reviewers")] string[] TeamReviewers);
+
+internal sealed record GitHubNamesRequest(
+    [property: JsonPropertyName("assignees"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string[]? Assignees = null,
+    [property: JsonPropertyName("labels"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string[]? Labels = null);
+
 [JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(CreateCodespaceRequest))]
 [JsonSerializable(typeof(CreateAgentTaskRequest))]
 [JsonSerializable(typeof(GraphQLRequest))]
+[JsonSerializable(typeof(PullRequestStateRequest))]
+[JsonSerializable(typeof(PullRequestReviewersRequest))]
+[JsonSerializable(typeof(GitHubNamesRequest))]
 internal sealed partial class GitHubJsonContext : JsonSerializerContext;
