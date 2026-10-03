@@ -18,7 +18,7 @@ public class ActionsViewTests
 {
     private static readonly GitHubAccount Account = new(GitHubHost.GitHubDotCom, "octocat", "t");
     private static readonly DateTimeOffset Now = new(2025, 6, 1, 12, 0, 0, TimeSpan.Zero);
-    private static readonly string[] RepositorySections = ["o/r", "Issues", "Pull Requests", "Actions", "Discussions"];
+    private static readonly string[] RepositorySections = ["o/r", "Issues", "Pull Requests", "Actions", "Start Copilot task", "Discussions"];
     private static readonly string[] ExpectedFilters = ["Running", "Succeeded", "Failed"];
     private static readonly string[] ExpectedCancelEndpoints =
     [
