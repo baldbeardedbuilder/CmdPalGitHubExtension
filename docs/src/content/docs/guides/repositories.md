@@ -22,6 +22,12 @@ Select a repository to open its menu:
 
 Repository rows also offer **Copy clone URL** when a clone URL is available, and **Copy name**. Opening a repository doesn't clone it to your machine.
 
+## Star repositories
+
+Open **Starred repositories** from the home page to browse your starred repositories. The list loads page by page; use **Load more** to continue. A repository's **Manage star** action checks your personal star state and offers a confirmed star or unstar action. It doesn't derive your state from the public star count.
+
+Your token needs permission to read and write your starred repositories. Organization policies may also restrict access.
+
 ## Find a missing repo
 
 Check the signed-in account and host first. For a private repository, your account and token both need access. Organization policies and single sign-on can further restrict results.

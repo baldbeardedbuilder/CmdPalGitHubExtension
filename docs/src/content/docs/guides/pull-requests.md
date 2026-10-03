@@ -7,6 +7,12 @@ Open **GitHub > Repos**, choose a repository, and select **Pull Requests**. Sele
 
 Choose **Open** or **Closed** and type to filter loaded rows. Drafts count as open; merged pull requests count as closed. **Load more** fetches another page and keeps your filters.
 
+## Update a pull request
+
+Use **Manage pull request** in a row's **More** menu to close or reopen an unmerged pull request, request or remove reviewers, manage assignees, or add and remove existing labels. Each change shows a confirmation and checks the current pull request before sending. Merged pull requests cannot be closed or reopened through these actions.
+
+The same actions are available from pull request notifications after their details load. If the details aren't available, open the pull request on GitHub.
+
 ## Merge an eligible pull request
 
 An open, non-draft pull request can offer **Merge pull request** in **More**. The extension checks the current target and your repository permissions before showing a confirmation.

@@ -22,6 +22,12 @@ The row's **More** menu includes:
 
 The extension refreshes the inbox after notification changes instead of assuming a write succeeded. Repeated clicks don't send duplicate writes for the same notification while its request is active.
 
+## Manage a thread
+
+When thread details are available, **More** includes actions to subscribe, unsubscribe, or ignore the conversation. **Unsubscribe** removes your explicit thread subscription and returns to repository notification rules. A watched repository can still notify you. **Ignore** suppresses future notifications from that thread until you comment or are mentioned.
+
+Subscription actions do not mark a notification read or done. Issue notifications also support the issue actions in [Issues](/CmdPalGitHubExtension/guides/issues/), and pull request notifications offer the actions in [Pull requests](/CmdPalGitHubExtension/guides/pull-requests/).
+
 ## Filter your inbox
 
 Type to filter loaded notifications by title, repository, type, reason, state, or unread status. This isn't a new search across GitHub.
