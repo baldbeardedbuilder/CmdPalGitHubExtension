@@ -192,13 +192,10 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
                 return value;
             });
 
-            var requestBody = new Dictionary<string, object?> { ["repository_id"] = repositoryId };
-            if (!string.IsNullOrWhiteSpace(branch))
-            {
-                requestBody["ref"] = branch.Trim();
-            }
-
-            using var content = new StringContent(JsonSerializer.Serialize(requestBody), Encoding.UTF8, "application/json");
+            var requestBody = new CreateCodespaceRequest(repositoryId, GitHubJson.Optional(branch));
+            using var content = new StringContent(
+                JsonSerializer.Serialize(requestBody, GitHubJsonContext.Default.CreateCodespaceRequest),
+                Encoding.UTF8, "application/json");
             var createUri = new Uri(account.Host.ApiUrl, "user/codespaces");
             cancellationToken.ThrowIfCancellationRequested();
             sent = true;

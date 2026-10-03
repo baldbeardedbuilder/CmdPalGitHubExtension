@@ -16,6 +16,7 @@ public sealed class AgentsClientTests
 {
     private static readonly GitHubAccount Account = new(GitHubHost.GitHubDotCom, "octocat", "test-token");
     private static readonly string[] CreateOnly = ["POST"];
+    private static readonly string[] CreateTextFields = ["prompt", "model", "custom_agent", "base_ref", "head_ref"];
     private const string TaskJson = """
         {
           "id": "task-1",
@@ -286,6 +287,29 @@ public sealed class AgentsClientTests
         Assert.AreEqual("main", payload.RootElement.GetProperty("base_ref").GetString());
         Assert.AreEqual("feature/tests", payload.RootElement.GetProperty("head_ref").GetString());
         Assert.IsTrue(payload.RootElement.GetProperty("create_pull_request").GetBoolean());
+    }
+
+    [TestMethod]
+    public async Task StartTaskAsync_TrimsAndEscapesPromptAndOptionsWithoutDroppingFalse()
+    {
+        const string value = "quote\"\\line\n\t\u263a";
+        using var handler = new RequestHandler(async request =>
+        {
+            using var json = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(TestContext.CancellationToken));
+            var root = json.RootElement;
+            foreach (var name in CreateTextFields)
+                Assert.AreEqual(value, root.GetProperty(name).GetString());
+            Assert.IsFalse(root.GetProperty("create_pull_request").GetBoolean());
+            Assert.AreEqual(6, root.EnumerateObject().Count());
+            return Response(HttpStatusCode.Created, """{"id":"new","state":"queued"}""");
+        });
+        using var http = new HttpClient(handler);
+
+        var task = await new AgentsClient(http).StartTaskAsync(Account, "octocat/hello",
+            new AgentTaskRequest($" {value} ", $" {value} ", $" {value} ", $" {value} ", $" {value} ", false),
+            TestContext.CancellationToken);
+
+        Assert.AreEqual("new", task.Id);
     }
 
     [TestMethod]

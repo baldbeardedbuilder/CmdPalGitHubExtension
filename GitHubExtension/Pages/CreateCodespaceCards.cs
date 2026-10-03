@@ -2,7 +2,7 @@
 // Bald Bearded Builder LLC licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System.Text.Json;
+using BaldBeardedBuilder.CmdPal.GitHub.Api;
 using BaldBeardedBuilder.CmdPal.GitHub.Codespaces;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
@@ -35,7 +35,7 @@ internal static class CreateCodespaceCards
         ] }
         """);
 
-    internal static string Str(string value) => JsonSerializer.Serialize(value);
+    internal static string Str(string value) => GitHubJson.String(value);
 
     private static string Error(string? error) => string.IsNullOrEmpty(error)
         ? string.Empty

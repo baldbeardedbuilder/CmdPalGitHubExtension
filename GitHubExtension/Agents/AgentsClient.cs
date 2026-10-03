@@ -116,16 +116,13 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
     {
         ValidateRequest(repository, request);
         var uri = RepositoryTasksUri(account, repository);
-        var body = new Dictionary<string, object?>
-        {
-            ["prompt"] = request.Prompt.Trim(),
-            ["create_pull_request"] = request.CreatePullRequest,
-        };
-        AddOptional(body, "model", request.Model);
-        AddOptional(body, "custom_agent", request.CustomAgent);
-        AddOptional(body, "base_ref", request.BaseRef);
-        AddOptional(body, "head_ref", request.HeadRef);
-        using var content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+        var body = new CreateAgentTaskRequest(
+            request.Prompt.Trim(), request.CreatePullRequest,
+            GitHubJson.Optional(request.Model), GitHubJson.Optional(request.CustomAgent),
+            GitHubJson.Optional(request.BaseRef), GitHubJson.Optional(request.HeadRef));
+        using var content = new StringContent(
+            JsonSerializer.Serialize(body, GitHubJsonContext.Default.CreateAgentTaskRequest),
+            Encoding.UTF8, "application/json");
 
         HttpResponseMessage response;
         try
@@ -239,14 +236,6 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
             throw new GitHubApiException("Enter a prompt for the agent.");
         }
 
-    }
-
-    private static void AddOptional(Dictionary<string, object?> body, string name, string? value)
-    {
-        if (!string.IsNullOrWhiteSpace(value))
-        {
-            body[name] = value.Trim();
-        }
     }
 
     internal static List<GitHubAgentTask> ParseTasks(JsonElement root, GitHubHost host) =>
