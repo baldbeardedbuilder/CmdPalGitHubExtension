@@ -376,11 +376,14 @@ public sealed class DomainDiagnosticsTests
         new(status) { Content = new StringContent(body) };
 
     [TestMethod]
-    public async Task CodespacePolling_InvalidSchemaIsLoggedOnceWithoutPrivateNames()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task CodespacePolling_InvalidSchemaIsLoggedOnceWithoutPrivateNames(bool wrongName)
     {
         var entries = new List<DiagnosticEntry>();
         using var sink = OperationDiagnostics.UseSink(entries.Add, verboseReads: false);
-        using var handler = new Handler((_, _) => Task.FromResult(Response("{}")));
+        using var handler = new Handler((_, _) => Task.FromResult(Response(
+            wrongName ? Space.Replace("private-space", "private-other-space", StringComparison.Ordinal) : "{}")));
         using var http = new HttpClient(handler);
 
         await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>

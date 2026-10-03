@@ -12,13 +12,15 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Codespaces;
 
 internal interface ICodespacesClient
 {
+    Task<GitHubCodespace> GetCodespaceAsync(GitHubAccount account, string name, CancellationToken cancellationToken);
+
+    Task DeleteCodespaceAsync(GitHubAccount account, string name, CancellationToken cancellationToken);
+
     Task<CodespacesPageResult> GetCodespacesAsync(GitHubAccount account, Uri? page, CancellationToken cancellationToken);
 
     Task<GitHubCodespace> StopCodespaceAsync(GitHubAccount account, string name, CancellationToken cancellationToken);
 
     Task<GitHubCodespace> StartCodespaceAsync(GitHubAccount account, string name, CancellationToken cancellationToken);
-
-    Task<GitHubCodespace> GetCodespaceAsync(GitHubAccount account, string name, CancellationToken cancellationToken);
 
     Task<GitHubCodespace> CreateCodespaceAsync(
         GitHubAccount account,
@@ -30,6 +32,38 @@ internal interface ICodespacesClient
 internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClient
 {
     internal const int PageSize = 50;
+
+    public Task<GitHubCodespace> GetCodespaceAsync(GitHubAccount account, string name, CancellationToken cancellationToken) =>
+        DomainDiagnostics.RunAsync(DiagnosticArea.Codespaces, async () =>
+    {
+        RequireGitHubDotCom(account);
+        var uri = new Uri(account.Host.ApiUrl, $"user/codespaces/{Uri.EscapeDataString(name)}");
+        using var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken).ConfigureAwait(false);
+        using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
+        return DomainDiagnostics.Read(DiagnosticArea.Codespaces, () =>
+        {
+            var codespace = ReadCodespace(json.RootElement);
+            return codespace.Name == name
+                ? codespace
+                : throw new GitHubApiException("GitHub sent back a codespace we couldn't read.");
+        });
+    }, cancellationToken: cancellationToken);
+
+    public async Task DeleteCodespaceAsync(GitHubAccount account, string name, CancellationToken cancellationToken)
+    {
+        RequireGitHubDotCom(account);
+        var uri = new Uri(account.Host.ApiUrl, $"user/codespaces/{Uri.EscapeDataString(name)}");
+        using var response = await SendAsync(httpClient, account, HttpMethod.Delete, uri, cancellationToken,
+            timeoutMessage: "GitHub took too long to delete this codespace. Refresh to check whether it still exists.").ConfigureAwait(false);
+    }
+
+    private static void RequireGitHubDotCom(GitHubAccount account)
+    {
+        if (!account.Host.IsGitHubDotCom)
+        {
+            throw new GitHubApiException("Codespaces isn't available on GitHub Enterprise Server. Sign in to github.com.");
+        }
+    }
 
     public async Task<GitHubCodespace> StopCodespaceAsync(GitHubAccount account, string name, CancellationToken cancellationToken)
     {
@@ -89,20 +123,6 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
             () => sent, cancellationToken).ConfigureAwait(false);
     }
 
-    public Task<GitHubCodespace> GetCodespaceAsync(GitHubAccount account, string name, CancellationToken cancellationToken) =>
-        DomainDiagnostics.RunAsync(DiagnosticArea.Codespaces, async () =>
-    {
-        if (!account.Host.IsGitHubDotCom)
-        {
-            throw new GitHubApiException("Codespaces isn't available on GitHub Enterprise Server. Sign in to github.com to check one.");
-        }
-
-        var uri = new Uri(account.Host.ApiUrl, $"user/codespaces/{Uri.EscapeDataString(name)}");
-        using var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken).ConfigureAwait(false);
-        using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
-        return ReadCodespace(json.RootElement);
-    }, cancellationToken: cancellationToken);
-
     public Task<CodespacesPageResult> GetCodespacesAsync(GitHubAccount account, Uri? page, CancellationToken cancellationToken) =>
         DomainDiagnostics.RunAsync(DiagnosticArea.Codespaces, async () =>
     {
@@ -114,7 +134,23 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
         var uri = page ?? new Uri(account.Host.ApiUrl, $"user/codespaces?per_page={PageSize}");
         using var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken).ConfigureAwait(false);
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
-        return new CodespacesPageResult(ParseCodespaces(json.RootElement), NextPage(response));
+        var codespaces = ParseCodespaces(json.RootElement);
+        int? totalCount = null;
+        var complete = codespaces.Count == json.RootElement.GetProperty("codespaces").GetArrayLength();
+        if (json.RootElement.TryGetProperty("total_count", out var total))
+        {
+            if (total.ValueKind == JsonValueKind.Number && total.TryGetInt32(out var count) && count >= 0)
+            {
+                totalCount = count;
+            }
+            else
+            {
+                complete = false;
+            }
+        }
+
+        return new CodespacesPageResult(codespaces, NextPage(response),
+            complete, totalCount);
     }, cancellationToken: cancellationToken);
 
     public async Task<GitHubCodespace> CreateCodespaceAsync(
@@ -233,6 +269,18 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
             branch,
             GetString(element, "state") ?? "Unknown",
             GetDate(element, "last_used_at"),
-            webUrl);
+            webUrl,
+            ReadGitStatusBoolean(gitStatus, "has_uncommitted_changes"),
+            ReadGitStatusBoolean(gitStatus, "has_unpushed_changes"),
+            ReadGitStatusCount(gitStatus, "ahead"),
+            ReadGitStatusCount(gitStatus, "behind"));
     }
+
+    private static bool? ReadGitStatusBoolean(JsonElement status, string name) =>
+        status.ValueKind == JsonValueKind.Object && status.TryGetProperty(name, out var value)
+            && value.ValueKind is JsonValueKind.True or JsonValueKind.False ? value.GetBoolean() : null;
+
+    private static int? ReadGitStatusCount(JsonElement status, string name) =>
+        status.ValueKind == JsonValueKind.Object && status.TryGetProperty(name, out var value)
+            && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var count) && count >= 0 ? count : null;
 }

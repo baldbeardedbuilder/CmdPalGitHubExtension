@@ -20,6 +20,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     private readonly ActionFilters _filters = new();
     private readonly Lock _lock = new();
     private readonly List<WorkflowRunItem> _items = [];
+    private readonly Dictionary<(long Id, int? Attempt), RerunWorkflowPage> _rerunPages = [];
     private string? _repository;
     private Uri? _nextPage;
     private bool _loaded;
@@ -67,6 +68,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
     internal ICommandResult OpenRepository(string repository)
     {
+        ClearRerunPages();
         lock (_lock)
         {
             Reset();
@@ -144,7 +146,41 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         return StartLoad(reset: true);
     }
 
-    public void Dispose() => _auth.AccountChanged -= OnAccountChanged;
+    internal RerunWorkflowPage RerunPage(string repository, GitHubWorkflowRun run)
+    {
+        lock (_lock)
+        {
+            var key = (run.Id, run.RunAttempt);
+            if (!_rerunPages.TryGetValue(key, out var page))
+            {
+                page = new RerunWorkflowPage(_auth, _client, this, repository, run);
+                _rerunPages.Add(key, page);
+            }
+
+            return page;
+        }
+    }
+
+    public void Dispose()
+    {
+        _auth.AccountChanged -= OnAccountChanged;
+        ClearRerunPages();
+    }
+
+    private void ClearRerunPages()
+    {
+        RerunWorkflowPage[] pages;
+        lock (_lock)
+        {
+            pages = [.. _rerunPages.Values];
+            _rerunPages.Clear();
+        }
+
+        foreach (var page in pages)
+        {
+            page.Dispose();
+        }
+    }
 
     private CommandItem Empty(string title, string subtitle, bool refresh = false) =>
         _emptyContent.Get(title, subtitle, refresh);
@@ -259,6 +295,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
     private void OnAccountChanged(object? sender, EventArgs e)
     {
+        ClearRerunPages();
         lock (_lock)
         {
             Reset();

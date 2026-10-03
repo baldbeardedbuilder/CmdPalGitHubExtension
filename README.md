@@ -33,7 +33,13 @@ Merging currently requires github.com and repository write access; fine-grained 
 
 Actions lists start with **Running** selected, including queued runs; switch to **Succeeded** for successful runs or **Failed** for every other completed outcome, including cancelled and skipped runs. Each filter has a status icon, text search narrows the selected group, and more results load as you scroll.
 
+On a completed run, use **More > Rerun workflow...** to rerun all jobs. Runs that failed or timed out also offer failed jobs and their dependents. The confirmation warns that reruns use Actions compute and may incur charges; you can optionally enable debug logging. You need repository write access and a classic PAT/OAuth token with `repo` scope, or a fine-grained token with **Actions: write**. GitHub enforces rerun limits, including the 30-day window.
+
+Rerunning keeps the same run ID. The extension rechecks its state before requesting a rerun, refreshes the Actions list, and shows the attempt and status reported by GitHub. **Rerun requested** means the request was accepted, not that the jobs succeeded or finished. Use **Refresh status** to follow the new attempt, including when GitHub hasn't updated it yet or a request timed out. Repeated confirmation won't submit another request; account changes invalidate the confirmation.
+
 Codespaces requires a github.com account and the `codespace` token scope. It isn't available on GitHub Enterprise Server. Use **More > Close Codespace** on an active codespace to stop it without deleting its files, or **More > Start Codespace** on a stopped one to start it. Start asks you to confirm compute use and possible charges, then checks the codespace's state at two-second intervals until it is available, for up to 60 checks. **Refresh** cancels the pending checks and reloads the list; signing out or switching accounts also cancels them. Cancellation doesn't undo a start GitHub has already accepted. If starting takes longer or fails, use **Refresh** to check its state. Starting a codespace doesn't open it in your browser. Opening a stopped codespace still takes you to GitHub's browser editor, where it can start the environment.
+
+Use **More > Delete Codespace** to review its exact name, repository, and current Git status before confirming permanent deletion. The confirmation warns about uncommitted changes, unpushed commits, and unknown safety when GitHub cannot provide that information. Even a reported clean status is not a guarantee; push or back up any work you need first. **Cancel** leaves the codespace untouched. A codespace stays in the list until GitHub confirms it is absent, not just that deletion was accepted. If deletion is pending or a request times out, use **Refresh** to check before trying again.
 
 ### Agents access
 
@@ -97,6 +103,16 @@ If you skip this, everything still builds. The github.com button just tells you 
 Yes, the client secret ships inside the app. That's normal for desktop OAuth apps since there's nowhere safe to hide it, and it's why the flow also uses PKCE.
 
 ## Contributing
+
+### GraphQL transport
+
+`GitHubGraphQLClient` sits beside the REST transport and uses the account supplied on each call. It routes github.com and GHE.com tenants to `/graphql`, and GitHub Enterprise Server to `/api/graphql`, with the same authentication, host validation, and HTTP error handling as REST.
+
+`ExecuteAsync` accepts queries or mutations with JSON variables and an optional operation name. Its result owns its JSON data and exposes `Errors`, `IsSuccess`, and `HasPartialData`. HTTP 200 does not imply GraphQL success. Callers must check errors before treating a mutation as successful, and may use partial data while reporting the errors. GraphQL messages, queries, variables, and response bodies are not logged.
+
+Schema errors with `extensions.code = undefinedField` expose `UnsupportedField` with the exact type and field name. Limit any fallback to the affected feature; do not disable GraphQL or unrelated features for that host. The transport does not cache capability or account data.
+
+Pull request models preserve REST `node_id`. `GetNodeIdAsync` resolves a pull request or discussion number to its opaque GraphQL `id` and retains the complete response, including errors. Use IDs only with the account and host that supplied them. This is transport infrastructure; existing REST features and browser-only discussion navigation are unchanged.
 
 Bugs, ideas, and pull requests are all welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
 

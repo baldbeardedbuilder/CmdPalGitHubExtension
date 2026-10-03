@@ -11,6 +11,11 @@ internal sealed record GitHubCodespace(
     string? Branch,
     string State,
     DateTimeOffset LastUsedAt,
-    Uri WebUrl);
+    Uri WebUrl,
+    bool? HasUncommittedChanges = null,
+    bool? HasUnpushedChanges = null,
+    int? Ahead = null,
+    int? Behind = null);
 
-internal sealed record CodespacesPageResult(IReadOnlyList<GitHubCodespace> Codespaces, Uri? NextPage);
+internal sealed record CodespacesPageResult(
+    IReadOnlyList<GitHubCodespace> Codespaces, Uri? NextPage, bool IsComplete = true, int? TotalCount = null);
