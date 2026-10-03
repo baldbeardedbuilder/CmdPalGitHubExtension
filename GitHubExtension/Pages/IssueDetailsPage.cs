@@ -159,6 +159,8 @@ internal sealed partial class IssueDetailsPage : ContentPage
 
     private async Task LoadAsync(GitHubAccount account, Uri issueApiUrl, string repository, int generation)
     {
+        using var operation = OperationDiagnostics.Begin(DiagnosticEvent.PageLoad, DiagnosticArea.Issues, verbose: true);
+        Exception? failure = null;
         try
         {
             var issue = await _client.GetIssueAsync(account, issueApiUrl, CancellationToken.None).ConfigureAwait(false);
@@ -173,8 +175,9 @@ internal sealed partial class IssueDetailsPage : ContentPage
                 _form = new IssueDetailsForm(this, IssueDetailsCards.Details(repository, issue));
             }
         }
-        catch (GitHubApiException ex)
+        catch (Exception ex)
         {
+            failure = ex;
             lock (_lock)
             {
                 if (generation != _generation)
@@ -198,6 +201,13 @@ internal sealed partial class IssueDetailsPage : ContentPage
                 IsLoading = false;
                 RaiseItemsChanged();
             }
+
+            lock (_lock)
+            {
+                publish = generation == _generation;
+            }
+
+            PageDiagnostics.Finish(operation, failure, publish);
         }
     }
 

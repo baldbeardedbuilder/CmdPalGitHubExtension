@@ -13,6 +13,9 @@ internal sealed partial class WorkflowRunItem : ListItem
     public WorkflowRunItem(ActionsPage page, string repository, GitHubWorkflowRun run, IBrowserLauncher browser, DateTimeOffset now)
     {
         Run = run;
+        Account = page.CurrentAccount;
+        AccountGeneration = page.AccountGeneration;
+        Repository = repository;
         Title = run.Name;
         Subtitle = WorkflowRunFormatting.Subtitle(run, now);
         Icon = WorkflowRunFormatting.Icon(run);
@@ -32,10 +35,21 @@ internal sealed partial class WorkflowRunItem : ListItem
             commands.Add(new CommandContextItem(new ForceCancelWorkflowRunPage(page, this)));
         }
 
+        if (run.CanRerun)
+        {
+            commands.Add(new CommandContextItem(page.RerunPage(repository, run)));
+        }
+
         MoreCommands = [.. commands];
     }
 
     public GitHubWorkflowRun Run { get; }
+
+    public GitHubAccount? Account { get; }
+
+    public int AccountGeneration { get; }
+
+    public string Repository { get; }
 
     public string SearchText { get; }
 }
