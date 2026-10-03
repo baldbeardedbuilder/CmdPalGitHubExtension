@@ -162,8 +162,9 @@ public sealed class TimeoutRecoveryTests
     public async Task PullRequestDetailTimeout_ShowsErrorAndRefreshRetries()
     {
         const string notifications = """
-            [{"id":"1","subject":{"title":"Recovered","type":"PullRequest","url":"https://api.github.com/repos/o/r/pulls/1"},
-              "repository":{"full_name":"o/r"},"updated_at":"2025-06-01T12:00:00Z"}]
+            [{"id":"1","unread":true,"reason":"review_requested",
+              "subject":{"title":"Recovered","type":"PullRequest","url":"https://api.github.com/repos/o/r/pulls/1"},
+              "repository":{"full_name":"o/r","html_url":"https://github.com/o/r"},"updated_at":"2025-06-01T12:00:00Z"}]
             """;
         var requests = 0;
         using var http = new HttpClient(new StubHandler(_ =>
