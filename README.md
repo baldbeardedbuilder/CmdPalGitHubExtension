@@ -15,6 +15,18 @@ In a repository's **Issues** or **Pull Requests** view, typing filters the rows 
 
 In **Repos**, typing first filters your loaded personal repositories, then searches the repositories you can access on your GitHub host. Use **Load more** to fetch another search page. GitHub's search API exposes at most 1,000 results per query. If you hit that limit, narrow your search to reach the repositories you need.
 
+## Mutation safety
+
+Starting and creating a Codespace first shows a confirmation with the signed-in account, host, target, and billing implications. Repeated submissions do not send duplicate writes. Signing out or switching accounts cancels outstanding work and discards old results. Notification changes refresh the inbox from GitHub rather than claiming success optimistically. Errors remain visible, including organization SSO authorization links when GitHub supplies one.
+
+Accepted requests can still be processing. Refresh to check the authoritative state before retrying. If a creation request times out or its outcome cannot be verified, creation stays blocked on that page to prevent duplicate environments. You can inspect your Codespaces on GitHub, but absence from the list cannot prove a queued creation will not appear later. Without an exact authoritative reconciliation, the extension cannot safely retry that creation and does not offer an acknowledgement override.
+
+### Adding mutation commands
+
+Use the shared mutation executor and confirmation cards. Require confirmation for deletion, merge, compute start/create, workflow rerun/dispatch, and agent submission. Capture the account, host, and target; validate fresh permission and target state before submitting. Reconciliation must use authoritative reads to verify the requested fields, preserve pending/unknown outcomes when reads fail, and explicitly prove retry safety before resending non-idempotent requests.
+
+The executor accepts an optional caller cancellation token linked to the account session. Cancellation before submission is safe to retry; cancellation after submission leaves the outcome unknown because it cannot roll back GitHub's work.
+
 ## Install
 
 Releases aren't published yet. Until they are, build it yourself using the steps in [CONTRIBUTING.md](CONTRIBUTING.md).

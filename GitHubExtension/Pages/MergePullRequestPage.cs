@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Text.Json;
+using BaldBeardedBuilder.CmdPal.GitHub.Api;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using BaldBeardedBuilder.CmdPal.GitHub.PullRequests;
 
@@ -226,21 +227,21 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
     private string Confirmation(PullRequestMergeTarget target)
     {
         var choices = string.Join(',', target.Methods.Select(method =>
-            $$"""{"title":{{JsonSerializer.Serialize(method)}},"value":{{JsonSerializer.Serialize(method)}}}"""));
+            $$"""{"title":{{GitHubJson.String(method)}},"value":{{GitHubJson.String(method)}}}"""));
         var scope = target.StackScope is null
             ? "No stack is currently reported."
             : $"Current stack metadata: {target.StackScope}.";
         return Card(
             $"Confirm {_repository}#{_number} as {_account.Login}@{_account.Host.Name}. Current target branch: {target.BaseRef}. Expected head SHA: {target.HeadSha}. {scope} Scope: this PR and ALL open downstack PRs if it is stacked. GitHub will use the branch merge queue if configured; the queue controls its merge method. Otherwise use the selected direct-merge method. Repository rules are enforced, never bypassed. The API pins only this PR's head SHA, not the target branch or downstack scope. These may change after our final check. If you require a fixed branch or exact downstack PR set, do not confirm; review on GitHub instead.",
             "confirm", cancel: true,
-            input: $$"""{"type":"Input.ChoiceSet","id":"method","label":"Direct-merge method","style":"compact","isRequired":true,"value":{{JsonSerializer.Serialize(target.Methods[0])}},"choices":[{{choices}}]},{"type":"Input.Toggle","id":"scopeAccepted","title":"I authorize the current target and automatic downstack scope, including concurrent changes after the final check.","valueOn":"true","valueOff":"false","value":"false","isRequired":true,"errorMessage":"Review and accept the async API scope before confirming."}""");
+            input: $$"""{"type":"Input.ChoiceSet","id":"method","label":"Direct-merge method","style":"compact","isRequired":true,"value":{{GitHubJson.String(target.Methods[0])}},"choices":[{{choices}}]},{"type":"Input.Toggle","id":"scopeAccepted","title":"I authorize the current target and automatic downstack scope, including concurrent changes after the final check.","valueOn":"true","valueOff":"false","value":"false","isRequired":true,"errorMessage":"Review and accept the async API scope before confirming."}""");
     }
 
     private string Card(string text, string? action, bool cancel = false, string? input = null, bool includeLink = true)
     {
         var elements = new List<string>
         {
-            $$"""{"type":"TextBlock","text":{{JsonSerializer.Serialize(text)}},"wrap":true}""",
+            $$"""{"type":"TextBlock","text":{{GitHubJson.String(text)}},"wrap":true}""",
         };
         if (input is not null) elements.Add(input);
         var actions = new List<string>();
@@ -262,7 +263,7 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
 
         if (includeLink)
         {
-            actions.Add($$"""{"type":"Action.OpenUrl","title":"Open PR on GitHub","url":{{JsonSerializer.Serialize(_webUrl.AbsoluteUri)}}}""");
+            actions.Add($$"""{"type":"Action.OpenUrl","title":"Open PR on GitHub","url":{{GitHubJson.String(_webUrl.AbsoluteUri)}}}""");
         }
 
         return $$"""{"type":"AdaptiveCard","version":"1.6","body":[{{string.Join(',', elements)}}],"actions":[{{string.Join(',', actions)}}]}""";

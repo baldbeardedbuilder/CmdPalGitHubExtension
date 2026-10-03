@@ -418,6 +418,54 @@ public class ReposPageTests
     }
 
     [TestMethod]
+    public async Task SearchResults_ReuseRepositoryPageAcrossQueries()
+    {
+        var repository = RepoFormattingTests.Repo("o/remote");
+        var client = Client([]);
+        client.Setup(c => c.SearchAsync(Account, "first", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RepositorySearchPageResult([repository], null, 1));
+        client.Setup(c => c.SearchAsync(Account, "second", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RepositorySearchPageResult([repository], null, 1));
+        using var page = await LoadedPage(client.Object);
+
+        page.SearchText = "first";
+        await page.CurrentSearch;
+        var firstPage = page.GetItems().Single().Command;
+
+        page.SearchText = "second";
+        await page.CurrentSearch;
+
+        Assert.AreSame(firstPage, page.GetItems().Single().Command);
+    }
+
+    [TestMethod]
+    public async Task Dispose_CancelsPendingRepositoryRequest()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new Mock<IRepositoriesClient>();
+        CancellationToken requestToken = default;
+        client.Setup(c => c.GetMyRepositoriesAsync(Account, null, It.IsAny<CancellationToken>()))
+            .Returns(async (GitHubAccount _, Uri? _, CancellationToken token) =>
+            {
+                requestToken = token;
+                started.SetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                return new RepositoriesPageResult([], null);
+            });
+        var page = CreatePage(client.Object, out _);
+
+        page.GetItems();
+        var load = page.CurrentLoad;
+        await started.Task;
+        page.Dispose();
+        await load;
+
+        Assert.IsTrue(requestToken.IsCancellationRequested);
+        Assert.IsFalse(page.IsLoading);
+        Assert.IsEmpty(page.GetItems());
+    }
+
+    [TestMethod]
     public async Task LoadFailure_ShowsTheError()
     {
         var client = new Mock<IRepositoriesClient>();

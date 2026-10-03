@@ -33,7 +33,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     private readonly ListLoadState _searchLoad;
     private Lock _lock => _load.SyncRoot;
     private readonly List<RepoItem> _mine = [];
-    private readonly List<RepositoryPage> _repositoryPages = [];
+    private readonly Dictionary<string, RepositoryPage> _repositoryPages = new(StringComparer.OrdinalIgnoreCase);
 
     private string _searchQuery = string.Empty;
     private List<RepoItem> _searchResults = [];
@@ -250,7 +250,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         {
             _load.Dispose();
             _searchLoad.Dispose();
-            repositoryPages = [.. _repositoryPages];
+            repositoryPages = [.. _repositoryPages.Values];
             _repositoryPages.Clear();
         }
 
@@ -267,13 +267,38 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
 
     internal RepositoryPage CreateRepositoryPage(GitHubRepository repository)
     {
-        var page = new RepositoryPage(_browser, Actions, repository, _repositoryIssuesPage, _repositoryPullRequestsPage, _auth, _agentsClient);
         lock (_lock)
         {
-            _repositoryPages.Add(page);
+            if (_repositoryPages.TryGetValue(repository.FullName, out var existing))
+            {
+                return existing;
+            }
         }
 
-        return page;
+        var page = new RepositoryPage(_browser, Actions, repository, _repositoryIssuesPage, _repositoryPullRequestsPage, _auth, _agentsClient);
+        RepositoryPage result = page;
+        lock (_lock)
+        {
+            if (_load.Disposed)
+            {
+                result = page;
+            }
+            else if (_repositoryPages.TryGetValue(repository.FullName, out var existing))
+            {
+                result = existing;
+            }
+            else
+            {
+                _repositoryPages.Add(repository.FullName, page);
+            }
+        }
+
+        if (!ReferenceEquals(page, result) || _load.Disposed)
+        {
+            page.Dispose();
+        }
+
+        return result;
     }
 
     private Task StartSearch(bool reset)
@@ -403,7 +428,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         RepositoryPage[] repositoryPages;
         lock (_lock)
         {
-            repositoryPages = [.. _repositoryPages];
+            repositoryPages = [.. _repositoryPages.Values];
             _repositoryPages.Clear();
             _load.Invalidate(reset: true);
             _mine.Clear();

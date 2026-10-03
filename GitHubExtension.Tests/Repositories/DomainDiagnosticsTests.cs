@@ -112,20 +112,46 @@ public sealed class DomainDiagnosticsTests
     {
         var entries = new ConcurrentQueue<DiagnosticEntry>();
         using var sink = OperationDiagnostics.UseSink(entries.Enqueue, verboseReads: true);
-        using var handler = new Handler((request, _) => Task.FromResult(request.Method == HttpMethod.Get
+        var space = (pending ? Space.Replace("Available", "Queued", StringComparison.Ordinal) : Space)
+            .Replace("\"state\":", "\"git_status\":{\"ref\":\"private-branch\"},\"state\":", StringComparison.Ordinal);
+        using var handler = new Handler((request, _) => Task.FromResult(request.RequestUri!.AbsolutePath.StartsWith("/repos/", StringComparison.Ordinal)
             ? Response("""{"id":987654}""")
-            : Response(pending ? Space.Replace("Available", "Queued", StringComparison.Ordinal) : Space, HttpStatusCode.Created)));
+            : Response(space, request.Method == HttpMethod.Post ? HttpStatusCode.Created : HttpStatusCode.OK)));
         using var http = new HttpClient(handler);
 
         await new CodespacesClient(http).CreateCodespaceAsync(Account, "private-owner/private-repo", "private-branch", TestContext.CancellationToken);
 
-        Assert.HasCount(2, entries.Where(entry => entry.Event == DiagnosticEvent.RestRequest && entry.Outcome == DiagnosticOutcome.Requested));
+        Assert.HasCount(3, entries.Where(entry => entry.Event == DiagnosticEvent.RestRequest && entry.Outcome == DiagnosticOutcome.Requested));
         Assert.HasCount(1, entries.Select(entry => entry.OperationId).Distinct());
         Assert.IsTrue(entries.All(entry => entry.Area == DiagnosticArea.Codespaces));
         Assert.AreEqual(pending ? DiagnosticOutcome.Accepted : DiagnosticOutcome.Completed,
             entries.Last(entry => entry.Event == DiagnosticEvent.CodespaceCreate).Outcome);
         Assert.IsFalse(entries.Any(entry => entry.ToString().Contains("private-", StringComparison.Ordinal)));
         Assert.IsFalse(entries.Any(entry => entry.ToString().Contains("987654", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    [DataRow("")]
+    [DataRow("{}")]
+    public async Task CreateCodespace_UnidentifiedAcceptedResourceIsUnknownSchemaFailure(string body)
+    {
+        var entries = new List<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Add, verboseReads: true);
+        using var handler = new Handler((request, _) => Task.FromResult(request.Method == HttpMethod.Get
+            ? Response("""{"id":987654}""")
+            : Response(body, HttpStatusCode.Accepted)));
+        using var http = new HttpClient(handler);
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            new CodespacesClient(http).CreateCodespaceAsync(Account, "private-owner/private-repo", null, TestContext.CancellationToken));
+
+        Assert.IsTrue(error.OutcomeUnknown);
+        Assert.HasCount(1, entries.Select(entry => entry.OperationId).Distinct());
+        Assert.HasCount(1, entries.Where(entry => entry.Severity == DiagnosticSeverity.Error));
+        var terminal = entries.Last(entry => entry.Event == DiagnosticEvent.CodespaceCreate);
+        Assert.AreEqual(DiagnosticFailure.Schema, terminal.Failure);
+        Assert.AreEqual(DiagnosticOutcome.Unknown, terminal.Outcome);
+        Assert.AreEqual(DiagnosticSeverity.Information, terminal.Severity);
     }
 
     [TestMethod]

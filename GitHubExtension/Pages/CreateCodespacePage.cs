@@ -5,6 +5,7 @@
 using System.Text.Json;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using BaldBeardedBuilder.CmdPal.GitHub.Codespaces;
+using BaldBeardedBuilder.CmdPal.GitHub.Commands;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 
@@ -18,16 +19,20 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
     private readonly Lock _lock = new();
     private CreateCodespaceForm _form;
     private GitHubCodespace? _createdCodespace;
-    private CancellationTokenSource? _createCancellation;
+    private readonly MutationExecutor _mutations;
+    private (GitHubAccount Account, string Repository, string? Branch)? _review;
     private Task _currentCreate = Task.CompletedTask;
     private int _generation;
     private bool _disposed;
+    private bool _creating;
+    private GitHubAccount? _unknownAccount;
 
     public CreateCodespacePage(AuthService auth, ICodespacesClient client, IBrowserLauncher browser)
     {
         _auth = auth;
         _client = client;
         _browser = browser;
+        _mutations = new MutationExecutor(auth);
         Id = PageId;
         Name = "Create Codespace";
         Title = "Create Codespace";
@@ -55,10 +60,50 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
         }
     }
 
-    internal ICommandResult HandleSubmit(string inputs, string data)
+    private CommandResult HandleSubmit(CreateCodespaceForm source, string inputs, string data)
     {
+        lock (_lock)
+        {
+            if (_disposed || _creating || _unknownAccount is not null || !ReferenceEquals(source, _form))
+            {
+                return CommandResult.KeepOpen();
+            }
+        }
+
         var action = ReadString(data, "action");
-        if (action == CreateCodespaceActions.Open)
+        if (action == "cancel")
+        {
+            lock (_lock)
+            {
+                if (_review is { } review)
+                {
+                    _form = new CreateCodespaceForm(this, CreateCodespaceCards.Form(review.Repository, review.Branch, null));
+                    _review = null;
+                }
+            }
+
+            RaiseItemsChanged();
+        }
+        else if (action == CreateCodespaceActions.Confirm)
+        {
+            (GitHubAccount Account, string Repository, string? Branch)? review;
+            lock (_lock)
+            {
+                // Check identity while capturing the review, not before releasing the lock.
+                if (!ReferenceEquals(source, _form))
+                {
+                    return CommandResult.KeepOpen();
+                }
+
+                review = _review;
+                _review = null;
+            }
+            if (review is { } captured && _mutations.IsCurrent(captured.Account))
+            {
+                StartCreate(captured.Account, captured.Repository, captured.Branch);
+            }
+        }
+        else if (action == CreateCodespaceActions.Open)
         {
             GitHubCodespace? codespace;
             lock (_lock)
@@ -84,6 +129,14 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
         }
         else if (action == CreateCodespaceActions.Create)
         {
+            lock (_lock)
+            {
+                if (_unknownAccount is not null)
+                {
+                    return CommandResult.KeepOpen();
+                }
+            }
+
             var (repository, branch) = ReadInputs(inputs);
             if (repository is null || !IsRepositoryName(repository))
             {
@@ -99,7 +152,16 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
             }
             else
             {
-                StartCreate(account, repository, branch);
+                lock (_lock)
+                {
+                    _review = (account, repository, branch);
+                    _form = new CreateCodespaceForm(this, MutationConfirmation.Card(
+                        account, "Create Codespace", $"{repository} ({branch ?? "default branch"})",
+                        "Creating a Codespace uses compute and storage and may incur charges. Review the repository and branch before confirming.",
+                        CreateCodespaceActions.Confirm));
+                }
+
+                RaiseItemsChanged();
             }
         }
 
@@ -112,20 +174,24 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
         lock (_lock)
         {
             _disposed = true;
-            CancelCreate();
+            _generation++;
         }
+        _mutations.Dispose();
+        IsLoading = false;
     }
 
     private void StartCreate(GitHubAccount account, string repository, string? branch)
     {
         int generation;
-        CancellationToken token;
         lock (_lock)
         {
-            CancelCreate();
-            _createCancellation = new CancellationTokenSource();
-            token = _createCancellation.Token;
+            if (_disposed || _creating || !_mutations.IsCurrent(account))
+            {
+                return;
+            }
+
             generation = ++_generation;
+            _creating = true;
             _createdCodespace = null;
             _form = new CreateCodespaceForm(this, CreateCodespaceCards.Creating(repository));
         }
@@ -134,7 +200,12 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
         RaiseItemsChanged();
         lock (_lock)
         {
-            _currentCreate = Task.Run(() => CreateAsync(account, repository, branch, generation, token));
+            if (generation != _generation || _disposed || !_mutations.IsCurrent(account))
+            {
+                return;
+            }
+
+            _currentCreate = Task.Run(() => CreateAsync(account, repository, branch, generation));
         }
     }
 
@@ -142,39 +213,71 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
         GitHubAccount account,
         string repository,
         string? branch,
-        int generation,
-        CancellationToken cancellationToken)
+        int generation)
     {
         using var operation = OperationDiagnostics.Begin(DiagnosticEvent.CodespaceCreate, DiagnosticArea.Codespaces);
         Exception? failure = null;
         try
         {
-            var codespace = await _client.CreateCodespaceAsync(account, repository, branch, cancellationToken).ConfigureAwait(false);
-            lock (_lock)
-            {
-                if (generation != _generation || _disposed)
+            var result = await _mutations.ExecuteAsync(
+                account, "create-codespace",
+                _ => Task.FromResult(account.Host.IsGitHubDotCom && IsRepositoryName(repository)),
+                async token =>
                 {
-                    return;
-                }
+                    GitHubCodespace codespace;
+                    try
+                    {
+                        codespace = await _client.CreateCodespaceAsync(account, repository, branch, token).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        failure = ex;
+                        throw;
+                    }
+                    if (!string.Equals(codespace.RepositoryFullName, repository, StringComparison.OrdinalIgnoreCase)
+                        || (branch is not null && !string.Equals(codespace.Branch, branch, StringComparison.Ordinal)))
+                    {
+                        return new MutationResult<GitHubCodespace>(MutationState.Unknown, Error: "GitHub returned a different repository or branch. Check GitHub before creating another Codespace.");
+                    }
 
-                _createdCodespace = codespace;
-                _form = new CreateCodespaceForm(this, CreateCodespaceCards.Created(codespace));
+                    return new MutationResult<GitHubCodespace>(MutationState.Completed, codespace);
+                }).ConfigureAwait(false);
+            var outcome = result.State switch
+            {
+                MutationState.Completed => DiagnosticOutcome.Accepted,
+                MutationState.Pending => DiagnosticOutcome.Accepted,
+                MutationState.Unknown => DiagnosticOutcome.Unknown,
+                MutationState.Stale => DiagnosticOutcome.Cancelled,
+                _ => DiagnosticOutcome.Failed,
+            };
+            if (failure is not null && result.State != MutationState.Stale)
+            {
+                operation.Fail(failure, outcome: outcome);
             }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex)
-        {
-            failure = ex;
+            else
+            {
+                operation.Complete(operation.ChildOutcome == outcome ? null : outcome);
+            }
             lock (_lock)
             {
-                if (generation != _generation || _disposed)
+                if (generation != _generation || _disposed || result.State == MutationState.Stale || !_mutations.IsCurrent(account))
                 {
                     return;
                 }
 
-                _form = new CreateCodespaceForm(this, CreateCodespaceCards.Form(repository, branch, ex.Message));
+                if (result.State == MutationState.Completed && result.Value is { } created)
+                {
+                    _createdCodespace = created;
+                    _form = new CreateCodespaceForm(this, CreateCodespaceCards.Created(created));
+                }
+                else
+                {
+                    var error = result.Error ?? "GitHub is still processing this request. Check GitHub before retrying.";
+                    _unknownAccount = result.State is MutationState.Unknown or MutationState.Pending ? account : null;
+                    _form = new CreateCodespaceForm(this, result.State is MutationState.Unknown or MutationState.Pending
+                        ? CreateCodespaceCards.Unknown(error, result.AuthorizeUrl)
+                        : CreateCodespaceCards.Form(repository, branch, error, result.AuthorizeUrl));
+                }
             }
         }
         finally
@@ -183,6 +286,10 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
             lock (_lock)
             {
                 publish = generation == _generation && !_disposed;
+                if (publish)
+                {
+                    _creating = false;
+                }
             }
 
             if (publish)
@@ -190,13 +297,6 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
                 IsLoading = false;
                 RaiseItemsChanged();
             }
-
-            lock (_lock)
-            {
-                publish = generation == _generation && !_disposed;
-            }
-
-            PageDiagnostics.Finish(operation, failure, publish, DiagnosticOutcome.Accepted, mutation: true, cancellationToken: cancellationToken);
         }
     }
 
@@ -214,21 +314,16 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
     {
         lock (_lock)
         {
-            CancelCreate();
+            _generation++;
+            _review = null;
+            _creating = false;
+            _unknownAccount = null;
             _createdCodespace = null;
             _form = new CreateCodespaceForm(this, CreateCodespaceCards.Form(null, null, null));
         }
 
         IsLoading = false;
         RaiseItemsChanged();
-    }
-
-    private void CancelCreate()
-    {
-        _generation++;
-        _createCancellation?.Cancel();
-        _createCancellation?.Dispose();
-        _createCancellation = null;
     }
 
     private static bool IsRepositoryName(string repository)
@@ -284,6 +379,17 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
             TemplateJson = template;
         }
 
-        public override ICommandResult SubmitForm(string inputs, string data) => _page.HandleSubmit(inputs, data);
+        public override ICommandResult SubmitForm(string inputs, string data)
+        {
+            lock (_page._lock)
+            {
+                if (!ReferenceEquals(this, _page._form))
+                {
+                    return CommandResult.KeepOpen();
+                }
+            }
+
+            return _page.HandleSubmit(this, inputs, data);
+        }
     }
 }

@@ -51,8 +51,9 @@ internal static class DomainDiagnostics
         catch (Exception ex)
         {
             var failure = OperationDiagnostics.FailureCategory(ex);
-            var unknown = mutationSent?.Invoke() == true
-                && failure is DiagnosticFailure.Transport or DiagnosticFailure.Timeout or DiagnosticFailure.Schema;
+            var unknown = ex is GitHubApiException { OutcomeUnknown: true }
+                || (mutationSent?.Invoke() == true
+                    && failure is DiagnosticFailure.Transport or DiagnosticFailure.Timeout or DiagnosticFailure.Schema);
             operation.Fail(ex, outcome: unknown ? DiagnosticOutcome.Unknown : null);
             throw;
         }

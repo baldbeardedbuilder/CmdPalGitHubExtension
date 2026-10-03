@@ -16,6 +16,7 @@ public sealed class AgentsClientTests
 {
     private static readonly GitHubAccount Account = new(GitHubHost.GitHubDotCom, "octocat", "test-token");
     private static readonly string[] CreateOnly = ["POST"];
+    private static readonly string[] CreateTextFields = ["prompt", "model", "custom_agent", "base_ref", "head_ref"];
     private const string TaskJson = """
         {
           "id": "task-1",
@@ -289,6 +290,29 @@ public sealed class AgentsClientTests
     }
 
     [TestMethod]
+    public async Task StartTaskAsync_TrimsAndEscapesPromptAndOptionsWithoutDroppingFalse()
+    {
+        const string value = "quote\"\\line\n\t\u263a";
+        using var handler = new RequestHandler(async request =>
+        {
+            using var json = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(TestContext.CancellationToken));
+            var root = json.RootElement;
+            foreach (var name in CreateTextFields)
+                Assert.AreEqual(value, root.GetProperty(name).GetString());
+            Assert.IsFalse(root.GetProperty("create_pull_request").GetBoolean());
+            Assert.AreEqual(6, root.EnumerateObject().Count());
+            return Response(HttpStatusCode.Created, """{"id":"new","state":"queued"}""");
+        });
+        using var http = new HttpClient(handler);
+
+        var task = await new AgentsClient(http).StartTaskAsync(Account, "octocat/hello",
+            new AgentTaskRequest($" {value} ", $" {value} ", $" {value} ", $" {value} ", $" {value} ", false),
+            TestContext.CancellationToken);
+
+        Assert.AreEqual("new", task.Id);
+    }
+
+    [TestMethod]
     public async Task StartTaskAsync_OmitsOptionalEmptyValuesAndRejectsInvalidDrafts()
     {
         var requests = new List<string>();
@@ -337,6 +361,8 @@ public sealed class AgentsClientTests
 
         Assert.Contains("Copilot Business or Enterprise", error.Message);
         Assert.Contains("Agent tasks: read and write", error.Message);
+        Assert.IsTrue(OperationDiagnostics.HasFailure(error));
+        Assert.AreEqual(DiagnosticFailure.Http, OperationDiagnostics.FailureCategory(error));
     }
 
     [TestMethod]
@@ -351,6 +377,29 @@ public sealed class AgentsClientTests
                 new AgentTaskRequest("prompt", null, null, null, null, false), TestContext.CancellationToken));
 
         Assert.Contains("Check the repository's agent tasks", error.Message);
+        Assert.IsTrue(OperationDiagnostics.HasFailure(error));
+        Assert.AreEqual(DiagnosticFailure.Timeout, OperationDiagnostics.FailureCategory(error));
+    }
+
+    [TestMethod]
+    public async Task StartTaskAsync_ServerFailurePreservesUnknownDiagnosticCorrelation()
+    {
+        var entries = new List<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Add, verboseReads: false);
+        using var handler = new RequestHandler(_ => Task.FromResult(Response(HttpStatusCode.InternalServerError, "{}")));
+        using var http = new HttpClient(handler);
+
+        var error = await Assert.ThrowsExactlyAsync<AgentTaskOutcomeUnknownException>(() =>
+            OperationDiagnostics.RunAsync(DiagnosticEvent.Mutation, () =>
+                new AgentsClient(http).StartTaskAsync(Account, "octocat/hello",
+                    new AgentTaskRequest("prompt", null, null, null, null, false), TestContext.CancellationToken)));
+
+        Assert.IsTrue(OperationDiagnostics.HasFailure(error));
+        Assert.AreEqual(DiagnosticFailure.Http, OperationDiagnostics.FailureCategory(error));
+        Assert.HasCount(1, entries.Select(entry => entry.OperationId).Distinct());
+        Assert.HasCount(1, entries.Where(entry => entry.Severity == DiagnosticSeverity.Warning));
+        Assert.AreEqual(DiagnosticOutcome.Unknown, entries[^1].Outcome);
+        Assert.AreEqual(DiagnosticSeverity.Information, entries[^1].Severity);
     }
 
     [TestMethod]

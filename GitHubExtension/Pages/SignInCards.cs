@@ -2,7 +2,7 @@
 // Bald Bearded Builder LLC licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System.Text.Json;
+using BaldBeardedBuilder.CmdPal.GitHub.Api;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
@@ -68,7 +68,7 @@ internal static class SignInCards
         ] }
         """);
 
-    internal static string Str(string value) => JsonSerializer.Serialize(value, SignInCardsJsonContext.Default.String);
+    internal static string Str(string value) => GitHubJson.String(value);
 
     private static string Logo(string logo) => string.IsNullOrEmpty(logo)
         ? string.Empty
@@ -104,6 +104,3 @@ internal static class SignInCards
         }
         """;
 }
-
-[System.Text.Json.Serialization.JsonSerializable(typeof(string))]
-internal sealed partial class SignInCardsJsonContext : System.Text.Json.Serialization.JsonSerializerContext;
