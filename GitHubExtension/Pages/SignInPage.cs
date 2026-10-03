@@ -106,7 +106,6 @@ internal sealed partial class SignInPage : ContentPage, IDisposable
         }
 
         previous?.Cancel();
-        previous?.Dispose();
         var token = cancellation.Token;
         var returnView = waitingView == SignInView.Verifying ? SignInView.Enterprise : SignInView.Start;
 
@@ -115,6 +114,8 @@ internal sealed partial class SignInPage : ContentPage, IDisposable
 
         _ = Task.Run(async () =>
         {
+            using var operation = OperationDiagnostics.Begin(DiagnosticEvent.Mutation, DiagnosticArea.Auth);
+            Exception? failure = null;
             try
             {
                 var account = await signIn(token).ConfigureAwait(false);
@@ -132,20 +133,19 @@ internal sealed partial class SignInPage : ContentPage, IDisposable
             }
             catch (GitHubAuthException ex)
             {
+                failure = ex;
                 if (IsCurrentSignIn(cancellation))
                 {
                     Show(returnView, ex.Message, serverUrl);
                 }
             }
-            catch (Exception ex) when (ex is HttpRequestException or IOException or System.Net.Sockets.SocketException)
+            catch (Exception ex)
             {
+                failure = ex;
                 if (IsCurrentSignIn(cancellation))
                 {
                     Show(returnView, $"Something went wrong signing in. {ex.Message}", serverUrl);
                 }
-            }
-            catch (ObjectDisposedException) when (_disposed)
-            {
             }
             finally
             {
@@ -160,10 +160,15 @@ internal sealed partial class SignInPage : ContentPage, IDisposable
                 }
 
                 cancellation.Dispose();
-                if (current && !_disposed)
+                if (current)
                 {
-                    IsLoading = false;
+                    if (!_disposed)
+                    {
+                        IsLoading = false;
+                    }
                 }
+
+                PageDiagnostics.Finish(operation, failure, current, cancellationToken: token);
             }
         });
     }
@@ -182,10 +187,7 @@ internal sealed partial class SignInPage : ContentPage, IDisposable
             _form = CreateForm(view, error, serverUrl, account);
         }
 
-        if (!_disposed)
-        {
-            RaiseItemsChanged();
-        }
+        RaiseItemsChanged();
     }
 
     public void Dispose()

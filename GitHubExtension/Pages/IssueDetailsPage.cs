@@ -80,12 +80,6 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
         }
     }
 
-    internal ICommandResult Open(GitHubAccount account, Uri issueApiUrl, string repository)
-    {
-        LoadIssue(account, issueApiUrl, repository);
-        return CommandResult.GoToPage(new GoToPageArgs { PageId = PageId });
-    }
-
     internal void LoadIssue(GitHubAccount account, Uri issueApiUrl, string repository)
     {
         int generation;
@@ -118,6 +112,9 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
             _currentLoad = Task.Run(() => LoadAsync(account, issueApiUrl, repository, generation, token));
         }
     }
+
+    internal void Open(GitHubAccount account, Uri issueApiUrl, string repository) =>
+        LoadIssue(account, issueApiUrl, repository);
 
     internal ICommandResult HandleSubmit(string action)
     {
@@ -181,6 +178,8 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
 
     private async Task LoadAsync(GitHubAccount account, Uri issueApiUrl, string repository, int generation, CancellationToken token)
     {
+        using var operation = OperationDiagnostics.Begin(DiagnosticEvent.PageLoad, DiagnosticArea.Issues, verbose: true);
+        Exception? failure = null;
         try
         {
             var issue = await _client.GetIssueAsync(account, issueApiUrl, token).ConfigureAwait(false);
@@ -198,8 +197,9 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
         }
-        catch (GitHubApiException ex)
+        catch (Exception ex)
         {
+            failure = ex;
             lock (_lock)
             {
                 if (generation != _generation || _disposed)
@@ -223,27 +223,14 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
                 IsLoading = false;
                 RaiseItemsChanged();
             }
-        }
-    }
 
-    private void OnAccountChanged(object? sender, EventArgs e)
-    {
-        lock (_lock)
-        {
-            if (_disposed)
+            lock (_lock)
             {
-                return;
+                publish = generation == _generation && !_disposed;
             }
 
-            CancelLoad();
-            _issueApiUrl = null;
-            _issue = null;
-            _repository = null;
-            _form = new IssueDetailsForm(this, IssueDetailsCards.SignedOut());
+            PageDiagnostics.Finish(operation, failure, publish, cancellationToken: token);
         }
-
-        IsLoading = false;
-        RaiseItemsChanged();
     }
 
     public void Dispose()
@@ -269,6 +256,26 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
         _loadCts?.Cancel();
         _loadCts?.Dispose();
         _loadCts = null;
+    }
+
+    private void OnAccountChanged(object? sender, EventArgs e)
+    {
+        lock (_lock)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            CancelLoad();
+            _issueApiUrl = null;
+            _issue = null;
+            _repository = null;
+            _form = new IssueDetailsForm(this, IssueDetailsCards.SignedOut());
+        }
+
+        IsLoading = false;
+        RaiseItemsChanged();
     }
 
     private sealed partial class IssueDetailsForm : FormContent

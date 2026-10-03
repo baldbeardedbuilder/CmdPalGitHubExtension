@@ -55,8 +55,9 @@ These are not obvious and will bite you. Follow them.
   `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` env vars or a gitignored
   `GitHubExtension/oauth.local.props`. Enterprise sign in works without it.
 - Never commit tokens, client secrets, or Credential Locker contents.
-- Logs exclude tokens, auth headers, URL queries, and response bodies. Keep it that way.
-  API paths can contain private repo names, so do not log anything more sensitive.
+- Use typed operation diagnostics and route templates, never actual API hosts or paths.
+  Logs exclude tokens, OAuth values, prompts, bodies, search text, raw exception messages,
+  and arbitrary response headers. Keep user-facing errors separate from logs.
 
 ## Project layout
 

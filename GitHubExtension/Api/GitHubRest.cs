@@ -5,6 +5,7 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 
@@ -24,6 +25,7 @@ internal sealed class GitHubApiException(string message, Exception? innerExcepti
 internal static class GitHubRest
 {
     private static readonly ProductInfoHeaderValue UserAgent = new("BaldBeardedBuilder-CmdPal-GitHub", "1.0");
+    private static readonly ConditionalWeakTable<HttpResponseMessage, ResponseDiagnosticContext> ResponseContexts = new();
 
     public static async Task<HttpResponseMessage> SendAsync(
         HttpClient httpClient,
@@ -37,8 +39,17 @@ internal static class GitHubRest
         HttpContent? content = null,
         string? timeoutMessage = null)
     {
-        logError ??= LogError;
-        EnsureSameHost(account, uri);
+        var mutation = method != HttpMethod.Get && method != HttpMethod.Head;
+        using var operation = OperationDiagnostics.Begin(DiagnosticEvent.RestRequest, verbose: !mutation);
+        try
+        {
+            EnsureSameHost(account, uri);
+        }
+        catch (GitHubApiException ex)
+        {
+            operation.Fail(ex, DiagnosticFailure.Authentication, method: method, uri: uri, textSink: logError);
+            throw;
+        }
 
         using var request = new HttpRequestMessage(method, uri);
         request.Content = content;
@@ -54,57 +65,79 @@ internal static class GitHubRest
         }
         catch (HttpRequestException ex)
         {
-            logError($"GitHub API error: {method} {LogEndpoint(uri)}; transport={ex.HttpRequestError}.");
+            operation.Fail(ex, DiagnosticFailure.Transport, method: method, uri: uri, textSink: logError,
+                outcome: mutation ? DiagnosticOutcome.Unknown : DiagnosticOutcome.Failed);
             throw new GitHubApiException($"Couldn't reach {uri.Host}. {ex.Message}", ex);
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
-            logError($"GitHub API error: {method} {LogEndpoint(uri)}; transport=Timeout.");
+            operation.Fail(ex, DiagnosticFailure.Timeout, method: method, uri: uri, textSink: logError,
+                outcome: mutation ? DiagnosticOutcome.Unknown : DiagnosticOutcome.Failed);
             throw new GitHubApiException(timeoutMessage ?? $"The request to {uri.Host} timed out. Try again.", ex);
         }
-
-        if (!response.IsSuccessStatusCode)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            logError($"GitHub API error: {method} {LogEndpoint(uri)}; status={(int)response.StatusCode}; "
-                + $"request-id={Header(response, "X-GitHub-Request-Id")}; "
-                + $"rate-limit-remaining={Header(response, "X-RateLimit-Remaining")}; "
-                + $"rate-limit-reset={Header(response, "X-RateLimit-Reset")}; "
-                + $"sso-header-present={response.Headers.Contains("X-GitHub-SSO")}.");
+            operation.Cancel();
+            throw;
+        }
+        catch (Exception ex)
+        {
+            operation.Fail(ex, DiagnosticFailure.Unexpected, method: method, uri: uri, textSink: logError);
+            throw;
         }
 
-        if (!throwOnError || response.IsSuccessStatusCode)
+        ResponseContexts.Add(response, new(operation.Id));
+        if (response.IsSuccessStatusCode)
+        {
+            operation.Complete(mutation ? DiagnosticOutcome.Accepted : DiagnosticOutcome.Completed,
+                (int)response.StatusCode, method, uri);
+            return response;
+        }
+
+        var error = response.StatusCode == HttpStatusCode.Forbidden && SsoRequired(account, response) is { } sso
+            ? sso
+            : response.StatusCode switch
+        {
+            HttpStatusCode.Unauthorized => new GitHubApiException("GitHub didn't accept your token. Sign out and back in to fix it."),
+            HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests => new GitHubApiException("GitHub said no. Your token might be missing a scope, or you hit a rate limit."),
+            _ => new GitHubApiException($"{account.Host.Name} returned {(int)response.StatusCode} {response.ReasonPhrase}."),
+        };
+        operation.Fail(error, DiagnosticFailure.Http, (int)response.StatusCode, method, uri, logError);
+        ResponseContexts.GetValue(response, _ => new(operation.Id)).Failure = error;
+        if (!throwOnError)
         {
             return response;
         }
 
-        using (response)
-        {
-            if (response.StatusCode == HttpStatusCode.Forbidden && SsoRequired(account, response) is { } sso)
-            {
-                throw sso;
-            }
-
-            throw response.StatusCode switch
-            {
-                HttpStatusCode.Unauthorized => new GitHubApiException("GitHub didn't accept your token. Sign out and back in to fix it."),
-                HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests => new GitHubApiException("GitHub said no. Your token might be missing a scope, or you hit a rate limit."),
-                _ => new GitHubApiException($"{account.Host.Name} returned {(int)response.StatusCode} {response.ReasonPhrase}."),
-            };
-        }
+        response.Dispose();
+        throw error;
     }
 
     public static async Task<JsonDocument> ReadJsonAsync(HttpResponseMessage response, CancellationToken cancellationToken, Action<string>? logError = null)
     {
+        using var operation = OperationDiagnostics.Begin(DiagnosticEvent.SchemaRead, verbose: true,
+            operationId: ResponseContexts.TryGetValue(response, out var context) ? context.OperationId : null);
         try
         {
             var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-            return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+            var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+            operation.Complete();
+            return json;
         }
         catch (JsonException ex)
         {
-            (logError ?? LogError)(
-                $"GitHub API error: invalid JSON; endpoint={LogEndpoint(response.RequestMessage?.RequestUri)}; "
-                + $"status={(int)response.StatusCode}; request-id={Header(response, "X-GitHub-Request-Id")}.");
+            operation.Fail(ex, DiagnosticFailure.Schema, (int)response.StatusCode,
+                response.RequestMessage?.Method, response.RequestMessage?.RequestUri, logError);
+            throw new GitHubApiException("GitHub sent back something we couldn't read.", ex);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            operation.Cancel();
+            throw;
+        }
+        catch (Exception ex) when (ex is IOException or HttpRequestException or OperationCanceledException)
+        {
+            operation.Fail(ex, OperationDiagnostics.Classify(ex));
             throw new GitHubApiException("GitHub sent back something we couldn't read.", ex);
         }
     }
@@ -141,14 +174,24 @@ internal static class GitHubRest
         return new GitHubApiException(message, authorizeUrl: url);
     }
 
-    private static string Header(HttpResponseMessage response, string name) =>
-        response.Headers.TryGetValues(name, out var values) ? string.Join(',', values) : "unknown";
-
     internal static string LogEndpoint(Uri? uri) =>
-        uri is null ? "unknown" : $"{uri.Scheme}://{uri.Authority}{uri.AbsolutePath}";
+        OperationDiagnostics.RouteTemplate(uri);
 
-    internal static void LogError(string message) =>
-        ExtensionHost.LogMessage(new LogMessage(message) { State = MessageState.Error });
+    internal static T CorrelateFailure<T>(HttpResponseMessage response, T error)
+        where T : Exception
+    {
+        if (ResponseContexts.TryGetValue(response, out var context) && context.Failure is { } failure)
+        {
+            OperationDiagnostics.CorrelateFailure(failure, error);
+        }
+
+        return error;
+    }
+
+    private sealed record ResponseDiagnosticContext(Guid OperationId)
+    {
+        internal Exception? Failure { get; set; }
+    }
 
     public static Uri? NextPage(HttpResponseMessage response) =>
         ParseNextLink(response.Headers.TryGetValues("Link", out var links) ? string.Join(',', links) : null);

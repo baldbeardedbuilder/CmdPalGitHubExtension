@@ -5,6 +5,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using BaldBeardedBuilder.CmdPal.GitHub.Api;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Auth;
 
@@ -21,7 +22,11 @@ internal sealed class GitHubAuthClient(HttpClient httpClient) : IGitHubAuthClien
 {
     private static readonly ProductInfoHeaderValue UserAgent = new("BaldBeardedBuilder-CmdPal-GitHub", "1.0");
 
-    public async Task<string> ExchangeCodeAsync(GitHubHost host, OAuthOptions options, string code, Uri redirectUri, string codeVerifier, CancellationToken cancellationToken)
+    public Task<string> ExchangeCodeAsync(GitHubHost host, OAuthOptions options, string code, Uri redirectUri, string codeVerifier, CancellationToken cancellationToken) =>
+        AuthDiagnostics.RunAsync(DiagnosticEvent.AuthExchange,
+            () => ExchangeCodeCoreAsync(host, options, code, redirectUri, codeVerifier, cancellationToken), cancellationToken);
+
+    private async Task<string> ExchangeCodeCoreAsync(GitHubHost host, OAuthOptions options, string code, Uri redirectUri, string codeVerifier, CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(host.WebUrl, "login/oauth/access_token"))
         {
@@ -41,18 +46,21 @@ internal sealed class GitHubAuthClient(HttpClient httpClient) : IGitHubAuthClien
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
         var root = json.RootElement;
 
-        if (root.TryGetProperty("access_token", out var token) && token.GetString() is { Length: > 0 } accessToken)
+        if (ReadString(root, "access_token") is { Length: > 0 } accessToken)
         {
             return accessToken;
         }
 
-        var description = root.TryGetProperty("error_description", out var d) ? d.GetString()
-            : root.TryGetProperty("error", out var e) ? e.GetString()
-            : null;
-        throw new GitHubAuthException(description ?? "GitHub didn't return an access token.");
+        var description = ReadString(root, "error_description") ?? ReadString(root, "error");
+        throw new GitHubAuthException(description ?? "GitHub didn't return an access token.",
+            description is null ? new JsonException() : null);
     }
 
-    public async Task<string> GetLoginAsync(GitHubHost host, string token, CancellationToken cancellationToken)
+    public Task<string> GetLoginAsync(GitHubHost host, string token, CancellationToken cancellationToken) =>
+        AuthDiagnostics.RunAsync(DiagnosticEvent.AuthIdentity,
+            () => GetLoginCoreAsync(host, token, cancellationToken), cancellationToken);
+
+    private async Task<string> GetLoginCoreAsync(GitHubHost host, string token, CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(host.ApiUrl, "user"));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -71,9 +79,22 @@ internal sealed class GitHubAuthClient(HttpClient httpClient) : IGitHubAuthClien
         }
 
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
-        return json.RootElement.TryGetProperty("login", out var login) && login.GetString() is { Length: > 0 } value
+        return ReadString(json.RootElement, "login") is { Length: > 0 } value
             ? value
-            : throw new GitHubAuthException("GitHub didn't tell us who you are.");
+            : throw new GitHubAuthException("GitHub didn't tell us who you are.", new JsonException());
+    }
+
+    private static string? ReadString(JsonElement root, string property)
+    {
+        if (root.ValueKind != JsonValueKind.Object
+            || (root.TryGetProperty(property, out var value)
+                && value.ValueKind is not (JsonValueKind.String or JsonValueKind.Null)))
+        {
+            throw new GitHubAuthException("GitHub sent back something we couldn't read. Is that the right server URL?",
+                new JsonException());
+        }
+
+        return root.TryGetProperty(property, out value) ? value.GetString() : null;
     }
 
     private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)

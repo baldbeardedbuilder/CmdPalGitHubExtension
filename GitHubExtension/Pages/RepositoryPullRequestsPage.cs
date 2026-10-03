@@ -21,17 +21,10 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     private readonly List<MergePullRequestPage> _mergePages = [];
     private readonly PageEmptyContent _emptyContent;
     private readonly PullRequestFilters _filters = new();
-    private readonly Lock _lock = new();
+    private readonly ListLoadState _load = new();
+    private Lock _lock => _load.SyncRoot;
     private readonly List<RepositoryPullRequestItem> _items = [];
     private string? _repository;
-    private Uri? _nextPage;
-    private bool _loaded;
-    private bool _fetching;
-    private volatile bool _disposed;
-    private string? _error;
-    private int _generation;
-    private CancellationTokenSource? _loadCts;
-    private Task _currentLoad = Task.CompletedTask;
 
     public RepositoryPullRequestsPage(
         AuthService auth,
@@ -63,7 +56,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         {
             lock (_lock)
             {
-                return _currentLoad;
+                return _load.CurrentLoad;
             }
         }
     }
@@ -81,18 +74,9 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         MergePullRequestPage[] mergePages;
         lock (_lock)
         {
-            if (_disposed)
-            {
-                return CommandResult.KeepOpen();
-            }
-
-            CancelLoad();
+            _load.Invalidate(reset: true);
             mergePages = TakeMergePages();
             _repository = repository;
-            _nextPage = null;
-            _loaded = false;
-            _fetching = false;
-            _error = null;
             _items.Clear();
         }
 
@@ -114,10 +98,10 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         string filter;
         lock (_lock)
         {
-            needsLoad = _repository is not null && !_loaded && !_fetching;
+            needsLoad = _repository is not null && _load.NeedsLoad;
             snapshot = [.. _items];
             repository = _repository;
-            error = _error;
+            error = _load.Error;
             filter = _filters.CurrentFilterId;
         }
 
@@ -164,7 +148,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         bool hasMore;
         lock (_lock)
         {
-            hasMore = newSearch.Trim().Length == 0 && _nextPage is not null;
+            hasMore = newSearch.Trim().Length == 0 && _load.NextPage is not null;
         }
 
         HasMoreItems = hasMore;
@@ -184,21 +168,13 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         MergePullRequestPage[] mergePages;
         lock (_lock)
         {
-            if (_disposed)
-            {
-                return _currentLoad;
-            }
-
             if (_repository is null)
             {
-                return _currentLoad;
+                return _load.CurrentLoad;
             }
 
-            CancelLoad();
+            _load.Invalidate(reset: true);
             mergePages = TakeMergePages();
-            _loaded = false;
-            _nextPage = null;
-            _error = null;
             _items.Clear();
         }
 
@@ -213,14 +189,12 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         MergePullRequestPage[] mergePages;
         lock (_lock)
         {
-            _disposed = true;
-            CancelLoad();
+            _load.Dispose();
             mergePages = TakeMergePages();
         }
 
         DisposeMergePages(mergePages);
         IsLoading = false;
-        HasMoreItems = false;
     }
 
     private CommandItem Empty(string title, string subtitle, bool refresh = false) =>
@@ -238,115 +212,67 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     {
         GitHubAccount? account;
         string? repository;
-        Uri? page;
-        int generation;
-        CancellationToken token;
+        ListLoadState.Operation operation;
         lock (_lock)
         {
             account = _auth.CurrentAccount;
             repository = _repository;
-            if (_disposed || account is null || repository is null || _fetching || (!reset && _nextPage is null))
+            if (account is null || repository is null || !_load.TryBegin(reset, out operation))
             {
-                return _currentLoad;
+                return _load.CurrentLoad;
             }
-
-            _loadCts?.Dispose();
-            _loadCts = new CancellationTokenSource();
-            token = _loadCts.Token;
-            _fetching = true;
-            page = reset ? null : _nextPage;
-            generation = _generation;
         }
 
-        IsLoading = true;
+        _load.Publish(operation, () => IsLoading = true);
+        return _load.Run(operation, () => LoadAsync(account, repository, operation), () => PublishLoad(operation),
+            "GitHub took too long to respond. Try refreshing pull requests.", area: DiagnosticArea.PullRequests);
+    }
+
+    private async Task LoadAsync(GitHubAccount account, string repository, ListLoadState.Operation operation)
+    {
+        var result = await _client.GetPullRequestsAsync(account, repository, operation.Page, operation.Token).ConfigureAwait(false);
+        var now = _time.GetUtcNow();
         lock (_lock)
         {
-            if (generation != _generation || _disposed)
+            if (!_load.IsCurrent(operation))
             {
-                return _currentLoad;
+                return;
             }
 
-            _currentLoad = Task.Run(() => LoadAsync(account, repository, page, reset, generation, token));
-            return _currentLoad;
+            if (operation.Reset)
+            {
+                _items.Clear();
+            }
+
+            var known = _items.Select(item => item.PullRequest.Number).ToHashSet();
+            _items.AddRange(result.PullRequests
+                .Where(pullRequest => known.Add(pullRequest.Number))
+                .Select(pullRequest =>
+                {
+                    MergePullRequestPage? mergePage = null;
+                    if (_mergeClient is not null && pullRequest.State == SubjectState.Open)
+                    {
+                        mergePage = new MergePullRequestPage(_auth, _mergeClient, account, repository, pullRequest.Number, pullRequest.WebUrl);
+                        _mergePages.Add(mergePage);
+                    }
+
+                    return new RepositoryPullRequestItem(pullRequest, _browser, now, mergePage);
+                }));
+            _load.Succeed(operation, result.NextPage);
         }
     }
 
-    private async Task LoadAsync(GitHubAccount account, string repository, Uri? page, bool reset, int generation, CancellationToken token)
+    private void PublishLoad(ListLoadState.Operation operation)
     {
-        try
+        bool hasMore;
+        lock (_lock)
         {
-            var result = await _client.GetPullRequestsAsync(account, repository, page, token).ConfigureAwait(false);
-            var now = _time.GetUtcNow();
-            bool hasMore;
-
-            lock (_lock)
-            {
-                if (generation != _generation || token.IsCancellationRequested || _disposed)
-                {
-                    return;
-                }
-
-                if (reset)
-                {
-                    _items.Clear();
-                }
-
-                var known = _items.Select(item => item.PullRequest.Number).ToHashSet();
-                _items.AddRange(result.PullRequests
-                    .Where(pullRequest => known.Add(pullRequest.Number))
-                    .Select(pullRequest =>
-                    {
-                        MergePullRequestPage? mergePage = null;
-                        if (_mergeClient is not null && pullRequest.State == SubjectState.Open)
-                        {
-                            mergePage = new MergePullRequestPage(_auth, _mergeClient, account, repository, pullRequest.Number, pullRequest.WebUrl);
-                            _mergePages.Add(mergePage);
-                        }
-
-                        return new RepositoryPullRequestItem(pullRequest, _browser, now, mergePage);
-                    }));
-                _nextPage = result.NextPage;
-                _loaded = true;
-                _error = null;
-                hasMore = result.NextPage is not null && SearchText.Trim().Length == 0;
-            }
-
-            HasMoreItems = hasMore;
+            hasMore = _load.NextPage is not null && SearchText.Trim().Length == 0;
         }
-        catch (OperationCanceledException) when (token.IsCancellationRequested)
-        {
-        }
-        catch (GitHubApiException ex)
-        {
-            lock (_lock)
-            {
-                if (generation != _generation || _disposed)
-                {
-                    return;
-                }
 
-                _error = ex.Message;
-                _loaded = true;
-            }
-        }
-        finally
-        {
-            bool current;
-            lock (_lock)
-            {
-                current = generation == _generation && !_disposed;
-                if (current)
-                {
-                    _fetching = false;
-                }
-            }
-
-            if (current)
-            {
-                IsLoading = false;
-                RaiseItemsChanged();
-            }
-        }
+        _load.Publish(operation, () => HasMoreItems = hasMore);
+        _load.Publish(operation, () => IsLoading = false);
+        _load.Publish(operation, () => RaiseItemsChanged());
     }
 
     private void Reset()
@@ -354,19 +280,10 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         MergePullRequestPage[] mergePages;
         lock (_lock)
         {
-            if (_disposed)
-            {
-                return;
-            }
-
-            CancelLoad();
+            _load.Invalidate(reset: true);
             mergePages = TakeMergePages();
             _repository = null;
             _items.Clear();
-            _nextPage = null;
-            _loaded = false;
-            _fetching = false;
-            _error = null;
         }
 
         DisposeMergePages(mergePages);
@@ -376,15 +293,6 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     }
 
     private void OnAccountChanged(object? sender, EventArgs e) => Reset();
-
-    private void CancelLoad()
-    {
-        _generation++;
-        _loadCts?.Cancel();
-        _loadCts?.Dispose();
-        _loadCts = null;
-        _fetching = false;
-    }
 
     private MergePullRequestPage[] TakeMergePages()
     {

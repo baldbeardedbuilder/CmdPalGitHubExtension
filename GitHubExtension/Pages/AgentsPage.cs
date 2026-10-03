@@ -17,16 +17,9 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
     private readonly IBrowserLauncher _browser;
     private readonly TimeProvider _time;
     private readonly PageEmptyContent _emptyContent;
-    private readonly Lock _lock = new();
+    private readonly ListLoadState _load = new();
+    private Lock _lock => _load.SyncRoot;
     private readonly List<AgentItem> _items = [];
-    private CancellationTokenSource? _loadCts;
-    private Uri? _nextPage;
-    private bool _loaded;
-    private bool _fetching;
-    private bool _disposed;
-    private string? _error;
-    private int _generation;
-    private Task _currentLoad = Task.CompletedTask;
 
     public AgentsPage(AuthService auth, IAgentsClient client, IBrowserLauncher browser, TimeProvider? time = null)
     {
@@ -49,7 +42,7 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
         {
             lock (_lock)
             {
-                return _currentLoad;
+                return _load.CurrentLoad;
             }
         }
     }
@@ -59,7 +52,7 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
         bool needsLoad;
         lock (_lock)
         {
-            needsLoad = !_loaded && !_fetching;
+            needsLoad = _load.NeedsLoad;
         }
 
         if (needsLoad)
@@ -72,21 +65,21 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
         lock (_lock)
         {
             var terms = SearchText.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            empty = _fetching
+            empty = _load.Fetching
                 ? Empty("Loading agents...", "Checking your GitHub agent tasks")
-                : _error is not null
-                    ? Empty("Couldn't load agents", _error)
+                : _load.Error is not null
+                    ? Empty("Couldn't load agents", _load.Error)
                     : terms.Length > 0
                         ? Empty("No agents found", $"Nothing matches \"{SearchText.Trim()}\"")
                         : Empty("No agents yet", "Your Copilot cloud agent tasks show up here");
 
             var items = _items.Where(i => i.Matches(terms)).Cast<IListItem>().ToList();
-            if (_error is not null && _items.Count > 0)
+            if (_load.Error is not null && _items.Count > 0)
             {
                 items.Insert(0, new ListItem(new RefreshAgentsCommand(this))
                 {
                     Title = "Couldn't load agents",
-                    Subtitle = _error,
+                    Subtitle = _load.Error,
                     Icon = Icons.Agents,
                 });
             }
@@ -106,7 +99,7 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
     {
         lock (_lock)
         {
-            CancelLoad();
+            _load.Invalidate();
         }
 
         return StartLoad(reset: true);
@@ -117,8 +110,7 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
         _auth.AccountChanged -= OnAccountChanged;
         lock (_lock)
         {
-            _disposed = true;
-            CancelLoad();
+            _load.Dispose();
         }
 
         IsLoading = false;
@@ -130,113 +122,64 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
     private Task StartLoad(bool reset)
     {
         GitHubAccount account;
-        CancellationToken token;
-        int generation;
-        Uri? page;
+        ListLoadState.Operation operation;
         lock (_lock)
         {
-            if (_disposed || _auth.CurrentAccount is not { } currentAccount || _fetching || (!reset && _nextPage is null))
+            if (_auth.CurrentAccount is not { } currentAccount || !_load.TryBegin(reset, out operation))
             {
-                return _currentLoad;
+                return _load.CurrentLoad;
             }
 
-            _loadCts?.Dispose();
-            _loadCts = new CancellationTokenSource();
             account = currentAccount;
-            token = _loadCts.Token;
-            generation = _generation;
-            page = reset ? null : _nextPage;
-            _fetching = true;
-            _error = null;
         }
 
-        IsLoading = true;
+        _load.Publish(operation, () => IsLoading = true);
+        return _load.Run(operation, () => LoadAsync(account, operation), () => PublishLoad(operation),
+            "GitHub took too long to respond. Try refreshing agents.", area: DiagnosticArea.Agents);
+    }
+
+    private async Task LoadAsync(GitHubAccount account, ListLoadState.Operation operation)
+    {
+        var result = await _client.GetTasksAsync(account, operation.Page, operation.Token).ConfigureAwait(false);
         lock (_lock)
         {
-            if (generation != _generation || _disposed)
+            if (!_load.IsCurrent(operation))
             {
-                return _currentLoad;
+                return;
             }
 
-            _currentLoad = Task.Run(() => LoadAsync(account, page, reset, generation, token));
-            return _currentLoad;
+            if (operation.Reset)
+            {
+                _items.Clear();
+            }
+
+            var known = _items.Select(i => i.Task.Id).ToHashSet(StringComparer.Ordinal);
+            _items.AddRange(result.Tasks.Where(t => known.Add(t.Id))
+                .Select(t => new AgentItem(this, t, _browser, _time.GetUtcNow())));
+            _items.Sort((a, b) => b.Task.UpdatedAt.CompareTo(a.Task.UpdatedAt));
+            _load.Succeed(operation, result.NextPage);
         }
     }
 
-    private async Task LoadAsync(GitHubAccount account, Uri? page, bool reset, int generation, CancellationToken token)
+    private void PublishLoad(ListLoadState.Operation operation)
     {
-        try
+        bool hasMore;
+        lock (_lock)
         {
-            var result = await _client.GetTasksAsync(account, page, token).ConfigureAwait(false);
-            bool hasMore;
-            lock (_lock)
-            {
-                if (generation != _generation || token.IsCancellationRequested)
-                {
-                    return;
-                }
-
-                if (reset)
-                {
-                    _items.Clear();
-                }
-
-                var known = _items.Select(i => i.Task.Id).ToHashSet(StringComparer.Ordinal);
-                _items.AddRange(result.Tasks.Where(t => known.Add(t.Id))
-                    .Select(t => new AgentItem(this, t, _browser, _time.GetUtcNow())));
-                _items.Sort((a, b) => b.Task.UpdatedAt.CompareTo(a.Task.UpdatedAt));
-                _nextPage = result.NextPage;
-                _loaded = true;
-                hasMore = _nextPage is not null;
-            }
-
-            HasMoreItems = hasMore;
+            hasMore = _load.NextPage is not null;
         }
-        catch (OperationCanceledException) when (token.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex) when (ex is GitHubApiException or HttpRequestException or IOException or OperationCanceledException)
-        {
-            lock (_lock)
-            {
-                if (generation != _generation || token.IsCancellationRequested)
-                {
-                    return;
-                }
 
-                _error = ex is OperationCanceledException ? "GitHub took too long to respond. Try refreshing agents." : ex.Message;
-                _loaded = true;
-            }
-        }
-        finally
-        {
-            bool publish;
-            lock (_lock)
-            {
-                publish = generation == _generation && !_disposed;
-                if (publish)
-                {
-                    _fetching = false;
-                }
-            }
-
-            if (publish)
-            {
-                IsLoading = false;
-                RaiseItemsChanged();
-            }
-        }
+        _load.Publish(operation, () => HasMoreItems = hasMore);
+        _load.Publish(operation, () => IsLoading = false);
+        _load.Publish(operation, () => RaiseItemsChanged());
     }
 
     private void OnAccountChanged(object? sender, EventArgs e)
     {
         lock (_lock)
         {
-            CancelLoad();
+            _load.Invalidate(reset: true);
             _items.Clear();
-            _nextPage = null;
-            _loaded = false;
-            _error = null;
         }
 
         HasMoreItems = false;
@@ -244,12 +187,4 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
         RaiseItemsChanged();
     }
 
-    private void CancelLoad()
-    {
-        _generation++;
-        _loadCts?.Cancel();
-        _loadCts?.Dispose();
-        _loadCts = null;
-        _fetching = false;
-    }
 }

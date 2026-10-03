@@ -23,3 +23,23 @@ internal sealed partial class RefreshActionsCommand : InvokableCommand
         return CommandResult.KeepOpen();
     }
 }
+
+internal sealed partial class CancelWorkflowRunCommand : InvokableCommand
+{
+    private readonly ActionsPage _page;
+    private readonly WorkflowRunItem _item;
+
+    public CancelWorkflowRunCommand(ActionsPage page, WorkflowRunItem item)
+    {
+        _page = page;
+        _item = item;
+        Name = "Cancel";
+        Icon = Icons.Stop;
+    }
+
+    public override ICommandResult Invoke()
+    {
+        _ = _page.CancelAsync(_item);
+        return CommandResult.KeepOpen();
+    }
+}

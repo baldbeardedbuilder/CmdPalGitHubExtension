@@ -2,6 +2,8 @@
 // Bald Bearded Builder LLC licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using BaldBeardedBuilder.CmdPal.GitHub.Api;
+
 namespace BaldBeardedBuilder.CmdPal.GitHub.Auth;
 
 internal sealed partial class AuthService : IDisposable
@@ -84,7 +86,10 @@ internal sealed partial class AuthService : IDisposable
     /// <summary>
     /// Opens the browser to GitHub, waits for the loopback redirect, and swaps the code for a token.
     /// </summary>
-    public async Task<GitHubAccount> SignInWithGitHubAsync(CancellationToken cancellationToken)
+    public Task<GitHubAccount> SignInWithGitHubAsync(CancellationToken cancellationToken) =>
+        AuthDiagnostics.RunAsync(DiagnosticEvent.AuthSignIn, () => SignInWithGitHubCoreAsync(cancellationToken), cancellationToken);
+
+    private async Task<GitHubAccount> SignInWithGitHubCoreAsync(CancellationToken cancellationToken)
     {
         if (!_options.IsConfigured)
         {
@@ -99,36 +104,46 @@ internal sealed partial class AuthService : IDisposable
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(BrowserSignInTimeout);
 
-        _browser.Open(BuildAuthorizeUri(host, _options.ClientId!, listener.RedirectUri, state, Pkce.CreateChallenge(verifier)));
+        AuthDiagnostics.Run(DiagnosticEvent.AuthBrowser, () =>
+            _browser.Open(BuildAuthorizeUri(host, _options.ClientId!, listener.RedirectUri, state, Pkce.CreateChallenge(verifier))));
 
-        OAuthCallback callback;
-        try
+        var callback = await AuthDiagnostics.RunAsync(DiagnosticEvent.AuthCallback, async () =>
         {
-            callback = await listener.WaitForCallbackAsync(timeout.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            throw new GitHubAuthException("We didn't hear back from your browser. Give it another try.");
-        }
+            OAuthCallback result;
+            try
+            {
+                result = await listener.WaitForCallbackAsync(timeout.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new GitHubAuthException("We didn't hear back from your browser. Give it another try.", ex);
+            }
 
-        if (callback.Error is not null)
-        {
-            throw new GitHubAuthException(callback.ErrorDescription ?? callback.Error);
-        }
+            if (result.Error is not null)
+            {
+                throw new GitHubAuthException(result.ErrorDescription ?? result.Error);
+            }
 
-        if (callback.State != state || string.IsNullOrEmpty(callback.Code))
-        {
-            throw new GitHubAuthException("The sign in response didn't match what we sent. Give it another try.");
-        }
+            if (result.State != state || string.IsNullOrEmpty(result.Code))
+            {
+                throw new GitHubAuthException("The sign in response didn't match what we sent. Give it another try.");
+            }
 
-        var token = await _client.ExchangeCodeAsync(host, _options, callback.Code, listener.RedirectUri, verifier, cancellationToken).ConfigureAwait(false);
+            return result;
+        }, cancellationToken).ConfigureAwait(false);
+
+        var token = await _client.ExchangeCodeAsync(host, _options, callback.Code!, listener.RedirectUri, verifier, cancellationToken).ConfigureAwait(false);
         return await CompleteSignInAsync(host, token, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
     /// Signs in to GitHub Enterprise with a personal access token.
     /// </summary>
-    public async Task<GitHubAccount> SignInWithTokenAsync(string? serverUrl, string? token, CancellationToken cancellationToken)
+    public Task<GitHubAccount> SignInWithTokenAsync(string? serverUrl, string? token, CancellationToken cancellationToken) =>
+        AuthDiagnostics.RunAsync(DiagnosticEvent.AuthTokenSignIn,
+            () => SignInWithTokenCoreAsync(serverUrl, token, cancellationToken), cancellationToken);
+
+    private async Task<GitHubAccount> SignInWithTokenCoreAsync(string? serverUrl, string? token, CancellationToken cancellationToken)
     {
         if (!GitHubHost.TryParse(serverUrl, out var host))
         {
@@ -146,7 +161,7 @@ internal sealed partial class AuthService : IDisposable
 
     public void SignOut()
     {
-        UpdateAccount(_store.Clear, null);
+        AuthDiagnostics.Run(DiagnosticEvent.AuthSignOut, () => UpdateAccount(_store.Clear, null));
     }
 
     private async Task<GitHubAccount> CompleteSignInAsync(GitHubHost host, string token, CancellationToken cancellationToken)

@@ -19,17 +19,10 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
     private readonly TimeProvider _time;
     private readonly PageEmptyContent _emptyContent;
     private readonly IssueFilters _filters = new();
-    private readonly Lock _lock = new();
+    private readonly ListLoadState _load = new();
+    private Lock _lock => _load.SyncRoot;
     private readonly List<RepositoryIssueItem> _items = [];
     private string? _repository;
-    private Uri? _nextPage;
-    private bool _loaded;
-    private bool _fetching;
-    private volatile bool _disposed;
-    private string? _error;
-    private int _generation;
-    private CancellationTokenSource? _loadCts;
-    private Task _currentLoad = Task.CompletedTask;
 
     public RepositoryIssuesPage(AuthService auth, IIssuesClient client, IBrowserLauncher browser, TimeProvider? time = null)
     {
@@ -55,7 +48,7 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         {
             lock (_lock)
             {
-                return _currentLoad;
+                return _load.CurrentLoad;
             }
         }
     }
@@ -72,17 +65,8 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
     {
         lock (_lock)
         {
-            if (_disposed)
-            {
-                return CommandResult.KeepOpen();
-            }
-
-            CancelLoad();
+            _load.Invalidate(reset: true);
             _repository = repository;
-            _nextPage = null;
-            _loaded = false;
-            _fetching = false;
-            _error = null;
             _items.Clear();
         }
 
@@ -103,10 +87,10 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         string filter;
         lock (_lock)
         {
-            needsLoad = _repository is not null && !_loaded && !_fetching;
+            needsLoad = _repository is not null && _load.NeedsLoad;
             snapshot = [.. _items];
             repository = _repository;
-            error = _error;
+            error = _load.Error;
             filter = _filters.CurrentFilterId;
         }
 
@@ -146,7 +130,7 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         bool hasMore;
         lock (_lock)
         {
-            hasMore = newSearch.Trim().Length == 0 && _nextPage is not null;
+            hasMore = newSearch.Trim().Length == 0 && _load.NextPage is not null;
         }
 
         HasMoreItems = hasMore;
@@ -167,13 +151,10 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         {
             if (_repository is null)
             {
-                return _currentLoad;
+                return _load.CurrentLoad;
             }
 
-            CancelLoad();
-            _loaded = false;
-            _nextPage = null;
-            _error = null;
+            _load.Invalidate(reset: true);
             _items.Clear();
         }
 
@@ -184,14 +165,8 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
     public void Dispose()
     {
         _auth.AccountChanged -= OnAccountChanged;
-        lock (_lock)
-        {
-            _disposed = true;
-            CancelLoad();
-        }
-
+        _load.Dispose();
         IsLoading = false;
-        HasMoreItems = false;
     }
 
     private CommandItem Empty(string title, string subtitle, bool refresh = false) =>
@@ -201,123 +176,66 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
     {
         GitHubAccount? account;
         string? repository;
-        Uri? page;
-        int generation;
-        CancellationToken token;
+        ListLoadState.Operation operation;
         lock (_lock)
         {
             account = _auth.CurrentAccount;
             repository = _repository;
-            if (_disposed || account is null || repository is null || _fetching || (!reset && _nextPage is null))
+            if (account is null || repository is null || !_load.TryBegin(reset, out operation))
             {
-                return _currentLoad;
+                return _load.CurrentLoad;
             }
-
-            _loadCts?.Dispose();
-            _loadCts = new CancellationTokenSource();
-            token = _loadCts.Token;
-            _fetching = true;
-            page = reset ? null : _nextPage;
-            generation = _generation;
         }
 
-        IsLoading = true;
+        _load.Publish(operation, () => IsLoading = true);
+        return _load.Run(operation, () => LoadAsync(account, repository, operation), () => PublishLoad(operation),
+            "GitHub took too long to respond. Try refreshing issues.", area: DiagnosticArea.Issues);
+    }
+
+    private async Task LoadAsync(GitHubAccount account, string repository, ListLoadState.Operation operation)
+    {
+        var result = await _client.GetIssuesAsync(account, repository, operation.Page, operation.Token).ConfigureAwait(false);
+        var now = _time.GetUtcNow();
         lock (_lock)
         {
-            if (generation != _generation || _disposed)
+            if (!_load.IsCurrent(operation))
             {
-                return _currentLoad;
+                return;
             }
 
-            _currentLoad = Task.Run(() => LoadAsync(account, repository, page, reset, generation, token));
-            return _currentLoad;
+            if (operation.Reset)
+            {
+                _items.Clear();
+            }
+
+            var known = _items.Select(item => item.Issue.Number).ToHashSet();
+            _items.AddRange(result.Issues
+                .Where(issue => known.Add(issue.Number))
+                .Select(issue => new RepositoryIssueItem(issue, repository, _browser, now)));
+            _load.Succeed(operation, result.NextPage);
         }
     }
 
-    private async Task LoadAsync(GitHubAccount account, string repository, Uri? page, bool reset, int generation, CancellationToken token)
+    private void PublishLoad(ListLoadState.Operation operation)
     {
-        try
+        bool hasMore;
+        lock (_lock)
         {
-            var result = await _client.GetIssuesAsync(account, repository, page, token).ConfigureAwait(false);
-            var now = _time.GetUtcNow();
-            bool hasMore;
-
-            lock (_lock)
-            {
-                if (generation != _generation || token.IsCancellationRequested || _disposed)
-                {
-                    return;
-                }
-
-                if (reset)
-                {
-                    _items.Clear();
-                }
-
-                var known = _items.Select(item => item.Issue.Number).ToHashSet();
-                _items.AddRange(result.Issues
-                    .Where(issue => known.Add(issue.Number))
-                    .Select(issue => new RepositoryIssueItem(issue, repository, _browser, now)));
-                _nextPage = result.NextPage;
-                _loaded = true;
-                _error = null;
-                hasMore = result.NextPage is not null && SearchText.Trim().Length == 0;
-            }
-
-            HasMoreItems = hasMore;
+            hasMore = _load.NextPage is not null && SearchText.Trim().Length == 0;
         }
-        catch (OperationCanceledException) when (token.IsCancellationRequested)
-        {
-        }
-        catch (GitHubApiException ex)
-        {
-            lock (_lock)
-            {
-                if (generation != _generation || _disposed)
-                {
-                    return;
-                }
 
-                _error = ex.Message;
-                _loaded = true;
-            }
-        }
-        finally
-        {
-            bool current;
-            lock (_lock)
-            {
-                current = generation == _generation && !_disposed;
-                if (current)
-                {
-                    _fetching = false;
-                }
-            }
-
-            if (current)
-            {
-                IsLoading = false;
-                RaiseItemsChanged();
-            }
-        }
+        _load.Publish(operation, () => HasMoreItems = hasMore);
+        _load.Publish(operation, () => IsLoading = false);
+        _load.Publish(operation, () => RaiseItemsChanged());
     }
 
     private void Reset()
     {
         lock (_lock)
         {
-            if (_disposed)
-            {
-                return;
-            }
-
-            CancelLoad();
+            _load.Invalidate(reset: true);
             _repository = null;
             _items.Clear();
-            _nextPage = null;
-            _loaded = false;
-            _fetching = false;
-            _error = null;
         }
 
         HasMoreItems = false;
@@ -326,15 +244,6 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
     }
 
     private void OnAccountChanged(object? sender, EventArgs e) => Reset();
-
-    private void CancelLoad()
-    {
-        _generation++;
-        _loadCts?.Cancel();
-        _loadCts?.Dispose();
-        _loadCts = null;
-        _fetching = false;
-    }
 }
 
 internal sealed partial class IssueFilters : Filters

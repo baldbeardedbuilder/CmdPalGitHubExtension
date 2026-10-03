@@ -145,6 +145,8 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
         int generation,
         CancellationToken cancellationToken)
     {
+        using var operation = OperationDiagnostics.Begin(DiagnosticEvent.CodespaceCreate, DiagnosticArea.Codespaces);
+        Exception? failure = null;
         try
         {
             var codespace = await _client.CreateCodespaceAsync(account, repository, branch, cancellationToken).ConfigureAwait(false);
@@ -162,8 +164,9 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
-        catch (GitHubApiException ex)
+        catch (Exception ex)
         {
+            failure = ex;
             lock (_lock)
             {
                 if (generation != _generation || _disposed)
@@ -187,6 +190,13 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
                 IsLoading = false;
                 RaiseItemsChanged();
             }
+
+            lock (_lock)
+            {
+                publish = generation == _generation && !_disposed;
+            }
+
+            PageDiagnostics.Finish(operation, failure, publish, DiagnosticOutcome.Accepted, mutation: true, cancellationToken: cancellationToken);
         }
     }
 

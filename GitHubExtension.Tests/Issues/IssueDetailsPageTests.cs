@@ -133,6 +133,46 @@ public class IssueDetailsPageTests
         issueClient.Verify(c => c.GetIssueAsync(Account, issueApiUrl, It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    [TestMethod]
+    public async Task DisposingNotificationsPage_CancelsItsIssueDetailsPage()
+    {
+        var issueApiUrl = new Uri("https://api.github.com/repos/octo/tool/issues/42");
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var issueClient = new Mock<IIssuesClient>();
+        CancellationToken requestToken = default;
+        issueClient.Setup(c => c.GetIssueAsync(Account, issueApiUrl, It.IsAny<CancellationToken>()))
+            .Returns(async (GitHubAccount _, Uri _, CancellationToken token) =>
+            {
+                requestToken = token;
+                started.SetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                return null!;
+            });
+        var notificationClient = new Mock<INotificationsClient>();
+        notificationClient.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationsPageResult(
+                [new GitHubNotification("thread", "Issue", "Issue", issueApiUrl, "octo/tool", null, "subscribed", true, DateTimeOffset.UtcNow)],
+                null));
+        notificationClient.Setup(c => c.GetSubjectAsync(Account, issueApiUrl, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((SubjectDetails?)null);
+        var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(), new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
+        var browser = new FakeBrowser(_ => null);
+        var detailsPage = new IssueDetailsPage(auth, issueClient.Object, browser);
+        var notificationsPage = new NotificationsPage(auth, notificationClient.Object, browser, issueDetails: detailsPage);
+
+        notificationsPage.GetItems();
+        await notificationsPage.CurrentLoad;
+        var destinationPage = (IssueDetailsPage)((NotificationItem)notificationsPage.GetItems().Single()).Command!;
+        destinationPage.GetContent();
+        var load = destinationPage.CurrentLoad;
+        await started.Task;
+        notificationsPage.Dispose();
+        await load;
+
+        Assert.IsTrue(requestToken.IsCancellationRequested);
+        Assert.IsFalse(destinationPage.IsLoading);
+    }
+
     private static async Task WaitFor(Func<bool> condition)
     {
         for (var i = 0; i < 100 && !condition(); i++)
