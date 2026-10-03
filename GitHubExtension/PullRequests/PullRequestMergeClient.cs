@@ -10,7 +10,7 @@ using static BaldBeardedBuilder.CmdPal.GitHub.Api.GitHubRest;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.PullRequests;
 
-internal sealed record PullRequestMergeTarget(string Repository, int Number, string BaseRef, string HeadSha, string[] Methods);
+internal sealed record PullRequestMergeTarget(string Repository, int Number, string BaseRef, string HeadSha, string[] Methods, string? StackScope = null);
 
 internal sealed record PullRequestMergeResult(string Status, string? Uuid, string Summary);
 
@@ -59,9 +59,15 @@ internal sealed class PullRequestMergeClient(HttpClient httpClient) : IPullReque
             throw new GitHubApiException("Only open, non-draft pull requests can be merged.");
         }
 
+        string? stackScope = null;
         if (pull.TryGetProperty("stack", out var stack) && stack.ValueKind != JsonValueKind.Null)
         {
-            throw new GitHubApiException("Stack merging includes all open downstack pull requests. This scope cannot be confirmed here. Merge the stack on GitHub instead.");
+            if (stack.ValueKind != JsonValueKind.Object)
+            {
+                throw new GitHubApiException("GitHub returned a stack scope we could not confirm. Merge on GitHub instead.");
+            }
+
+            stackScope = stack.GetRawText();
         }
 
         if (pull.TryGetProperty("mergeable", out var mergeable) && mergeable.ValueKind == JsonValueKind.False)
@@ -77,7 +83,7 @@ internal sealed class PullRequestMergeClient(HttpClient httpClient) : IPullReque
             throw new GitHubApiException("GitHub did not provide a head SHA and target branch to confirm.");
         }
 
-        return new(repository, number, baseRef, sha, [.. methods]);
+        return new(repository, number, baseRef, sha, [.. methods], stackScope);
     }
 
     public async Task<PullRequestMergeResult> MergeAsync(
@@ -90,9 +96,10 @@ internal sealed class PullRequestMergeClient(HttpClient httpClient) : IPullReque
 
         // Recheck the confirmed scope immediately before sending the mutation.
         var current = await GetTargetAsync(account, target.Repository, target.Number, cancellationToken).ConfigureAwait(false);
-        if (current.HeadSha != target.HeadSha || current.BaseRef != target.BaseRef || !current.Methods.Contains(method))
+        if (current.HeadSha != target.HeadSha || current.BaseRef != target.BaseRef
+            || current.StackScope != target.StackScope || !current.Methods.Contains(method))
         {
-            throw new GitHubApiException("The head SHA, target branch, or allowed methods changed. Reopen the confirmation before merging.");
+            throw new GitHubApiException("The head SHA, target branch, stack scope, or allowed methods changed. Load a fresh confirmation before merging.");
         }
 
         using var content = new StringContent(

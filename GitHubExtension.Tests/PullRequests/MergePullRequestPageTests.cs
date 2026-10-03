@@ -28,7 +28,8 @@ public sealed class MergePullRequestPageTests
         Assert.Contains("main", template);
         Assert.Contains("abc123", template);
         Assert.Contains("octocat@github.com", template);
-        Assert.Contains("no downstack", template);
+        Assert.Contains("ALL open downstack PRs", template);
+        Assert.Contains("not the target branch or downstack scope", template);
         Assert.Contains("queue controls its merge method", template);
         Assert.Contains("never bypassed", template);
         Assert.Contains("squash", template);
@@ -170,9 +171,33 @@ public sealed class MergePullRequestPageTests
         await page.CurrentWork;
         Submit(page, """{"action":"confirm"}""");
         Submit(page, ActionData(page, "confirm"), """{"method":"merge"}""");
+        Submit(page, ActionData(page, "confirm"), """{"method":"squash","scopeAccepted":"false"}""");
+        Submit(page, ActionData(page, "confirm"), """{"method":"squash"}""");
         Submit(page, "[]");
         Submit(page, "{");
         VerifyNoMerge(client);
+    }
+
+    [TestMethod]
+    public async Task FreshConfirmationAfterCancel_RotatesIdentityAndAllowsExplicitNewAttempt()
+    {
+        var client = Client();
+        client.Setup(c => c.MergeAsync(Account, Target, "squash", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PullRequestMergeResult("enqueued", null, "Enqueued, not merged"));
+        using var page = Page(client.Object, out _);
+        page.GetContent();
+        await page.CurrentWork;
+        var staleConfirmation = ActionData(page, "confirm");
+        Submit(page, """{"action":"cancel"}""");
+        Submit(page, ActionData(page, "prepare"));
+        await page.CurrentWork;
+        Submit(page, staleConfirmation);
+        VerifyNoMerge(client);
+        Submit(page, ActionData(page, "confirm"));
+        await page.CurrentWork;
+        Assert.Contains("Enqueued", Template(page));
+        client.Verify(c => c.GetTargetAsync(Account, "octo/tool", 42, It.IsAny<CancellationToken>()), Times.Exactly(2));
+        client.Verify(c => c.MergeAsync(Account, Target, "squash", It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]
@@ -213,7 +238,7 @@ public sealed class MergePullRequestPageTests
         return new(auth, client, Account, "octo/tool", 42, new Uri("https://github.com/octo/tool/pull/42"));
     }
 
-    private static void Submit(MergePullRequestPage page, string data, string inputs = """{"method":"squash"}""") =>
+    private static void Submit(MergePullRequestPage page, string data, string inputs = """{"method":"squash","scopeAccepted":"true"}""") =>
         ((IFormContent)page.GetContent()[0]).SubmitForm(inputs, data);
 
     private static string Template(MergePullRequestPage page) => ((IFormContent)page.GetContent()[0]).TemplateJson;

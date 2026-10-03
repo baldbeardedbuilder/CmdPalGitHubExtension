@@ -17,8 +17,8 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
     private readonly int _number;
     private readonly Uri _webUrl;
     private readonly Lock _lock = new();
-    private readonly string _confirmationId = Guid.NewGuid().ToString();
-    private readonly CancellationTokenSource _cancellation = new();
+    private string _confirmationId = Guid.NewGuid().ToString();
+    private CancellationTokenSource _cancellation = new();
     private MergeForm _form;
     private PullRequestMergeTarget? _target;
     private PullRequestMergeResult? _result;
@@ -63,24 +63,51 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
     internal ICommandResult HandleSubmit(string inputs, string data)
     {
         var action = ReadString(data, "action");
+        var confirmation = ReadString(data, "confirmation");
         if (action == "cancel")
         {
-            Invalidate("Stopped locally. An already submitted merge or queue entry is not cancelled. Check GitHub for its outcome.");
+            Invalidate("Stopped locally. An already submitted merge or queue entry is not cancelled. Check GitHub for its outcome.", allowFresh: true);
         }
-        else if (ReadString(data, "confirmation") == _confirmationId)
+        else if (confirmation is not null)
         {
-            StartWork(action, ReadString(inputs, "method"));
+            if (action == "prepare")
+            {
+                StartNewConfirmation(confirmation);
+            }
+            else if (action != "confirm" || ReadString(inputs, "scopeAccepted") == "true")
+            {
+                StartWork(action, ReadString(inputs, "method"), confirmation);
+            }
         }
 
         return CommandResult.KeepOpen();
     }
 
-    private void StartWork(string? action, string? method)
+    private void StartNewConfirmation(string confirmation)
+    {
+        lock (_lock)
+        {
+            if (_disposed || _busy || confirmation != _confirmationId || !ReferenceEquals(_auth.CurrentAccount, _account)) return;
+            _cancellation.Dispose();
+            _cancellation = new CancellationTokenSource();
+            _confirmationId = Guid.NewGuid().ToString();
+            _invalidated = false;
+            _started = false;
+            _submitted = false;
+            _target = null;
+            _result = null;
+        }
+
+        StartWork("load", null);
+    }
+
+    private void StartWork(string? action, string? method, string? confirmation = null)
     {
         bool start;
         lock (_lock)
         {
-            start = !_invalidated && !_busy && ReferenceEquals(_auth.CurrentAccount, _account)
+            start = !_disposed && !_invalidated && !_busy && ReferenceEquals(_auth.CurrentAccount, _account)
+                && (action == "load" || confirmation == _confirmationId)
                 && (action == "load" ? !_started
                     : action == "confirm" ? _target is not null && !_submitted && method is not null && _target.Methods.Contains(method)
                     : action == "status" && _result?.Uuid is not null);
@@ -130,7 +157,7 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
                 {
                     if (_invalidated) return;
                     _result = result;
-                    _form = new MergeForm(this, Card(result.Summary, result.Uuid is null ? null : "status", cancel: result.Uuid is not null));
+                    _form = new MergeForm(this, Card(result.Summary, result.Uuid is not null ? "status" : result.Status == "failed" ? "prepare" : null, cancel: result.Uuid is not null));
                 }
             }
         }
@@ -143,7 +170,7 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
             {
                 if (_invalidated) return;
                 var warning = _submitted ? "No completion is confirmed. Check GitHub before submitting another merge. " : string.Empty;
-                _form = new MergeForm(this, Card(warning + ex.Message, _result?.Uuid is null ? null : "status"));
+                _form = new MergeForm(this, Card(warning + ex.Message, _result?.Uuid is null ? "prepare" : "status"));
             }
         }
         finally
@@ -179,7 +206,7 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
     private void OnAccountChanged(object? sender, EventArgs e) =>
         Invalidate("The account changed. Reopen the PR using the current account. Any submitted merge continues on GitHub.");
 
-    private void Invalidate(string message)
+    private void Invalidate(string message, bool allowFresh = false)
     {
         lock (_lock)
         {
@@ -187,7 +214,7 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
             _invalidated = true;
             _target = null;
             _result = null;
-            _form = new MergeForm(this, Card(message, null, includeLink: false));
+            _form = new MergeForm(this, Card(message, allowFresh ? "prepare" : null, includeLink: allowFresh));
         }
 
         _cancellation.Cancel();
@@ -199,10 +226,13 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
     {
         var choices = string.Join(',', target.Methods.Select(method =>
             $$"""{"title":{{JsonSerializer.Serialize(method)}},"value":{{JsonSerializer.Serialize(method)}}}"""));
+        var scope = target.StackScope is null
+            ? "No stack is currently reported."
+            : $"Current stack metadata: {target.StackScope}.";
         return Card(
-            $"Confirm {_repository}#{_number} into {target.BaseRef} as {_account.Login}@{_account.Host.Name}. Expected head SHA: {target.HeadSha}. Scope: this PR only, no downstack PRs. GitHub will use the branch merge queue if configured; the queue controls its merge method. Otherwise use the selected direct-merge method. Repository rules are enforced, never bypassed.",
+            $"Confirm {_repository}#{_number} as {_account.Login}@{_account.Host.Name}. Current target branch: {target.BaseRef}. Expected head SHA: {target.HeadSha}. {scope} Scope: this PR and ALL open downstack PRs if it is stacked. GitHub will use the branch merge queue if configured; the queue controls its merge method. Otherwise use the selected direct-merge method. Repository rules are enforced, never bypassed. The API pins only this PR's head SHA, not the target branch or downstack scope. These may change after our final check. If you require a fixed branch or exact downstack PR set, do not confirm; review on GitHub instead.",
             "confirm", cancel: true,
-            input: $$"""{"type":"Input.ChoiceSet","id":"method","label":"Direct-merge method","style":"compact","isRequired":true,"value":{{JsonSerializer.Serialize(target.Methods[0])}},"choices":[{{choices}}]}""");
+            input: $$"""{"type":"Input.ChoiceSet","id":"method","label":"Direct-merge method","style":"compact","isRequired":true,"value":{{JsonSerializer.Serialize(target.Methods[0])}},"choices":[{{choices}}]},{"type":"Input.Toggle","id":"scopeAccepted","title":"I authorize the current target and automatic downstack scope, including concurrent changes after the final check.","valueOn":"true","valueOff":"false","value":"false","isRequired":true,"errorMessage":"Review and accept the async API scope before confirming."}""");
     }
 
     private string Card(string text, string? action, bool cancel = false, string? input = null, bool includeLink = true)
@@ -215,7 +245,13 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
         var actions = new List<string>();
         if (action is not null)
         {
-            actions.Add($$$"""{"type":"Action.Submit","title":"{{{(action == "confirm" ? "Confirm merge or enqueue" : "Check status")}}}","data":{"action":"{{{action}}}","confirmation":"{{{_confirmationId}}}"}}""");
+            var title = action switch
+            {
+                "confirm" => "Confirm merge or enqueue",
+                "prepare" => "Load fresh confirmation",
+                _ => "Check status",
+            };
+            actions.Add($$$"""{"type":"Action.Submit","title":"{{{title}}}","data":{"action":"{{{action}}}","confirmation":"{{{_confirmationId}}}"}}""");
         }
 
         if (cancel)

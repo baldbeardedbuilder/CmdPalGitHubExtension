@@ -62,7 +62,7 @@ public sealed class PullRequestMergeClientTests
     }
 
     [TestMethod]
-    [DataRow("""{"state":"open","stack":{"position":2},"head":{"sha":"abc123"},"base":{"ref":"main"}}""", "downstack")]
+    [DataRow("""{"state":"open","stack":true,"head":{"sha":"abc123"},"base":{"ref":"main"}}""", "stack scope")]
     [DataRow("""{"state":"open","mergeable":false}""", "conflicts")]
     [DataRow("""{"state":"closed"}""", "open")]
     [DataRow("""{"state":"open","draft":true}""", "non-draft")]
@@ -76,6 +76,42 @@ public sealed class PullRequestMergeClientTests
             new PullRequestMergeClient(http).MergeAsync(Account, Target, "squash", TestContext.CancellationToken));
 
         Assert.Contains(expectedMessage, error.Message);
+        Assert.IsTrue(handler.Requests.All(r => r.Method == HttpMethod.Get));
+    }
+
+    [TestMethod]
+    public async Task StackSnapshot_IsConfirmedAndChangePreventsSubmission()
+    {
+        var stack = """{"id":5,"position":2,"size":3,"base":{"ref":"main","sha":"base-sha"}}""";
+        var pull = PullJson[..^1] + $",\"stack\":{stack}}}";
+        using var handler = new StubHandler(
+            (HttpStatusCode.OK, RepositoryJson), (HttpStatusCode.OK, pull),
+            (HttpStatusCode.OK, RepositoryJson), (HttpStatusCode.OK, pull),
+            (HttpStatusCode.Accepted, PendingJson),
+            (HttpStatusCode.OK, RepositoryJson), (HttpStatusCode.OK, PullJson));
+        using var http = new HttpClient(handler);
+        var client = new PullRequestMergeClient(http);
+        var target = await client.GetTargetAsync(Account, "octo/tool", 42, TestContext.CancellationToken);
+        Assert.AreEqual(stack, target.StackScope);
+        var result = await client.MergeAsync(Account, target, "squash", TestContext.CancellationToken);
+        Assert.AreEqual("pending", result.Status);
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            client.MergeAsync(Account, target, "squash", TestContext.CancellationToken));
+
+        Assert.Contains("stack scope", error.Message);
+        Assert.AreEqual(1, handler.Requests.Count(r => r.Method == HttpMethod.Put));
+    }
+
+    [TestMethod]
+    public async Task NewlyStackedPr_StopsBeforeMutation()
+    {
+        var pull = PullJson[..^1] + ",\"stack\":{\"id\":5,\"position\":2}}";
+        using var handler = new StubHandler((HttpStatusCode.OK, RepositoryJson), (HttpStatusCode.OK, pull));
+        using var http = new HttpClient(handler);
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            new PullRequestMergeClient(http).MergeAsync(Account, Target, "squash", TestContext.CancellationToken));
+        Assert.Contains("stack scope", error.Message);
         Assert.IsTrue(handler.Requests.All(r => r.Method == HttpMethod.Get));
     }
 
