@@ -11,7 +11,7 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 /// <summary>
 /// Your GitHub inbox. Loads lazily on first view, fills in issue and PR state as it arrives, and filters as you type.
 /// </summary>
-internal sealed partial class NotificationsPage : DynamicListPage
+internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
 {
     public const string PageId = "com.baldbeardedbuilder.cmdpal.github.notifications";
 
@@ -26,6 +26,8 @@ internal sealed partial class NotificationsPage : DynamicListPage
     private readonly Lock _lock = new();
     private readonly List<NotificationItem> _items = [];
     private readonly Dictionary<string, (DateTimeOffset UpdatedAt, SubjectDetails Details)> _subjectCache = [];
+    private readonly Dictionary<string, CancellationTokenSource> _mutationCancellations = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _pendingMutations = new(StringComparer.Ordinal);
     private Uri? _nextPage;
     private bool _loaded;
     private bool _fetching;
@@ -34,6 +36,7 @@ internal sealed partial class NotificationsPage : DynamicListPage
     private int _generation;
     private Task _currentLoad = Task.CompletedTask;
     private Task _currentMutation = Task.CompletedTask;
+    private bool _disposed;
 
     public NotificationsPage(AuthService auth, INotificationsClient client, IBrowserLauncher browser, TimeProvider? time = null, IssueDetailsPage? issueDetails = null)
     {
@@ -49,7 +52,7 @@ internal sealed partial class NotificationsPage : DynamicListPage
         Icon = Icons.Notifications;
         PlaceholderText = "Filter notifications...";
         ShowDetails = true;
-        _auth.AccountChanged += (_, _) => Reset();
+        _auth.AccountChanged += OnAccountChanged;
     }
 
     /// <summary>
@@ -125,12 +128,15 @@ internal sealed partial class NotificationsPage : DynamicListPage
 
     public Task RefreshAsync()
     {
+        CancellationTokenSource[] cancellations;
         lock (_lock)
         {
             _generation++;
             _fetching = false;
+            cancellations = InvalidateMutationsLocked();
         }
 
+        CancelMutations(cancellations);
         return StartLoad(reset: true);
     }
 
@@ -152,17 +158,26 @@ internal sealed partial class NotificationsPage : DynamicListPage
             return;
         }
 
+        CancellationTokenSource cancellation;
         int generation;
         lock (_lock)
         {
+            if (!CanBeginMutationLocked(account, item))
+            {
+                return;
+            }
+
             generation = _generation;
             _mutationError = null;
+            _pendingMutations.Add(item.Notification.Id);
+            cancellation = new CancellationTokenSource();
+            _mutationCancellations[item.Notification.Id] = cancellation;
         }
 
         item.SetUnread(false);
         lock (_lock)
         {
-            _currentMutation = Task.Run(() => MutateAsync(account, item, generation, done: false));
+            _currentMutation = Task.Run(() => MutateAsync(account, item, generation, done: false, cancellation));
         }
     }
 
@@ -173,36 +188,57 @@ internal sealed partial class NotificationsPage : DynamicListPage
             return;
         }
 
+        CancellationTokenSource cancellation;
         int generation;
         lock (_lock)
         {
+            if (!CanBeginMutationLocked(account, item))
+            {
+                return;
+            }
+
             generation = _generation;
             _mutationError = null;
             _items.Remove(item);
+            _pendingMutations.Add(item.Notification.Id);
+            cancellation = new CancellationTokenSource();
+            _mutationCancellations[item.Notification.Id] = cancellation;
         }
 
         RaiseItemsChanged();
         lock (_lock)
         {
-            _currentMutation = Task.Run(() => MutateAsync(account, item, generation, done: true));
+            _currentMutation = Task.Run(() => MutateAsync(account, item, generation, done: true, cancellation));
         }
     }
 
-    private async Task MutateAsync(GitHubAccount account, NotificationItem item, int generation, bool done)
+    private async Task MutateAsync(
+        GitHubAccount account, NotificationItem item, int generation, bool done, CancellationTokenSource cancellation)
     {
         using var operation = OperationDiagnostics.Begin(
             done ? DiagnosticEvent.NotificationDone : DiagnosticEvent.NotificationRead, DiagnosticArea.Notifications);
         Exception? failure = null;
+        var token = cancellation.Token;
+        var mutationWasCurrent = false;
         try
         {
-            if (done)
+            token.ThrowIfCancellationRequested();
+            lock (_lock)
             {
-                await _client.MarkAsDoneAsync(account, item.Notification.Id, CancellationToken.None).ConfigureAwait(false);
+                mutationWasCurrent = IsCurrentMutationLocked(account, item, generation, cancellation);
             }
-            else
+
+            if (mutationWasCurrent && done)
             {
-                await _client.MarkAsReadAsync(account, item.Notification.Id, CancellationToken.None).ConfigureAwait(false);
+                await _client.MarkAsDoneAsync(account, item.Notification.Id, token).ConfigureAwait(false);
             }
+            else if (mutationWasCurrent)
+            {
+                await _client.MarkAsReadAsync(account, item.Notification.Id, token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
         }
         catch (Exception ex)
         {
@@ -212,7 +248,7 @@ internal sealed partial class NotificationsPage : DynamicListPage
         bool current;
         lock (_lock)
         {
-            current = generation == _generation;
+            current = generation == _generation && !_disposed && ReferenceEquals(_auth.CurrentAccount, account);
             if (current && failure is not null)
             {
                 _mutationError = done ? "Couldn't mark notification as done. Refresh and try again."
@@ -239,7 +275,18 @@ internal sealed partial class NotificationsPage : DynamicListPage
             current = generation == _generation;
         }
 
-        PageDiagnostics.Finish(operation, failure, current, mutation: true);
+        PageDiagnostics.Finish(operation, failure, current && mutationWasCurrent, mutation: true);
+        lock (_lock)
+        {
+            if (_mutationCancellations.TryGetValue(item.Notification.Id, out var currentCancellation)
+                && ReferenceEquals(currentCancellation, cancellation))
+            {
+                _mutationCancellations.Remove(item.Notification.Id);
+                _pendingMutations.Remove(item.Notification.Id);
+            }
+        }
+
+        cancellation.Dispose();
     }
 
     private Task StartLoad(bool reset)
@@ -250,7 +297,7 @@ internal sealed partial class NotificationsPage : DynamicListPage
         lock (_lock)
         {
             account = _auth.CurrentAccount;
-            if (account is null || _fetching || (!reset && _nextPage is null))
+            if (_disposed || account is null || _fetching || (!reset && _nextPage is null))
             {
                 return _currentLoad;
             }
@@ -448,6 +495,7 @@ internal sealed partial class NotificationsPage : DynamicListPage
 
     private void Reset()
     {
+        CancellationTokenSource[] cancellations;
         lock (_lock)
         {
             _generation++;
@@ -458,11 +506,69 @@ internal sealed partial class NotificationsPage : DynamicListPage
             _fetching = false;
             _error = null;
             _mutationError = null;
+            cancellations = InvalidateMutationsLocked();
         }
 
+        CancelMutations(cancellations);
         HasMoreItems = false;
         IsLoading = false;
         RaiseItemsChanged();
+    }
+
+    public void Dispose()
+    {
+        CancellationTokenSource[] cancellations;
+        _auth.AccountChanged -= OnAccountChanged;
+        lock (_lock)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            _generation++;
+            cancellations = InvalidateMutationsLocked();
+        }
+
+        CancelMutations(cancellations);
+        IsLoading = false;
+    }
+
+    private void OnAccountChanged(object? sender, EventArgs e) => Reset();
+
+    private bool CanBeginMutationLocked(GitHubAccount account, NotificationItem item) =>
+        !_disposed && ReferenceEquals(_auth.CurrentAccount, account)
+        && (!_loaded || _items.Contains(item))
+        && !_pendingMutations.Contains(item.Notification.Id);
+
+    private bool IsCurrentMutationLocked(
+        GitHubAccount account, NotificationItem item, int generation, CancellationTokenSource cancellation) =>
+        !_disposed && generation == _generation && ReferenceEquals(_auth.CurrentAccount, account)
+        && _pendingMutations.Contains(item.Notification.Id)
+        && _mutationCancellations.TryGetValue(item.Notification.Id, out var current)
+        && ReferenceEquals(current, cancellation);
+
+    private CancellationTokenSource[] InvalidateMutationsLocked()
+    {
+        var cancellations = _mutationCancellations.Values.ToArray();
+        _mutationCancellations.Clear();
+        _pendingMutations.Clear();
+        return cancellations;
+    }
+
+    private static void CancelMutations(IEnumerable<CancellationTokenSource> cancellations)
+    {
+        foreach (var cancellation in cancellations)
+        {
+            try
+            {
+                cancellation.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
     }
 
     private static bool HasSubjectDetails(string subjectType, SubjectDetails details) => subjectType switch

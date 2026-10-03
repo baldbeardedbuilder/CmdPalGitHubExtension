@@ -81,8 +81,8 @@ internal sealed class NotificationsClient(HttpClient httpClient) : INotification
             cancellationToken.ThrowIfCancellationRequested();
             sent = true;
             using var response = await SendAsync(httpClient, account, HttpMethod.Patch, uri, cancellationToken).ConfigureAwait(false);
-            return response.StatusCode is System.Net.HttpStatusCode.NoContent or System.Net.HttpStatusCode.ResetContent
-                ? DiagnosticOutcome.Completed : DiagnosticOutcome.Accepted;
+            return MutationOutcome(response, completionConfirmed:
+                response.StatusCode is System.Net.HttpStatusCode.NoContent or System.Net.HttpStatusCode.ResetContent);
         }, DiagnosticEvent.NotificationRead, outcome => outcome, () => sent, cancellationToken).ConfigureAwait(false);
     }
 
@@ -95,8 +95,8 @@ internal sealed class NotificationsClient(HttpClient httpClient) : INotification
             cancellationToken.ThrowIfCancellationRequested();
             sent = true;
             using var response = await SendAsync(httpClient, account, HttpMethod.Delete, uri, cancellationToken).ConfigureAwait(false);
-            return response.StatusCode is System.Net.HttpStatusCode.NoContent or System.Net.HttpStatusCode.ResetContent
-                ? DiagnosticOutcome.Completed : DiagnosticOutcome.Accepted;
+            return MutationOutcome(response, completionConfirmed:
+                response.StatusCode is System.Net.HttpStatusCode.NoContent or System.Net.HttpStatusCode.ResetContent);
         }, DiagnosticEvent.NotificationDone, outcome => outcome, () => sent, cancellationToken).ConfigureAwait(false);
     }
 

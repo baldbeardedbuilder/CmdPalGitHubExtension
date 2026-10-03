@@ -89,7 +89,7 @@ internal static class GitHubRest
         ResponseContexts.Add(response, new(operation.Id));
         if (response.IsSuccessStatusCode)
         {
-            operation.Complete(mutation ? DiagnosticOutcome.Accepted : DiagnosticOutcome.Completed,
+            operation.Complete(mutation ? MutationOutcome(response) : DiagnosticOutcome.Completed,
                 (int)response.StatusCode, method, uri);
             return response;
         }
@@ -102,7 +102,8 @@ internal static class GitHubRest
             HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests => new GitHubApiException("GitHub said no. Your token might be missing a scope, or you hit a rate limit."),
             _ => new GitHubApiException($"{account.Host.Name} returned {(int)response.StatusCode} {response.ReasonPhrase}."),
         };
-        operation.Fail(error, DiagnosticFailure.Http, (int)response.StatusCode, method, uri, logError);
+        operation.Fail(error, DiagnosticFailure.Http, (int)response.StatusCode, method, uri, logError,
+            outcome: mutation && (int)response.StatusCode >= 500 ? DiagnosticOutcome.Unknown : null);
         ResponseContexts.GetValue(response, _ => new(operation.Id)).Failure = error;
         if (!throwOnError)
         {
@@ -176,6 +177,18 @@ internal static class GitHubRest
 
     internal static string LogEndpoint(Uri? uri) =>
         OperationDiagnostics.RouteTemplate(uri);
+
+    internal static DiagnosticOutcome MutationOutcome(HttpResponseMessage response, bool completionConfirmed = false)
+    {
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new ArgumentException("A mutation outcome requires a successful response.", nameof(response));
+        }
+
+        return completionConfirmed && response.StatusCode != HttpStatusCode.Accepted
+            ? DiagnosticOutcome.Completed
+            : DiagnosticOutcome.Accepted;
+    }
 
     internal static T CorrelateFailure<T>(HttpResponseMessage response, T error)
         where T : Exception

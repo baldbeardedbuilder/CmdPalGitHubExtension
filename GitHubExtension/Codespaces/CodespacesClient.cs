@@ -79,11 +79,20 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
             const string timeoutMessage = "GitHub took too long to close this codespace. Refresh to check its state, then try again.";
             try
             {
+                var current = await GetCodespaceAsync(account, name, cancellationToken).ConfigureAwait(false);
+                if (current.State != "Available")
+                {
+                    throw new GitHubApiException("This codespace is no longer available to close. Refresh and review its current state.");
+                }
+
                 cancellationToken.ThrowIfCancellationRequested();
                 sent = true;
                 using var response = await SendAsync(httpClient, account, HttpMethod.Post, uri, cancellationToken, timeoutMessage: timeoutMessage).ConfigureAwait(false);
                 using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
-                return ReadCodespace(json.RootElement);
+                var codespace = ReadCodespace(json.RootElement);
+                return codespace.Name == name
+                    ? codespace
+                    : throw new GitHubApiException("GitHub returned a different codespace than the one requested.", new JsonException());
             }
             catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
@@ -108,11 +117,20 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
             const string timeoutMessage = "GitHub took too long to start this codespace. Refresh to check its state, then try again.";
             try
             {
+                var current = await GetCodespaceAsync(account, name, cancellationToken).ConfigureAwait(false);
+                if (current.State != "Shutdown")
+                {
+                    throw new GitHubApiException("This codespace is no longer shut down. Refresh and review its current state.");
+                }
+
                 cancellationToken.ThrowIfCancellationRequested();
                 sent = true;
                 using var response = await SendAsync(httpClient, account, HttpMethod.Post, uri, cancellationToken, timeoutMessage: timeoutMessage).ConfigureAwait(false);
                 using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
-                return ReadCodespace(json.RootElement);
+                var codespace = ReadCodespace(json.RootElement);
+                return codespace.Name == name
+                    ? codespace
+                    : throw new GitHubApiException("GitHub returned a different codespace than the one requested.", new JsonException());
             }
             catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
@@ -204,7 +222,16 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
             sent = true;
             using var response = await SendAsync(httpClient, account, HttpMethod.Post, createUri, cancellationToken, content: content).ConfigureAwait(false);
             using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
-            return ReadCodespace(json.RootElement);
+            var codespace = ReadCodespace(json.RootElement);
+            if (!string.Equals(codespace.RepositoryFullName, repository, StringComparison.OrdinalIgnoreCase)
+                || (!string.IsNullOrWhiteSpace(branch) && !string.Equals(codespace.Branch, branch.Trim(), StringComparison.Ordinal)))
+            {
+                throw new GitHubApiException(
+                    "GitHub created a codespace with different repository or branch settings. Check Codespaces on GitHub.",
+                    new JsonException());
+            }
+
+            return codespace;
         }, DiagnosticEvent.CodespaceCreate,
             space => MutationOutcome(space, "Available"),
             () => sent, cancellationToken).ConfigureAwait(false);

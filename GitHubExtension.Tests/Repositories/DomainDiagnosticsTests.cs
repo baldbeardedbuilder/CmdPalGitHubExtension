@@ -112,9 +112,12 @@ public sealed class DomainDiagnosticsTests
     {
         var entries = new ConcurrentQueue<DiagnosticEntry>();
         using var sink = OperationDiagnostics.UseSink(entries.Enqueue, verboseReads: true);
+        var createdSpace = pending
+            ? """{"name":"private-space","web_url":"https://private-space.github.dev","repository":{"full_name":"private-owner/private-repo"},"state":"Queued","git_status":{"ref":"private-branch"}}"""
+            : """{"name":"private-space","web_url":"https://private-space.github.dev","repository":{"full_name":"private-owner/private-repo"},"state":"Available","git_status":{"ref":"private-branch"}}""";
         using var handler = new Handler((request, _) => Task.FromResult(request.Method == HttpMethod.Get
             ? Response("""{"id":987654}""")
-            : Response(pending ? Space.Replace("Available", "Queued", StringComparison.Ordinal) : Space, HttpStatusCode.Created)));
+            : Response(createdSpace, HttpStatusCode.Created)));
         using var http = new HttpClient(handler);
 
         await new CodespacesClient(http).CreateCodespaceAsync(Account, "private-owner/private-repo", "private-branch", TestContext.CancellationToken);
@@ -137,7 +140,10 @@ public sealed class DomainDiagnosticsTests
     {
         var entries = new List<DiagnosticEntry>();
         using var sink = OperationDiagnostics.UseSink(entries.Add, verboseReads: false);
-        using var handler = new Handler((_, _) => Task.FromResult(Response(Space.Replace("Available", state, StringComparison.Ordinal))));
+        using var handler = new Handler((request, _) => Task.FromResult(Response(
+            request.Method == HttpMethod.Get
+                ? Space.Replace("Available", action == "start" ? "Shutdown" : "Available", StringComparison.Ordinal)
+                : Space.Replace("Available", state, StringComparison.Ordinal))));
         using var http = new HttpClient(handler);
         var client = new CodespacesClient(http);
 
@@ -158,6 +164,23 @@ public sealed class DomainDiagnosticsTests
     }
 
     [TestMethod]
+    public async Task WorkflowCancellation_ReportsAcceptedWithoutClaimingCompletion()
+    {
+        var entries = new List<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Add, verboseReads: false);
+        using var handler = new Handler((_, _) => Task.FromResult(Response(string.Empty, HttpStatusCode.Accepted)));
+        using var http = new HttpClient(handler);
+
+        await new ActionsClient(http).CancelRunAsync(Account, "private-owner/private-repo", 123, force: false,
+            TestContext.CancellationToken);
+
+        var mutation = entries.Where(entry => entry.Event == DiagnosticEvent.Mutation).ToArray();
+        Assert.AreEqual(DiagnosticOutcome.Requested, mutation[0].Outcome);
+        Assert.AreEqual(DiagnosticOutcome.Accepted, mutation[^1].Outcome);
+        Assert.IsFalse(mutation.Any(entry => entry.Outcome == DiagnosticOutcome.Completed));
+    }
+
+    [TestMethod]
     [DataRow("network", "Unknown", "Transport")]
     [DataRow("timeout", "Unknown", "Timeout")]
     [DataRow("schema", "Unknown", "Schema")]
@@ -166,13 +189,15 @@ public sealed class DomainDiagnosticsTests
     {
         var entries = new List<DiagnosticEntry>();
         using var sink = OperationDiagnostics.UseSink(entries.Add, verboseReads: false);
-        using var handler = new Handler((_, _) => failure switch
-        {
-            "network" => Task.FromException<HttpResponseMessage>(new HttpRequestException("private-network-detail")),
-            "timeout" => Task.FromException<HttpResponseMessage>(new TaskCanceledException("private-timeout-detail")),
-            "schema" => Task.FromResult(Response("{}")),
-            _ => Task.FromResult(Response("private-response-body", HttpStatusCode.Forbidden)),
-        });
+        using var handler = new Handler((request, _) => request.Method == HttpMethod.Get
+            ? Task.FromResult(Response(Space.Replace("Available", "Shutdown", StringComparison.Ordinal)))
+            : failure switch
+            {
+                "network" => Task.FromException<HttpResponseMessage>(new HttpRequestException("private-network-detail")),
+                "timeout" => Task.FromException<HttpResponseMessage>(new TaskCanceledException("private-timeout-detail")),
+                "schema" => Task.FromResult(Response("{}")),
+                _ => Task.FromResult(Response("private-response-body", HttpStatusCode.Forbidden)),
+            });
         using var http = new HttpClient(handler);
 
         await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
@@ -293,7 +318,8 @@ public sealed class DomainDiagnosticsTests
     {
         var entries = new List<DiagnosticEntry>();
         using var sink = OperationDiagnostics.UseSink(entries.Add, verboseReads: false);
-        using var handler = new Handler((_, _) => Task.FromResult(Response(Space.Replace("Available", "Failed", StringComparison.Ordinal))));
+        using var handler = new Handler((request, _) => Task.FromResult(Response(
+            Space.Replace("Available", request.Method == HttpMethod.Get ? "Shutdown" : "Failed", StringComparison.Ordinal))));
         using var http = new HttpClient(handler);
 
         var space = await new CodespacesClient(http).StartCodespaceAsync(Account, "private-space", TestContext.CancellationToken);

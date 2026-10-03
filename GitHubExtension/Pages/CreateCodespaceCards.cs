@@ -25,6 +25,16 @@ internal static class CreateCodespaceCards
         """{ "type": "TextBlock", "text": "Creating your Codespace...", "size": "Large", "weight": "Bolder", "wrap": true }""",
         $$""" { "type": "TextBlock", "text": {{Str(repository)}}, "wrap": true, "isSubtle": true } """);
 
+    public static string Confirm(string repository, string? branch, string login, string host, string confirmation) => Card(
+        """{ "type": "TextBlock", "text": "Review Codespace creation", "size": "Large", "weight": "Bolder", "wrap": true }""",
+        $$"""{"type":"TextBlock","text":{{Str($"Create a Codespace for {repository}{(string.IsNullOrWhiteSpace(branch) ? " using the default branch" : $" on branch {branch}")} as {login}@{host}? This uses compute time and may incur charges.")}},"wrap":true}""",
+        $$"""
+        { "type": "ActionSet", "spacing": "Large", "actions": [
+            { "type": "Action.Submit", "id": "confirm", "title": "Create Codespace", "style": "positive", "data": { "action": "{{CreateCodespaceActions.Confirm}}", "confirmation": "{{confirmation}}" } },
+            { "type": "Action.Submit", "id": "back", "title": "Back", "associatedInputs": "none", "data": { "action": "{{CreateCodespaceActions.Back}}", "confirmation": "{{confirmation}}" } }
+        ] }
+        """);
+
     public static string Created(GitHubCodespace codespace) => Card(
         """{ "type": "TextBlock", "text": "Codespace created", "size": "Large", "weight": "Bolder", "wrap": true }""",
         $$"""{"type": "TextBlock", "text": {{Str($"GitHub is preparing your development environment for {codespace.RepositoryFullName}.")}}, "wrap": true, "isSubtle": true}""",
@@ -32,6 +42,15 @@ internal static class CreateCodespaceCards
         { "type": "ActionSet", "spacing": "Large", "actions": [
             { "type": "Action.Submit", "id": "open", "title": "Open Codespace", "style": "positive", "data": { "action": "{{CreateCodespaceActions.Open}}" } },
             { "type": "Action.Submit", "id": "another", "title": "Create another", "associatedInputs": "none", "data": { "action": "{{CreateCodespaceActions.CreateAnother}}" } }
+        ] }
+        """);
+
+    public static string OutcomeUnknown(string repository, string? branch, string? error = null) => Card(
+        """{ "type": "TextBlock", "text": "Checking Codespace creation", "size": "Large", "weight": "Bolder", "wrap": true }""",
+        $$"""{"type":"TextBlock","text":{{Str($"GitHub may have accepted the request for {repository}{(string.IsNullOrWhiteSpace(branch) ? string.Empty : $" on {branch}")}, but the response was lost. Check the current Codespaces list before taking any further action.{(string.IsNullOrWhiteSpace(error) ? string.Empty : $" {error}")}")}},"wrap":true,"color":"Attention"}""",
+        $$"""
+        { "type": "ActionSet", "spacing": "Large", "actions": [
+            { "type": "Action.Submit", "id": "check", "title": "Check Codespaces", "data": { "action": "{{CreateCodespaceActions.Check}}" } }
         ] }
         """);
 
@@ -54,6 +73,9 @@ internal static class CreateCodespaceCards
 internal static class CreateCodespaceActions
 {
     public const string Create = "create";
+    public const string Confirm = "confirm";
+    public const string Back = "back";
+    public const string Check = "check";
     public const string Open = "open";
     public const string CreateAnother = "createAnother";
 }

@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Collections.Concurrent;
+using System.Text.Json;
 using BaldBeardedBuilder.CmdPal.GitHub.Codespaces;
 using BaldBeardedBuilder.CmdPal.GitHub.Issues;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
@@ -207,8 +208,11 @@ public sealed class PageDiagnosticsTests
         var client = new Mock<ICodespacesClient>();
         client.Setup(c => c.CreateCodespaceAsync(Account, "private/repository", "private-branch", It.IsAny<CancellationToken>()))
             .ReturnsAsync(new GitHubCodespace("private-name", "private title", "private/repository", "private-branch", "Starting", Now, WebUrl));
+        client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CodespacesPageResult([], null));
         using var page = new CreateCodespacePage(CreateAuth(), client.Object, new FakeBrowser(_ => null));
         page.HandleSubmit("""{"repository":"private/repository","branch":"private-branch"}""", """{"action":"create"}""");
+        ConfirmCreate(page);
         await page.CurrentCreate;
 
         var outcome = entries.Single(e => e.Event == DiagnosticEvent.CodespaceCreate && e.Outcome != DiagnosticOutcome.Requested);
@@ -253,6 +257,14 @@ public sealed class PageDiagnosticsTests
         using var http = new HttpClient(new StubHandler(request =>
         {
             Interlocked.Increment(ref requests);
+            if (request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath == "/user/codespaces")
+            {
+                return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""{"codespaces":[],"total_count":0}"""),
+                });
+            }
+
             if (request.Method == HttpMethod.Get)
             {
                 return sent
@@ -270,14 +282,24 @@ public sealed class PageDiagnosticsTests
         }));
         using var page = new CreateCodespacePage(CreateAuth(), new CodespacesClient(http), new FakeBrowser(_ => null));
         page.HandleSubmit("""{"repository":"private/repository"}""", """{"action":"create"}""");
+        ConfirmCreate(page);
         await page.CurrentCreate;
 
         var outcome = entries.Last(e => e.Event == DiagnosticEvent.CodespaceCreate && e.Outcome != DiagnosticOutcome.Requested);
         Assert.AreEqual(sent ? DiagnosticOutcome.Unknown : DiagnosticOutcome.Failed, outcome.Outcome);
         Assert.AreEqual(sent ? DiagnosticFailure.Schema : DiagnosticFailure.Transport, outcome.Failure);
         Assert.AreEqual(DiagnosticSeverity.Information, outcome.Severity);
-        Assert.AreEqual(sent ? 2 : 1, requests);
+        Assert.AreEqual(sent ? 4 : 2, requests);
         Assert.IsFalse(entries.Any(e => e.ToString().Contains("private", StringComparison.Ordinal)));
+    }
+
+    private static void ConfirmCreate(CreateCodespacePage page)
+    {
+        var form = page.GetContent().OfType<Microsoft.CommandPalette.Extensions.IFormContent>().Single();
+        using var json = JsonDocument.Parse(form.TemplateJson);
+        var confirmation = json.RootElement.GetProperty("body")[2].GetProperty("actions")[0]
+            .GetProperty("data").GetProperty("confirmation").GetString();
+        page.HandleSubmit("{}", JsonSerializer.Serialize(new { action = "confirm", confirmation }));
     }
 
     [TestMethod]

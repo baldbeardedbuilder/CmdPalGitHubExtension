@@ -122,37 +122,59 @@ public class CodespacesClientTests
     [TestMethod]
     public async Task StopCodespaceAsync_PostsAuthenticatedStopEndpointAndReadsState()
     {
-        using var handler = new StubHandler(HttpStatusCode.OK, CodespaceJson.Replace("Available", "ShuttingDown", StringComparison.Ordinal));
+        var getBody = CodespaceJson.Replace("octocat-hello-abc", "workspace/name", StringComparison.Ordinal);
+        var postBody = getBody.Replace("Available", "ShuttingDown", StringComparison.Ordinal);
+        using var handler = new ActionHandler((HttpStatusCode.OK, getBody), (HttpStatusCode.OK, postBody));
         using var http = new HttpClient(handler);
 
         var codespace = await new CodespacesClient(http).StopCodespaceAsync(Account, "workspace/name", TestContext.CancellationToken);
 
-        Assert.AreEqual(new Uri("https://api.github.com/user/codespaces/workspace%2Fname/stop"), handler.Url);
-        Assert.AreEqual(HttpMethod.Post, handler.Method);
-        Assert.AreEqual("Bearer " + Account.Token, handler.Authorization);
-        Assert.AreEqual("application/vnd.github+json", handler.Accept);
-        Assert.AreEqual("2022-11-28", handler.ApiVersion);
-        Assert.AreEqual("octocat-hello-abc", codespace.Name);
+        Assert.AreEqual(new Uri("https://api.github.com/user/codespaces/workspace%2Fname/stop"), handler.Requests[1].Url);
+        Assert.AreEqual(HttpMethod.Post, handler.Requests[1].Method);
+        Assert.AreEqual("Bearer " + Account.Token, handler.Requests[1].Authorization);
+        Assert.AreEqual("application/vnd.github+json", handler.Requests[1].Accept);
+        Assert.AreEqual("2022-11-28", handler.Requests[1].ApiVersion);
+        Assert.AreEqual("workspace/name", codespace.Name);
         Assert.AreEqual("ShuttingDown", codespace.State);
-        Assert.AreEqual(1, handler.RequestCount);
+        Assert.AreEqual(2, handler.Requests.Count);
     }
 
     [TestMethod]
     public async Task StartCodespaceAsync_PostsAuthenticatedStartEndpointAndReadsState()
     {
-        using var handler = new StubHandler(HttpStatusCode.OK, CodespaceJson.Replace("Available", "Starting", StringComparison.Ordinal));
+        var getBody = CodespaceJson.Replace("Available", "Shutdown", StringComparison.Ordinal)
+            .Replace("octocat-hello-abc", "workspace/name", StringComparison.Ordinal);
+        var postBody = CodespaceJson.Replace("Available", "Starting", StringComparison.Ordinal)
+            .Replace("octocat-hello-abc", "workspace/name", StringComparison.Ordinal);
+        using var handler = new ActionHandler((HttpStatusCode.OK, getBody), (HttpStatusCode.OK, postBody));
         using var http = new HttpClient(handler);
 
         var codespace = await new CodespacesClient(http).StartCodespaceAsync(Account, "workspace/name", TestContext.CancellationToken);
 
-        Assert.AreEqual(new Uri("https://api.github.com/user/codespaces/workspace%2Fname/start"), handler.Url);
-        Assert.AreEqual(HttpMethod.Post, handler.Method);
-        Assert.AreEqual("Bearer " + Account.Token, handler.Authorization);
-        Assert.AreEqual("application/vnd.github+json", handler.Accept);
-        Assert.AreEqual("2022-11-28", handler.ApiVersion);
-        Assert.AreEqual("octocat-hello-abc", codespace.Name);
+        Assert.AreEqual(new Uri("https://api.github.com/user/codespaces/workspace%2Fname/start"), handler.Requests[1].Url);
+        Assert.AreEqual(HttpMethod.Post, handler.Requests[1].Method);
+        Assert.AreEqual("Bearer " + Account.Token, handler.Requests[1].Authorization);
+        Assert.AreEqual("application/vnd.github+json", handler.Requests[1].Accept);
+        Assert.AreEqual("2022-11-28", handler.Requests[1].ApiVersion);
+        Assert.AreEqual("workspace/name", codespace.Name);
         Assert.AreEqual("Starting", codespace.State);
-        Assert.AreEqual(1, handler.RequestCount);
+        Assert.AreEqual(2, handler.Requests.Count);
+    }
+
+    [TestMethod]
+    public async Task StartCodespaceAsync_RejectsChangedStateBeforePosting()
+    {
+        using var handler = new ActionHandler(
+            (HttpStatusCode.OK, CodespaceJson.Replace("octocat-hello-abc", "one", StringComparison.Ordinal)),
+            (HttpStatusCode.OK, CodespaceJson));
+        using var http = new HttpClient(handler);
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            new CodespacesClient(http).StartCodespaceAsync(Account, "one", TestContext.CancellationToken));
+
+        Assert.Contains("no longer shut down", error.Message);
+        Assert.HasCount(1, handler.Requests);
+        Assert.AreEqual(HttpMethod.Get, handler.Requests[0].Method);
     }
 
     [TestMethod]
@@ -240,15 +262,18 @@ public class CodespacesClientTests
     [DataRow(HttpStatusCode.Forbidden, "GitHub said no.")]
     public async Task StartCodespaceAsync_SurfacesApiErrors(HttpStatusCode status, string message)
     {
-        using var handler = new StubHandler(status, "{}");
+        using var handler = new ActionHandler(
+            (HttpStatusCode.OK, CodespaceJson.Replace("Available", "Shutdown", StringComparison.Ordinal)
+                .Replace("octocat-hello-abc", "one", StringComparison.Ordinal)),
+            (status, "{}"));
         using var http = new HttpClient(handler);
 
         var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
             new CodespacesClient(http).StartCodespaceAsync(Account, "one", TestContext.CancellationToken));
 
         Assert.StartsWith(message, error.Message);
-        Assert.AreEqual(HttpMethod.Post, handler.Method);
-        Assert.AreEqual(1, handler.RequestCount);
+        Assert.AreEqual(HttpMethod.Post, handler.Requests[1].Method);
+        Assert.AreEqual(2, handler.Requests.Count);
     }
 
     [TestMethod]
@@ -273,7 +298,12 @@ public class CodespacesClientTests
     {
         var handler = new Mock<HttpMessageHandler>();
         handler.Protected()
-            .Setup<Task<HttpResponseMessage>>("SendAsync", ItExpr.IsAny<HttpRequestMessage>(), ItExpr.IsAny<CancellationToken>())
+            .SetupSequence<Task<HttpResponseMessage>>("SendAsync", ItExpr.IsAny<HttpRequestMessage>(), ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(CodespaceJson.Replace("Available", "Shutdown", StringComparison.Ordinal)
+                    .Replace("octocat-hello-abc", "one", StringComparison.Ordinal)),
+            })
             .ThrowsAsync(new TaskCanceledException());
         using var http = new HttpClient(handler.Object);
 
@@ -290,15 +320,17 @@ public class CodespacesClientTests
     [DataRow(HttpStatusCode.InternalServerError, "github.com returned 500")]
     public async Task StopCodespaceAsync_SurfacesApiErrors(HttpStatusCode status, string message)
     {
-        using var handler = new StubHandler(status, "{}");
+        using var handler = new ActionHandler(
+            (HttpStatusCode.OK, CodespaceJson.Replace("octocat-hello-abc", "one", StringComparison.Ordinal)),
+            (status, "{}"));
         using var http = new HttpClient(handler);
 
         var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
             new CodespacesClient(http).StopCodespaceAsync(Account, "one", TestContext.CancellationToken));
 
         Assert.StartsWith(message, error.Message);
-        Assert.AreEqual(HttpMethod.Post, handler.Method);
-        Assert.AreEqual(1, handler.RequestCount);
+        Assert.AreEqual(HttpMethod.Post, handler.Requests[1].Method);
+        Assert.AreEqual(2, handler.Requests.Count);
     }
 
     [TestMethod]
@@ -306,7 +338,9 @@ public class CodespacesClientTests
     [DataRow("{}", "GitHub sent back a codespace we couldn't read.")]
     public async Task StopCodespaceAsync_InvalidResponseShowsAnError(string body, string message)
     {
-        using var http = new HttpClient(new StubHandler(HttpStatusCode.OK, body));
+        using var http = new HttpClient(new ActionHandler(
+            (HttpStatusCode.OK, CodespaceJson.Replace("octocat-hello-abc", "one", StringComparison.Ordinal)),
+            (HttpStatusCode.OK, body)));
 
         var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
             new CodespacesClient(http).StopCodespaceAsync(Account, "one", TestContext.CancellationToken));
@@ -333,7 +367,11 @@ public class CodespacesClientTests
     {
         var handler = new Mock<HttpMessageHandler>();
         handler.Protected()
-            .Setup<Task<HttpResponseMessage>>("SendAsync", ItExpr.IsAny<HttpRequestMessage>(), ItExpr.IsAny<CancellationToken>())
+            .SetupSequence<Task<HttpResponseMessage>>("SendAsync", ItExpr.IsAny<HttpRequestMessage>(), ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(CodespaceJson.Replace("octocat-hello-abc", "one", StringComparison.Ordinal)),
+            })
             .ThrowsAsync(new TaskCanceledException());
         using var http = new HttpClient(handler.Object);
 
@@ -366,6 +404,22 @@ public class CodespacesClientTests
         using var body = JsonDocument.Parse(handler.Requests[1].Body!);
         Assert.AreEqual(12345, body.RootElement.GetProperty("repository_id").GetInt64());
         Assert.AreEqual("feature/codespaces", body.RootElement.GetProperty("ref").GetString());
+    }
+
+    [TestMethod]
+    public async Task CreateCodespaceAsync_RejectsIgnoredRepositoryOrBranchSettings()
+    {
+        using var handler = new CreateCodespaceHandler(
+            (HttpStatusCode.OK, """{"id":12345}"""),
+            (HttpStatusCode.Created, CodespaceJson.Replace("feature/codespaces", "other-branch", StringComparison.Ordinal)));
+        using var http = new HttpClient(handler);
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            new CodespacesClient(http).CreateCodespaceAsync(
+                Account, "octocat/hello", "feature/codespaces", TestContext.CancellationToken));
+
+        Assert.Contains("different repository or branch settings", error.Message);
+        Assert.AreEqual(2, handler.Requests.Count);
     }
 
     [TestMethod]
@@ -643,6 +697,28 @@ public class CodespacesClientTests
 
     }
 
+    private sealed class ActionHandler(params (HttpStatusCode Status, string Body)[] responses) : HttpMessageHandler
+    {
+        private int _nextResponse;
+
+        public List<ActionRequest> Requests { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Requests.Add(new ActionRequest(
+                request.RequestUri,
+                request.Method,
+                request.Headers.Authorization?.ToString(),
+                request.Headers.Accept.ToString(),
+                request.Headers.GetValues("X-GitHub-Api-Version").Single()));
+            var response = responses[_nextResponse++];
+            return Task.FromResult(new HttpResponseMessage(response.Status)
+            {
+                Content = new StringContent(response.Body, Encoding.UTF8, "application/json"),
+            });
+        }
+    }
+
     private sealed class CreateCodespaceHandler(params (HttpStatusCode Status, string Body)[] responses) : HttpMessageHandler
     {
         private int _nextResponse;
@@ -666,4 +742,6 @@ public class CodespacesClientTests
     }
 
     private sealed record CapturedRequest(Uri? Url, HttpMethod Method, string? Authorization, string? Body);
+
+    private sealed record ActionRequest(Uri? Url, HttpMethod Method, string? Authorization, string Accept, string ApiVersion);
 }

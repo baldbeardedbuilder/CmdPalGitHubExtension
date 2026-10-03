@@ -134,6 +134,40 @@ public class NotificationsPageTests
     }
 
     [TestMethod]
+    public async Task MarkAsDone_PreventsDuplicatesAndCancelsWhenAccountChanges()
+    {
+        var started = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new Mock<INotificationsClient>();
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationsPageResult([NotificationParsingTests.Notification("1")], null));
+        client.Setup(c => c.MarkAsDoneAsync(Account, "1", It.IsAny<CancellationToken>()))
+            .Returns((GitHubAccount _, string _, CancellationToken token) =>
+            {
+                started.SetResult(token);
+                return response.Task;
+            });
+        var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(),
+            new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
+        var page = new NotificationsPage(auth, client.Object, new FakeBrowser(_ => null));
+        page.GetItems();
+        await page.CurrentLoad;
+        var item = (NotificationItem)page.GetItems().Single();
+
+        page.MarkAsDone(item);
+        var mutation = page.CurrentMutation;
+        var token = await started.Task;
+        page.MarkAsDone(item);
+        auth.SignOut();
+
+        Assert.IsTrue(token.IsCancellationRequested);
+        response.SetResult();
+        await mutation;
+        client.Verify(c => c.MarkAsDoneAsync(Account, "1", It.IsAny<CancellationToken>()), Times.Once);
+        Assert.IsEmpty(page.GetItems());
+    }
+
+    [TestMethod]
     public async Task LoadFailure_ShowsTheError()
     {
         var client = new Mock<INotificationsClient>();

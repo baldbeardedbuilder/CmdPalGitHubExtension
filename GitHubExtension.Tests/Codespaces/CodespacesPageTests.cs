@@ -164,8 +164,7 @@ public class CodespacesPageTests
         Assert.IsFalse(page.IsLoading);
         client.Verify(c => c.StartCodespaceAsync(Account, "two", It.IsAny<CancellationToken>()), Times.Once);
         client.Verify(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()), Times.Once);
-        client.Verify(c => c.GetCodespaceAsync(Account, "two", It.IsAny<CancellationToken>()),
-            state == "Available" ? Times.Never() : Times.Once());
+        client.Verify(c => c.GetCodespaceAsync(Account, "two", It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]
