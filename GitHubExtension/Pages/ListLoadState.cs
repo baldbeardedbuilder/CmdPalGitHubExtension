@@ -5,11 +5,11 @@
 namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 
 // Pages use SyncRoot for both load state and domain state. Publish toolkit notifications only after releasing it.
-internal sealed partial class ListLoadState : IDisposable
+internal sealed partial class ListLoadState(Lock? syncRoot = null) : IDisposable
 {
     private Operation? _operation;
 
-    public Lock SyncRoot { get; } = new();
+    public Lock SyncRoot { get; } = syncRoot ?? new();
 
     public bool Loaded { get; private set; }
 

@@ -136,12 +136,13 @@ public sealed class RepositoryPullRequestsPageTests
         using var page = CreatePage(client.Object);
         page.Open("octo/tool");
         await page.CurrentLoad;
-        Assert.IsTrue(page.HasMoreItems);
+        Assert.IsFalse(page.HasMoreItems);
+        Assert.AreEqual("Load more", page.GetItems().Last().Title);
 
         page.SearchText = "First";
         Assert.IsFalse(page.HasMoreItems);
         page.SearchText = string.Empty;
-        Assert.IsTrue(page.HasMoreItems);
+        Assert.IsFalse(page.HasMoreItems);
         page.LoadMore();
         await page.CurrentLoad;
 

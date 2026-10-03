@@ -9,6 +9,12 @@ Your notifications, repos, agents, codespaces, and saved queries, one keystroke 
 
 Browse workflow runs from a repository's **Actions** view. Use **More > Cancel** on a running workflow. If cancellation is stuck, **More > Force cancel** opens a separate confirmation. Cancelling requires Actions write permission. GitHub accepts the request before the run stops, so the extension refreshes status until GitHub reports a terminal state. Eligible completed runs also offer **More > Rerun workflow** with a review step before submission.
 
+## Filtering and search
+
+In a repository's **Issues** or **Pull Requests** view, typing filters the rows you've loaded, together with your **Open** or **Closed** selection. It doesn't search the whole repository. When more pages are available, you'll see the loaded-results scope and a **Load more** action, even if nothing on the current pages matches. Each click fetches one page and keeps your filters.
+
+In **Repos**, typing first filters your loaded personal repositories, then searches the repositories you can access on your GitHub host. Use **Load more** to fetch another search page. GitHub's search API exposes at most 1,000 results per query. If you hit that limit, narrow your search to reach the repositories you need.
+
 ## Install
 
 Releases aren't published yet. Until they are, build it yourself using the steps in [CONTRIBUTING.md](CONTRIBUTING.md).

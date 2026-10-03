@@ -131,7 +131,7 @@ public sealed class TimeoutRecoveryTests
             }
 
             return Task.FromResult(JsonResponse(search
-                ? request.RequestUri!.AbsolutePath == "/search/repositories" ? $$"""{"items":[{{repository}}]}""" : "[]"
+                ? request.RequestUri!.AbsolutePath == "/search/repositories" ? $$"""{"items":[{{repository}}],"total_count":1}""" : "[]"
                 : $"[{repository}]"));
         }));
         var auth = CreateAuth();

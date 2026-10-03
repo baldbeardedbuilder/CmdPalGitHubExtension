@@ -21,3 +21,8 @@ internal sealed record GitHubRepository(
     Uri? CloneUrl);
 
 internal sealed record RepositoriesPageResult(IReadOnlyList<GitHubRepository> Repositories, Uri? NextPage);
+
+internal sealed record RepositorySearchPageResult(
+    IReadOnlyList<GitHubRepository> Repositories,
+    Uri? NextPage,
+    int TotalCount);
