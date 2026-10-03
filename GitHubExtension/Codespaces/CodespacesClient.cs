@@ -17,6 +17,8 @@ internal interface ICodespacesClient
 
     Task<GitHubCodespace> StartCodespaceAsync(GitHubAccount account, string name, CancellationToken cancellationToken);
 
+    Task<GitHubCodespace> GetCodespaceAsync(GitHubAccount account, string name, CancellationToken cancellationToken);
+
     Task<GitHubCodespace> CreateCodespaceAsync(
         GitHubAccount account,
         string repository,
@@ -70,6 +72,20 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
         {
             throw new GitHubApiException(timeoutMessage, ex);
         }
+    }
+
+    public async Task<GitHubCodespace> GetCodespaceAsync(GitHubAccount account, string name, CancellationToken cancellationToken)
+    {
+        if (!account.Host.IsGitHubDotCom)
+        {
+            throw new GitHubApiException("Codespaces isn't available on GitHub Enterprise Server. Sign in to github.com to check one.");
+        }
+
+        var uri = new Uri(account.Host.ApiUrl, $"user/codespaces/{Uri.EscapeDataString(name)}");
+        using var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken).ConfigureAwait(false);
+        using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
+        return ParseCodespace(json.RootElement)
+            ?? throw new GitHubApiException("GitHub sent back a codespace we couldn't read.");
     }
 
     public async Task<CodespacesPageResult> GetCodespacesAsync(GitHubAccount account, Uri? page, CancellationToken cancellationToken)
