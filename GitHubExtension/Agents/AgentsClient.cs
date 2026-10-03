@@ -5,6 +5,7 @@
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using BaldBeardedBuilder.CmdPal.GitHub.Api;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
@@ -15,6 +16,17 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Agents;
 internal interface IAgentsClient
 {
     Task<AgentTasksPageResult> GetTasksAsync(GitHubAccount account, Uri? page, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<GitHubAgentTask>> GetRepositoryTasksAsync(
+        GitHubAccount account,
+        string repository,
+        CancellationToken cancellationToken);
+
+    Task<GitHubAgentTask> StartTaskAsync(
+        GitHubAccount account,
+        string repository,
+        AgentTaskRequest request,
+        CancellationToken cancellationToken);
 }
 
 internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
@@ -84,6 +96,158 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
         }
     }, outcome: result => result.Tasks.Any(task => task.DetailsError is not null)
         ? DiagnosticOutcome.Partial : DiagnosticOutcome.Completed, cancellationToken: cancellationToken);
+
+    public async Task<IReadOnlyList<GitHubAgentTask>> GetRepositoryTasksAsync(
+        GitHubAccount account,
+        string repository,
+        CancellationToken cancellationToken)
+    {
+        var uri = RepositoryTasksUri(account, repository, includeListParameters: true);
+        using var response = await SendAgentsAsync(account, uri, cancellationToken).ConfigureAwait(false);
+        using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
+        return ParseTasks(json.RootElement, account.Host);
+    }
+
+    public async Task<GitHubAgentTask> StartTaskAsync(
+        GitHubAccount account,
+        string repository,
+        AgentTaskRequest request,
+        CancellationToken cancellationToken)
+    {
+        ValidateRequest(repository, request);
+        var uri = RepositoryTasksUri(account, repository);
+        var body = new Dictionary<string, object?>
+        {
+            ["prompt"] = request.Prompt.Trim(),
+            ["create_pull_request"] = request.CreatePullRequest,
+        };
+        AddOptional(body, "model", request.Model);
+        AddOptional(body, "custom_agent", request.CustomAgent);
+        AddOptional(body, "base_ref", request.BaseRef);
+        AddOptional(body, "head_ref", request.HeadRef);
+        using var content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await SendAsync(httpClient, account, HttpMethod.Post, uri, cancellationToken,
+                throwOnError: false, apiVersion: ApiVersion, content: content,
+                timeoutMessage: "GitHub took too long to confirm the agent task.").ConfigureAwait(false);
+        }
+        catch (GitHubApiException ex) when (ex.InnerException is HttpRequestException or OperationCanceledException)
+        {
+            throw new AgentTaskOutcomeUnknownException(
+                "GitHub may have started this task, but the response was lost. Check the repository's agent tasks before trying again.", ex);
+        }
+
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
+            {
+                if ((int)response.StatusCode >= 500)
+                {
+                    throw new AgentTaskOutcomeUnknownException(
+                        $"GitHub returned {(int)response.StatusCode} while starting the task. Check the repository's agent tasks before trying again.");
+                }
+
+                throw response.StatusCode switch
+                {
+                    HttpStatusCode.Unauthorized => new GitHubApiException("GitHub didn't accept your token. Sign out and back in to fix it."),
+                    HttpStatusCode.Forbidden when SsoRequired(account, response) is { } sso => sso,
+                    HttpStatusCode.Forbidden => new GitHubApiException("GitHub denied task creation. This API requires Copilot Business or Enterprise and Agent tasks: read and write access on this repository. Organization policies may also prevent task creation."),
+                    HttpStatusCode.NotFound => new GitHubApiException("GitHub couldn't find this repository or the Agent Tasks API isn't available for this account."),
+                    HttpStatusCode.UnprocessableEntity => new GitHubApiException("GitHub couldn't start this task. Check the prompt, model, custom agent, and branch names against your repository and Copilot policies."),
+                    HttpStatusCode.TooManyRequests => new GitHubApiException("GitHub's rate limit was reached. Try starting this task later."),
+                    _ => new GitHubApiException($"{account.Host.Name} returned {(int)response.StatusCode} {response.ReasonPhrase}."),
+                };
+            }
+
+            try
+            {
+                using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
+                return ParseCreatedTask(json.RootElement, account.Host);
+            }
+            catch (GitHubApiException ex)
+            {
+                throw new AgentTaskOutcomeUnknownException(
+                    "GitHub accepted the request, but its response couldn't be read. Check the repository's agent tasks before trying again.", ex);
+            }
+            catch (IOException ex)
+            {
+                throw new AgentTaskOutcomeUnknownException(
+                    "GitHub accepted the request, but its response couldn't be read. Check the repository's agent tasks before trying again.", ex);
+            }
+            catch (HttpRequestException ex)
+            {
+                throw new AgentTaskOutcomeUnknownException(
+                    "GitHub accepted the request, but its response couldn't be read. Check the repository's agent tasks before trying again.", ex);
+            }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new AgentTaskOutcomeUnknownException(
+                    "GitHub accepted the request, but its response couldn't be read. Check the repository's agent tasks before trying again.", ex);
+            }
+        }
+    }
+
+    internal static GitHubAgentTask ParseCreatedTask(JsonElement root, GitHubHost host)
+    {
+        if (root.ValueKind != JsonValueKind.Object
+            || GetString(root, "id") is not { Length: > 0 } id)
+        {
+            throw new GitHubApiException("GitHub sent back an agent task without an ID.");
+        }
+
+        var webUrl = GetUri(root, "html_url")
+            ?? new Uri(host.WebUrl, $"copilot/tasks/{Uri.EscapeDataString(id)}");
+        if (webUrl.Scheme != Uri.UriSchemeHttps
+            || !string.Equals(webUrl.Authority, host.WebUrl.Authority, StringComparison.OrdinalIgnoreCase)
+            || !string.IsNullOrEmpty(webUrl.UserInfo))
+        {
+            throw new GitHubApiException("GitHub sent back an agent task with an unsafe link.");
+        }
+
+        var createdAt = GetDate(root, "created_at");
+        return new GitHubAgentTask(id, GetString(root, "name") is { Length: > 0 } name ? name : "Agent task",
+            webUrl, GetString(root, "state") ?? "queued",
+            createdAt == DateTimeOffset.MinValue ? DateTimeOffset.UtcNow : createdAt, null);
+    }
+
+    private static Uri RepositoryTasksUri(GitHubAccount account, string repository, bool includeListParameters = false)
+    {
+        var parts = repository.Split('/');
+        if (parts.Length != 2 || parts.Any(part => string.IsNullOrWhiteSpace(part) || part.Contains('\\')))
+        {
+            throw new GitHubApiException("Enter a repository as owner/name.");
+        }
+
+        var query = includeListParameters ? "?per_page=100&sort=created_at&direction=desc" : string.Empty;
+        return new Uri(account.Host.ApiUrl,
+            $"agents/repos/{Uri.EscapeDataString(parts[0])}/{Uri.EscapeDataString(parts[1])}/tasks{query}");
+    }
+
+    private static void ValidateRequest(string repository, AgentTaskRequest request)
+    {
+        var parts = repository.Split('/');
+        if (parts.Length != 2 || parts.Any(part => string.IsNullOrWhiteSpace(part) || part.Contains('\\')))
+        {
+            throw new GitHubApiException("Enter a repository as owner/name.");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Prompt))
+        {
+            throw new GitHubApiException("Enter a prompt for the agent.");
+        }
+
+    }
+
+    private static void AddOptional(Dictionary<string, object?> body, string name, string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            body[name] = value.Trim();
+        }
+    }
 
     internal static List<GitHubAgentTask> ParseTasks(JsonElement root, GitHubHost host) =>
         DomainDiagnostics.Read(DiagnosticArea.Agents, () =>

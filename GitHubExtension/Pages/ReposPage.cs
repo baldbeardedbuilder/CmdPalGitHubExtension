@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
+using BaldBeardedBuilder.CmdPal.GitHub.Agents;
 using BaldBeardedBuilder.CmdPal.GitHub.Commands;
 using BaldBeardedBuilder.CmdPal.GitHub.Repositories;
 
@@ -22,6 +23,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     private readonly IBrowserLauncher _browser;
     private readonly RepositoryIssuesPage _repositoryIssuesPage;
     private readonly RepositoryPullRequestsPage _repositoryPullRequestsPage;
+    private readonly IAgentsClient? _agentsClient;
     private readonly TimeProvider _time;
     private readonly PageEmptyContent _emptyContent;
     private readonly TimeSpan _searchDelay;
@@ -50,13 +52,15 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         RepositoryPullRequestsPage repositoryPullRequestsPage,
         TimeProvider? time = null,
         TimeSpan? searchDelay = null,
-        ActionsPage? actions = null)
+        ActionsPage? actions = null,
+        IAgentsClient? agentsClient = null)
     {
         _auth = auth;
         _client = client;
         _browser = browser;
         _repositoryIssuesPage = repositoryIssuesPage;
         _repositoryPullRequestsPage = repositoryPullRequestsPage;
+        _agentsClient = agentsClient;
         _time = time ?? TimeProvider.System;
         _emptyContent = new PageEmptyContent(Icons.Repos, new RefreshReposCommand(this));
         _searchDelay = searchDelay ?? DefaultSearchDelay;
@@ -249,7 +253,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
 
     internal RepositoryPage CreateRepositoryPage(GitHubRepository repository)
     {
-        var page = new RepositoryPage(_browser, Actions, repository, _repositoryIssuesPage, _repositoryPullRequestsPage);
+        var page = new RepositoryPage(_browser, Actions, repository, _repositoryIssuesPage, _repositoryPullRequestsPage, _auth, _agentsClient);
         lock (_lock)
         {
             _repositoryPages.Add(page);

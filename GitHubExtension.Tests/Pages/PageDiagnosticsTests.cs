@@ -170,7 +170,7 @@ public sealed class PageDiagnosticsTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task CodespaceAction_ResponseIsAcceptedNotCompleted(bool start)
+    public async Task CodespaceAction_StartCompletesAfterPollingWhileStopRemainsAccepted(bool start)
     {
         var entries = new ConcurrentQueue<DiagnosticEntry>();
         using var sink = OperationDiagnostics.UseSink(entries.Enqueue);
@@ -183,6 +183,8 @@ public sealed class PageDiagnosticsTests
             .ReturnsAsync(codespace with { State = "ShuttingDown" });
         client.Setup(c => c.StartCodespaceAsync(Account, codespace.Name, It.IsAny<CancellationToken>()))
             .ReturnsAsync(codespace with { State = "Starting" });
+        client.Setup(c => c.GetCodespaceAsync(Account, codespace.Name, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(codespace with { State = "Available" });
         using var page = new CodespacesPage(CreateAuth(), client.Object, new FakeBrowser(_ => null));
         page.GetItems();
         await page.CurrentLoad;
@@ -191,7 +193,9 @@ public sealed class PageDiagnosticsTests
 
         var outcome = entries.Single(e => e.Event == (start ? DiagnosticEvent.CodespaceStart : DiagnosticEvent.CodespaceStop)
             && e.Outcome != DiagnosticOutcome.Requested);
-        Assert.AreEqual(DiagnosticOutcome.Accepted, outcome.Outcome);
+        Assert.AreEqual(start ? DiagnosticOutcome.Completed : DiagnosticOutcome.Accepted, outcome.Outcome);
+        client.Verify(c => c.GetCodespaceAsync(Account, codespace.Name, It.IsAny<CancellationToken>()),
+            start ? Times.Once() : Times.Never());
         Assert.IsFalse(entries.Any(e => e.ToString().Contains("private", StringComparison.Ordinal)));
     }
 

@@ -18,6 +18,8 @@ internal interface ICodespacesClient
 
     Task<GitHubCodespace> StartCodespaceAsync(GitHubAccount account, string name, CancellationToken cancellationToken);
 
+    Task<GitHubCodespace> GetCodespaceAsync(GitHubAccount account, string name, CancellationToken cancellationToken);
+
     Task<GitHubCodespace> CreateCodespaceAsync(
         GitHubAccount account,
         string repository,
@@ -86,6 +88,20 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
             space => MutationOutcome(space, "Available"),
             () => sent, cancellationToken).ConfigureAwait(false);
     }
+
+    public Task<GitHubCodespace> GetCodespaceAsync(GitHubAccount account, string name, CancellationToken cancellationToken) =>
+        DomainDiagnostics.RunAsync(DiagnosticArea.Codespaces, async () =>
+    {
+        if (!account.Host.IsGitHubDotCom)
+        {
+            throw new GitHubApiException("Codespaces isn't available on GitHub Enterprise Server. Sign in to github.com to check one.");
+        }
+
+        var uri = new Uri(account.Host.ApiUrl, $"user/codespaces/{Uri.EscapeDataString(name)}");
+        using var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken).ConfigureAwait(false);
+        using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
+        return ReadCodespace(json.RootElement);
+    }, cancellationToken: cancellationToken);
 
     public Task<CodespacesPageResult> GetCodespacesAsync(GitHubAccount account, Uri? page, CancellationToken cancellationToken) =>
         DomainDiagnostics.RunAsync(DiagnosticArea.Codespaces, async () =>

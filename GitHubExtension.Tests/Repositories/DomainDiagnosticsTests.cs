@@ -375,6 +375,23 @@ public sealed class DomainDiagnosticsTests
     private static HttpResponseMessage Response(string body, HttpStatusCode status = HttpStatusCode.OK) =>
         new(status) { Content = new StringContent(body) };
 
+    [TestMethod]
+    public async Task CodespacePolling_InvalidSchemaIsLoggedOnceWithoutPrivateNames()
+    {
+        var entries = new List<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Add, verboseReads: false);
+        using var handler = new Handler((_, _) => Task.FromResult(Response("{}")));
+        using var http = new HttpClient(handler);
+
+        await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            new CodespacesClient(http).GetCodespaceAsync(Account, "private-space", TestContext.CancellationToken));
+
+        Assert.HasCount(1, entries.Where(entry => entry.Severity == DiagnosticSeverity.Error));
+        Assert.HasCount(1, entries.Select(entry => entry.OperationId).Distinct());
+        Assert.AreEqual(DiagnosticFailure.Schema, entries.Last().Failure);
+        Assert.IsFalse(entries.Any(entry => entry.ToString().Contains("private-", StringComparison.Ordinal)));
+    }
+
     private sealed class Handler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
