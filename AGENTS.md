@@ -10,15 +10,29 @@ C# on .NET 10, packaged as MSIX, built on WinRT via CsWinRT.
 
 ## Build and test
 
-Always pass a Windows runtime identifier. MSIX packaging breaks without one.
+Build and test on Windows with PowerShell. Always pass a Windows runtime identifier.
+MSIX packaging breaks without one.
 
-```bash
-dotnet build GitHubExtension/GitHubExtension.csproj -r win-x64
-dotnet test GitHubExtension.Tests/GitHubExtension.Tests.csproj -r win-x64
+```powershell
+dotnet build GitHubExtension\GitHubExtension.csproj -r win-x64
+dotnet test GitHubExtension.Tests\GitHubExtension.Tests.csproj -r win-x64
 ```
 
 Tests use MSTest + Moq. They never touch real GitHub or the Credential Locker.
 Auth tests use fakes; the OAuth flow runs against a real loopback listener on `127.0.0.1`.
+
+### Hosted Copilot sessions
+
+`.github/workflows/copilot-setup-steps.yml` selects `windows-latest`, installs .NET 10,
+and restores application and test dependencies with `win-x64`. Copilot uses this setup
+after the workflow is merged into `main`. Run the build and tests above after making changes.
+
+GitHub's integrated Copilot firewall doesn't support Windows. Before starting a hosted
+session, disable it in the repository's Copilot Internet access settings. This runner
+has no separate network controls, so keep OAuth, signing, and other credentials out of
+Agents secrets. Builds and tests don't need them. Actions secrets aren't automatically
+passed to the agent; secrets from the former Actions `copilot` environment were migrated
+to Agents, so check that section too.
 
 ## Command Palette rules
 
