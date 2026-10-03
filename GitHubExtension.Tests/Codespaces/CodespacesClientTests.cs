@@ -383,6 +383,155 @@ public class CodespacesClientTests
         Assert.AreEqual(0, handler.RequestCount);
     }
 
+    [TestMethod]
+    [DataRow("""{"has_uncommitted_changes":true,"has_unpushed_changes":true}""", true, true)]
+    [DataRow("""{"has_uncommitted_changes":false,"has_unpushed_changes":false}""", false, false)]
+    [DataRow("""{"has_uncommitted_changes":true,"has_unpushed_changes":false}""", true, false)]
+    [DataRow("{}", null, null)]
+    [DataRow("null", null, null)]
+    [DataRow("42", null, null)]
+    [DataRow("""{"has_uncommitted_changes":"false","has_unpushed_changes":0}""", null, null)]
+    [DataRow("""{"has_uncommitted_changes":null,"has_unpushed_changes":[]}""", null, null)]
+    public void ParseCodespace_GitStatusBooleansNeverAssumeUnknownIsClean(string status, bool? uncommitted, bool? unpushed)
+    {
+        using var json = JsonDocument.Parse($$"""
+            {"name":"one","repository":{"full_name":"o/r"},"web_url":"https://one.github.dev","git_status":{{status}}}
+            """);
+        var codespace = CodespacesClient.ParseCodespace(json.RootElement)!;
+        Assert.AreEqual(uncommitted, codespace.HasUncommittedChanges);
+        Assert.AreEqual(unpushed, codespace.HasUnpushedChanges);
+    }
+
+    [TestMethod]
+    public void ParseCodespace_MissingGitStatusIsUnknown()
+    {
+        using var json = JsonDocument.Parse("""
+            {"name":"one","repository":{"full_name":"o/r"},"web_url":"https://one.github.dev"}
+            """);
+        var codespace = CodespacesClient.ParseCodespace(json.RootElement)!;
+        Assert.IsNull(codespace.HasUncommittedChanges);
+        Assert.IsNull(codespace.HasUnpushedChanges);
+    }
+
+    [TestMethod]
+    [DataRow(HttpStatusCode.Accepted)]
+    [DataRow(HttpStatusCode.NoContent)]
+    public async Task DeleteCodespaceAsync_UsesEscapedAuthenticatedEndpointWithoutRequiringBody(HttpStatusCode status)
+    {
+        using var handler = new StubHandler(status, "");
+        using var http = new HttpClient(handler);
+        await new CodespacesClient(http).DeleteCodespaceAsync(Account, "workspace/name", TestContext.CancellationToken);
+        Assert.AreEqual(HttpMethod.Delete, handler.Method);
+        Assert.AreEqual(new Uri("https://api.github.com/user/codespaces/workspace%2Fname"), handler.Url);
+        Assert.AreEqual(new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", Account.Token).ToString(), handler.Authorization);
+        Assert.AreEqual("application/vnd.github+json", handler.Accept);
+        Assert.AreEqual("2022-11-28", handler.ApiVersion);
+        Assert.AreEqual(1, handler.RequestCount);
+    }
+
+    [TestMethod]
+    public async Task GetCodespaceAsync_ReadsFreshGitStatus()
+    {
+        using var handler = new StubHandler(HttpStatusCode.OK,
+            CodespaceJson.Replace("\"ref\": \"feature/codespaces\"", "\"has_uncommitted_changes\": true, \"has_unpushed_changes\": false", StringComparison.Ordinal));
+        using var http = new HttpClient(handler);
+        var details = await new CodespacesClient(http).GetCodespaceAsync(Account, "octocat-hello-abc", TestContext.CancellationToken);
+        Assert.AreEqual(new Uri("https://api.github.com/user/codespaces/octocat-hello-abc"), handler.Url);
+        Assert.AreEqual(HttpMethod.Get, handler.Method);
+        Assert.IsTrue(details.HasUncommittedChanges);
+        Assert.IsFalse(details.HasUnpushedChanges);
+    }
+
+    [TestMethod]
+    [DataRow(HttpStatusCode.Unauthorized)]
+    [DataRow(HttpStatusCode.Forbidden)]
+    [DataRow(HttpStatusCode.NotFound)]
+    [DataRow(HttpStatusCode.NotModified)]
+    public async Task DeleteCodespaceAsync_AccessFailureIsNotConfirmation(HttpStatusCode status)
+    {
+        using var handler = new StubHandler(status, "");
+        using var http = new HttpClient(handler);
+        await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            new CodespacesClient(http).DeleteCodespaceAsync(Account, "one", TestContext.CancellationToken));
+        Assert.AreEqual(1, handler.RequestCount);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task DeleteAndDetails_EnterpriseServerNeverMakesRequest(bool delete)
+    {
+        Assert.IsTrue(GitHubHost.TryParse("github.example.com", out var host));
+        var account = new GitHubAccount(host!, "mona", "t");
+        using var handler = new StubHandler(HttpStatusCode.OK, CodespaceJson);
+        using var http = new HttpClient(handler);
+        var client = new CodespacesClient(http);
+        await Assert.ThrowsExactlyAsync<GitHubApiException>(async () =>
+        {
+            if (delete)
+            {
+                await client.DeleteCodespaceAsync(account, "one", TestContext.CancellationToken);
+            }
+            else
+            {
+                await client.GetCodespaceAsync(account, "one", TestContext.CancellationToken);
+            }
+        });
+        Assert.AreEqual(0, handler.RequestCount);
+    }
+
+    [TestMethod]
+    public async Task DeleteCodespaceAsync_TimeoutSuggestsRefreshAndDoesNotRepeatRequest()
+    {
+        var handler = new Mock<HttpMessageHandler>();
+        handler.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync", ItExpr.IsAny<HttpRequestMessage>(), ItExpr.IsAny<CancellationToken>())
+            .ThrowsAsync(new TaskCanceledException());
+        using var http = new HttpClient(handler.Object);
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            new CodespacesClient(http).DeleteCodespaceAsync(Account, "one", TestContext.CancellationToken));
+        Assert.Contains("Refresh", error.Message);
+        handler.Protected().Verify("SendAsync", Times.Once(), ItExpr.IsAny<HttpRequestMessage>(), ItExpr.IsAny<CancellationToken>());
+    }
+
+    [TestMethod]
+    [DataRow("""{"codespaces":[42]}""")]
+    [DataRow("""{"codespaces":[],"total_count":"0"}""")]
+    public async Task GetCodespacesAsync_MalformedListCannotConfirmAbsence(string body)
+    {
+        using var http = new HttpClient(new StubHandler(HttpStatusCode.OK, body));
+        var result = await new CodespacesClient(http).GetCodespacesAsync(Account, null, TestContext.CancellationToken);
+        Assert.IsFalse(result.IsComplete);
+    }
+
+    [TestMethod]
+    [DataRow("""{"ahead":2,"behind":3}""", 2, 3)]
+    [DataRow("""{"ahead":0,"behind":0}""", 0, 0)]
+    [DataRow("""{"ahead":-1,"behind":"2"}""", null, null)]
+    [DataRow("""{"ahead":null,"behind":true}""", null, null)]
+    [DataRow("{}", null, null)]
+    public void ParseCodespace_ReadsOnlyValidOptionalCommitCounts(string status, int? ahead, int? behind)
+    {
+        using var json = JsonDocument.Parse($$"""
+            {"name":"one","repository":{"full_name":"o/r"},"web_url":"https://one.github.dev","git_status":{{status}}}
+            """);
+        var codespace = CodespacesClient.ParseCodespace(json.RootElement)!;
+        Assert.AreEqual(ahead, codespace.Ahead);
+        Assert.AreEqual(behind, codespace.Behind);
+    }
+
+    [TestMethod]
+    public async Task GetCodespacesAsync_TargetWithMalformedDetailsCannotConfirmAbsence()
+    {
+        using var http = new HttpClient(new StubHandler(HttpStatusCode.OK, """
+            {"total_count":1,"codespaces":[{"name":"one","repository":null,"web_url":"invalid"}]}
+            """));
+        var result = await new CodespacesClient(http).GetCodespacesAsync(Account, null, TestContext.CancellationToken);
+        Assert.IsEmpty(result.Codespaces);
+        Assert.IsFalse(result.IsComplete);
+        Assert.AreEqual(1, result.TotalCount);
+    }
+
     private sealed class StubHandler(HttpStatusCode status, string body, Uri? next = null) : HttpMessageHandler
     {
         public Uri? Url { get; private set; }

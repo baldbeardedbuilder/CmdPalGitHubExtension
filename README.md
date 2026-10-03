@@ -27,6 +27,8 @@ Actions lists start with **Running** selected, including queued runs; switch to 
 
 Codespaces requires a github.com account and the `codespace` token scope. It isn't available on GitHub Enterprise Server. Use **More > Close Codespace** on an active codespace to stop it without deleting its files, or **More > Start Codespace** on a stopped one to start it. The list shows the state GitHub returns, and **Refresh** checks on a start or shutdown. Starting a codespace doesn't open it in your browser. Opening a stopped codespace still takes you to GitHub's browser editor, where it can start the environment.
 
+Use **More > Delete Codespace** to review its exact name, repository, and current Git status before confirming permanent deletion. The confirmation warns about uncommitted changes, unpushed commits, and unknown safety when GitHub cannot provide that information. Even a reported clean status is not a guarantee; push or back up any work you need first. **Cancel** leaves the codespace untouched. A codespace stays in the list until GitHub confirms it is absent, not just that deletion was accepted. If deletion is pending or a request times out, use **Refresh** to check before trying again.
+
 ### Agents access
 
 Agents uses GitHub's [Agent Tasks API](https://docs.github.com/en/rest/agent-tasks/agent-tasks), which is in public preview. You need Copilot cloud agent access. Fine-grained tokens need **Agent tasks: read** on the repositories you want to see. OAuth user tokens are supported too.
