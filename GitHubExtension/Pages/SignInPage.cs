@@ -11,7 +11,7 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 /// What folks see before they've signed in. It's one adaptive card that swaps between the
 /// github.com sign in, the GitHub Enterprise form, and the waiting and success states.
 /// </summary>
-internal sealed partial class SignInPage : ContentPage
+internal sealed partial class SignInPage : ContentPage, IDisposable
 {
     public const string PageId = "com.baldbeardedbuilder.cmdpal.github.signin";
 
@@ -23,6 +23,7 @@ internal sealed partial class SignInPage : ContentPage
     private readonly Lock _lock = new();
     private SignInForm _form;
     private CancellationTokenSource? _signInCancellation;
+    private volatile bool _disposed;
 
     public SignInPage(AuthService auth, Func<string>? logoProvider = null, Action<string>? showError = null)
     {
@@ -72,8 +73,9 @@ internal sealed partial class SignInPage : ContentPage
                 break;
 
             case SignInActions.Cancel:
-                _signInCancellation?.Cancel();
+                CancelSignIn();
                 Show(SignInView.Start);
+                IsLoading = false;
                 break;
 
             case SignInActions.Back:
@@ -89,9 +91,22 @@ internal sealed partial class SignInPage : ContentPage
 
     private void StartSignIn(Func<CancellationToken, Task<GitHubAccount>> signIn, SignInView waitingView, string? serverUrl = null)
     {
-        _signInCancellation?.Cancel();
+        CancellationTokenSource? previous;
         var cancellation = new CancellationTokenSource();
-        _signInCancellation = cancellation;
+        lock (_lock)
+        {
+            if (_disposed)
+            {
+                cancellation.Dispose();
+                return;
+            }
+
+            previous = _signInCancellation;
+            _signInCancellation = cancellation;
+        }
+
+        previous?.Cancel();
+        var token = cancellation.Token;
         var returnView = waitingView == SignInView.Verifying ? SignInView.Enterprise : SignInView.Start;
 
         Show(waitingView);
@@ -99,27 +114,61 @@ internal sealed partial class SignInPage : ContentPage
 
         _ = Task.Run(async () =>
         {
+            using var operation = OperationDiagnostics.Begin(DiagnosticEvent.Mutation, DiagnosticArea.Auth);
+            Exception? failure = null;
             try
             {
-                var account = await signIn(cancellation.Token).ConfigureAwait(false);
+                var account = await signIn(token).ConfigureAwait(false);
+                if (!IsCurrentSignIn(cancellation))
+                {
+                    return;
+                }
+
                 Show(SignInView.SignedIn, account: account);
                 new ToastStatusMessage($"Signed in as @{account.Login}").Show();
             }
-            catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
                 // The user hit cancel, and we already moved them back.
             }
             catch (GitHubAuthException ex)
             {
-                Show(returnView, ex.Message, serverUrl);
+                failure = ex;
+                if (IsCurrentSignIn(cancellation))
+                {
+                    Show(returnView, ex.Message, serverUrl);
+                }
             }
-            catch (Exception ex) when (ex is HttpRequestException or IOException or System.Net.Sockets.SocketException)
+            catch (Exception ex)
             {
-                Show(returnView, $"Something went wrong signing in. {ex.Message}", serverUrl);
+                failure = ex;
+                if (IsCurrentSignIn(cancellation))
+                {
+                    Show(returnView, $"Something went wrong signing in. {ex.Message}", serverUrl);
+                }
             }
             finally
             {
-                IsLoading = false;
+                bool current;
+                lock (_lock)
+                {
+                    current = ReferenceEquals(_signInCancellation, cancellation);
+                    if (current)
+                    {
+                        _signInCancellation = null;
+                    }
+                }
+
+                cancellation.Dispose();
+                if (current)
+                {
+                    if (!_disposed)
+                    {
+                        IsLoading = false;
+                    }
+                }
+
+                PageDiagnostics.Finish(operation, failure, current, cancellationToken: token);
             }
         });
     }
@@ -128,12 +177,44 @@ internal sealed partial class SignInPage : ContentPage
     {
         lock (_lock)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             CurrentView = view;
             ErrorMessage = error;
             _form = CreateForm(view, error, serverUrl, account);
         }
 
         RaiseItemsChanged();
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        CancelSignIn();
+        IsLoading = false;
+    }
+
+    private void CancelSignIn()
+    {
+        CancellationTokenSource? cancellation;
+        lock (_lock)
+        {
+            cancellation = _signInCancellation;
+            _signInCancellation = null;
+        }
+
+        cancellation?.Cancel();
+    }
+
+    private bool IsCurrentSignIn(CancellationTokenSource cancellation)
+    {
+        lock (_lock)
+        {
+            return !_disposed && ReferenceEquals(_signInCancellation, cancellation);
+        }
     }
 
     private SignInForm CreateForm(SignInView view, string? error = null, string? serverUrl = null, GitHubAccount? account = null)

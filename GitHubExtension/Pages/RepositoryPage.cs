@@ -97,7 +97,6 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
             Title = "Discussions", Subtitle = "Open discussions on GitHub", Icon = Icons.Discussions, MoreCommands = more,
         });
         _items = [.. items];
-        RaiseItemsChanged();
     }
 
     public override IListItem[] GetItems() => _items;

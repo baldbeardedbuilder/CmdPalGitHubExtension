@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using Windows.Security.Credentials;
+using BaldBeardedBuilder.CmdPal.GitHub.Api;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Auth;
 
@@ -65,13 +66,22 @@ internal sealed class PasswordVaultAccountStore : IAccountStore
 
     public GitHubAccount? Load()
     {
+        using var operation = OperationDiagnostics.Begin(DiagnosticEvent.CredentialLoad, DiagnosticArea.Auth);
         try
         {
-            return Load(Resource) ?? Load(RecoveryResource);
+            var account = Load(Resource) ?? Load(RecoveryResource);
+            operation.Complete();
+            return account;
         }
-        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException or IOException)
+        catch (Exception ex)
         {
-            throw new GitHubAuthException("Couldn't read the account from Windows Credential Locker. Try again.");
+            operation.Fail(ex, DiagnosticFailure.Credentials);
+            if (ex is COMException or UnauthorizedAccessException or IOException)
+            {
+                throw new GitHubAuthException("Couldn't read the account from Windows Credential Locker. Try again.", new CredentialFailureException(ex));
+            }
+
+            throw;
         }
     }
 
@@ -94,6 +104,7 @@ internal sealed class PasswordVaultAccountStore : IAccountStore
 
     public void Save(GitHubAccount account)
     {
+        using var operation = OperationDiagnostics.Begin(DiagnosticEvent.CredentialSave, DiagnosticArea.Auth);
         try
         {
             var credentials = FindAll(Resource);
@@ -111,24 +122,39 @@ internal sealed class PasswordVaultAccountStore : IAccountStore
             }
 
             Clear(RecoveryResource);
+            operation.Complete();
         }
-        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException or IOException)
+        catch (Exception ex)
         {
-            throw new GitHubAuthException("Couldn't save the account to Windows Credential Locker. Try again.");
+            operation.Fail(ex, DiagnosticFailure.Credentials);
+            if (ex is COMException or UnauthorizedAccessException or IOException)
+            {
+                throw new GitHubAuthException("Couldn't save the account to Windows Credential Locker. Try again.", new CredentialFailureException(ex));
+            }
+
+            throw;
         }
     }
 
     public void Clear()
     {
+        using var operation = OperationDiagnostics.Begin(DiagnosticEvent.CredentialClear, DiagnosticArea.Auth);
         try
         {
             // Remove recovery copies first so a failed sign out cannot resurrect an old account.
             Clear(RecoveryResource);
             Clear(Resource);
+            operation.Complete();
         }
-        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException or IOException)
+        catch (Exception ex)
         {
-            throw new GitHubAuthException("Couldn't remove the account from Windows Credential Locker. Try again.");
+            operation.Fail(ex, DiagnosticFailure.Credentials);
+            if (ex is COMException or UnauthorizedAccessException or IOException)
+            {
+                throw new GitHubAuthException("Couldn't remove the account from Windows Credential Locker. Try again.", new CredentialFailureException(ex));
+            }
+
+            throw;
         }
     }
 
@@ -152,4 +178,11 @@ internal sealed class PasswordVaultAccountStore : IAccountStore
             return [];
         }
     }
+
+}
+
+// Preserve the failure chain for diagnostic deduplication without exposing vault details in user errors.
+internal sealed class CredentialFailureException(Exception innerException) : Exception("Windows Credential Locker failed.", innerException)
+{
+    public override string ToString() => Message;
 }

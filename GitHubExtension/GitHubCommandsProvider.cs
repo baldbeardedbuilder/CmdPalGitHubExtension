@@ -29,6 +29,9 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
     private readonly CreateCodespacePage _createCodespacePage;
     private readonly HomePage _homePage;
     private readonly CommandItem _topLevel;
+    private readonly HttpClient? _httpClient;
+    private readonly Lock _disposeLock = new();
+    private volatile bool _disposed;
 
     public GitHubCommandsProvider()
         : this(AuthService.CreateDefault())
@@ -73,6 +76,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         _createCodespacePage = new CreateCodespacePage(auth, codespacesClient, browser);
         _codespacesPage = new CodespacesPage(auth, codespacesClient, browser, createPage: _createCodespacePage);
         _homePage = new HomePage(auth, _notificationsPage, _reposPage, _agentsPage, _codespacesPage, _createCodespacePage);
+        _httpClient = http;
 
         Id = "com.baldbeardedbuilder.cmdpal.github";
         DisplayName = "GitHub";
@@ -110,8 +114,21 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
 
     public override void Dispose()
     {
+        lock (_disposeLock)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+        }
+
         _auth.AccountChanged -= OnAccountChanged;
+        _signInPage.Dispose();
+        _homePage.Dispose();
         _notificationsPage.Dispose();
+        _issueDetailsPage.Dispose();
         _reposPage.Dispose();
         _agentsPage.Dispose();
         _actionsPage.Dispose();
@@ -119,12 +136,19 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         _createCodespacePage.Dispose();
         _repositoryIssuesPage.Dispose();
         _repositoryPullRequestsPage.Dispose();
+        _httpClient?.Dispose();
+        _auth.Dispose();
         base.Dispose();
         GC.SuppressFinalize(this);
     }
 
     private void OnAccountChanged(object? sender, EventArgs e)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         UpdateTopLevel();
         RaiseItemsChanged();
     }

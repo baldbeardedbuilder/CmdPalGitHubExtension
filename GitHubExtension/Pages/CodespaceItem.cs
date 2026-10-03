@@ -23,6 +23,7 @@ internal sealed partial class CodespaceItem : ListItem
         {
             new CommandContextItem(new CopyTextCommand(codespace.WebUrl.AbsoluteUri) { Name = "Copy URL", Icon = Icons.Copy }),
             new CommandContextItem(new CopyTextCommand(codespace.Name) { Name = "Copy name", Icon = Icons.Copy }),
+            new CommandContextItem(new DeleteCodespacePage(page, this)),
         };
         if (codespace.State == "Available")
         {

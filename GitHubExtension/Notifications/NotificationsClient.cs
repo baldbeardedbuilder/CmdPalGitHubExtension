@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Text.Json;
+using BaldBeardedBuilder.CmdPal.GitHub.Api;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using BaldBeardedBuilder.CmdPal.GitHub.Issues;
 using BaldBeardedBuilder.CmdPal.GitHub.PullRequests;
@@ -28,28 +29,36 @@ internal sealed class NotificationsClient(HttpClient httpClient) : INotification
 {
     internal const int PageSize = 50;
 
-    public async Task<NotificationsPageResult> GetNotificationsAsync(GitHubAccount account, Uri? page, CancellationToken cancellationToken)
+    public Task<NotificationsPageResult> GetNotificationsAsync(GitHubAccount account, Uri? page, CancellationToken cancellationToken) =>
+        DomainDiagnostics.RunAsync(DiagnosticArea.Notifications, async () =>
     {
         var uri = page ?? new Uri(account.Host.ApiUrl, $"notifications?all=true&per_page={PageSize}");
 
         using var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken).ConfigureAwait(false);
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
 
-        if (json.RootElement.ValueKind != JsonValueKind.Array)
+        return new NotificationsPageResult(ParseNotifications(json.RootElement), NextPage(response));
+    }, cancellationToken: cancellationToken);
+
+    internal static List<GitHubNotification> ParseNotifications(JsonElement root) =>
+        DomainDiagnostics.Read(DiagnosticArea.Notifications, () =>
+    {
+        if (root.ValueKind != JsonValueKind.Array)
         {
             throw new GitHubApiException("GitHub sent back a notification list we couldn't read. Try refreshing.");
         }
 
         var notifications = new List<GitHubNotification>();
-        foreach (var element in json.RootElement.EnumerateArray())
+        foreach (var element in root.EnumerateArray())
         {
             notifications.Add(ParseNotification(element));
         }
 
-        return new NotificationsPageResult(notifications, NextPage(response));
-    }
+        return notifications;
+    });
 
-    public async Task<SubjectDetails?> GetSubjectAsync(GitHubAccount account, Uri subjectApiUrl, CancellationToken cancellationToken)
+    public Task<SubjectDetails?> GetSubjectAsync(GitHubAccount account, Uri subjectApiUrl, CancellationToken cancellationToken) =>
+        DomainDiagnostics.RunAsync<SubjectDetails?>(DiagnosticArea.Notifications, async () =>
     {
         try
         {
@@ -61,21 +70,38 @@ internal sealed class NotificationsClient(HttpClient httpClient) : INotification
         {
             throw new GitHubApiException($"The request to {subjectApiUrl.Host} timed out. Try again.", ex);
         }
-    }
+    }, cancellationToken: cancellationToken);
 
     public async Task MarkAsReadAsync(GitHubAccount account, string threadId, CancellationToken cancellationToken)
     {
-        var uri = new Uri(account.Host.ApiUrl, $"notifications/threads/{Uri.EscapeDataString(threadId)}");
-        using var response = await SendMutationAsync(httpClient, account, HttpMethod.Patch, uri, cancellationToken).ConfigureAwait(false);
+        var sent = false;
+        await DomainDiagnostics.RunAsync(DiagnosticArea.Notifications, async () =>
+        {
+            var uri = new Uri(account.Host.ApiUrl, $"notifications/threads/{Uri.EscapeDataString(threadId)}");
+            cancellationToken.ThrowIfCancellationRequested();
+            sent = true;
+            using var response = await SendMutationAsync(httpClient, account, HttpMethod.Patch, uri, cancellationToken).ConfigureAwait(false);
+            return response.StatusCode is System.Net.HttpStatusCode.NoContent or System.Net.HttpStatusCode.ResetContent
+                ? DiagnosticOutcome.Completed : DiagnosticOutcome.Accepted;
+        }, DiagnosticEvent.NotificationRead, outcome => outcome, () => sent, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task MarkAsDoneAsync(GitHubAccount account, string threadId, CancellationToken cancellationToken)
     {
-        var uri = new Uri(account.Host.ApiUrl, $"notifications/threads/{Uri.EscapeDataString(threadId)}");
-        using var response = await SendMutationAsync(httpClient, account, HttpMethod.Delete, uri, cancellationToken).ConfigureAwait(false);
+        var sent = false;
+        await DomainDiagnostics.RunAsync(DiagnosticArea.Notifications, async () =>
+        {
+            var uri = new Uri(account.Host.ApiUrl, $"notifications/threads/{Uri.EscapeDataString(threadId)}");
+            cancellationToken.ThrowIfCancellationRequested();
+            sent = true;
+            using var response = await SendMutationAsync(httpClient, account, HttpMethod.Delete, uri, cancellationToken).ConfigureAwait(false);
+            return response.StatusCode is System.Net.HttpStatusCode.NoContent or System.Net.HttpStatusCode.ResetContent
+                ? DiagnosticOutcome.Completed : DiagnosticOutcome.Accepted;
+        }, DiagnosticEvent.NotificationDone, outcome => outcome, () => sent, cancellationToken).ConfigureAwait(false);
     }
 
-    internal static GitHubNotification ParseNotification(JsonElement element)
+    internal static GitHubNotification ParseNotification(JsonElement element) =>
+        DomainDiagnostics.Read(DiagnosticArea.Notifications, () =>
     {
         if (element.ValueKind != JsonValueKind.Object
             || GetString(element, "id") is not { Length: > 0 } id
@@ -119,9 +145,10 @@ internal sealed class NotificationsClient(HttpClient httpClient) : INotification
             reason,
             unread.ValueKind == JsonValueKind.True,
             GetDate(element, "updated_at"));
-    }
+    });
 
-    internal static SubjectDetails ParseSubject(JsonElement element)
+    internal static SubjectDetails ParseSubject(JsonElement element) =>
+        DomainDiagnostics.Read(DiagnosticArea.Notifications, () =>
     {
         var subjectState = SubjectStateParser.Parse(element);
 
@@ -134,5 +161,5 @@ internal sealed class NotificationsClient(HttpClient httpClient) : INotification
             ? IssuesClient.ParseIssue(element)
             : null;
         return new SubjectDetails(subjectState, GetUri(element, "html_url"), pullRequest, issue);
-    }
+    });
 }

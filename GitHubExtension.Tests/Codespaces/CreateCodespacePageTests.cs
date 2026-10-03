@@ -150,6 +150,8 @@ public class CreateCodespacePageTests
     [TestMethod]
     public async Task AmbiguousCreate_CannotBeSubmittedAgain()
     {
+        var entries = new System.Collections.Concurrent.ConcurrentQueue<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Enqueue);
         var client = new Mock<ICodespacesClient>();
         client.Setup(c => c.CreateCodespaceAsync(Account, "octocat/hello", null, It.IsAny<CancellationToken>()))
             .ThrowsAsync(new GitHubApiException("Response lost.", outcomeUnknown: true));
@@ -162,6 +164,7 @@ public class CreateCodespacePageTests
         }
 
         Assert.Contains("Creation is blocked", CurrentTemplate(page));
+        Assert.IsTrue(entries.Any(e => e.Event == DiagnosticEvent.CodespaceCreate && e.Outcome == DiagnosticOutcome.Unknown));
         client.Verify(c => c.CreateCodespaceAsync(Account, "octocat/hello", null, It.IsAny<CancellationToken>()), Times.Once);
         Submit(page, "acknowledgeUnknownCreate");
         Assert.Contains("Creation is blocked", CurrentTemplate(page));

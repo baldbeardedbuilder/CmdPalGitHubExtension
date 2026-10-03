@@ -18,6 +18,11 @@ internal sealed record GitHubWorkflowRun(
     string? HeadSha = null,
     int? RunNumber = null,
     int? RunAttempt = null,
-    DateTimeOffset UpdatedAt = default);
+    DateTimeOffset UpdatedAt = default)
+{
+    internal bool CanRerun => Status == "completed";
+
+    internal bool CanRerunFailed => CanRerun && Conclusion is "failure" or "timed_out";
+}
 
 internal sealed record WorkflowRunsPageResult(IReadOnlyList<GitHubWorkflowRun> Runs, Uri? NextPage);

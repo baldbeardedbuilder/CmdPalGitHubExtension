@@ -18,9 +18,9 @@ public class CodespacesPageTests
     private static readonly Uri Next = new("https://api.github.com/user/codespaces?page=2");
     private static readonly string[] LatestThenOlder = ["latest", "older"];
     private static readonly string[] SecondThenFirst = ["second", "first"];
-    private static readonly string[] MoreCommands = ["Copy URL", "Copy name", "Refresh"];
-    private static readonly string[] ActiveMoreCommands = ["Close Codespace", "Copy URL", "Copy name", "Refresh"];
-    private static readonly string[] StoppedMoreCommands = ["Start Codespace", "Copy URL", "Copy name", "Refresh"];
+    private static readonly string[] MoreCommands = ["Copy URL", "Copy name", "Delete Codespace", "Refresh"];
+    private static readonly string[] ActiveMoreCommands = ["Close Codespace", "Copy URL", "Copy name", "Delete Codespace", "Refresh"];
+    private static readonly string[] StoppedMoreCommands = ["Start Codespace", "Copy URL", "Copy name", "Delete Codespace", "Refresh"];
     private static readonly string[] StartingStates = ["Starting", "Shutdown", "Created", "Queued", "Provisioning", "Awaiting", "Updating", "Rebuilding", "Available"];
 
     public TestContext TestContext { get; set; } = null!;
@@ -1113,6 +1113,471 @@ public class CodespacesPageTests
         Assert.AreEqual("Codespaces isn't available here", page.EmptyContent!.Title);
         Assert.Contains("GitHub Enterprise Server", page.EmptyContent.Subtitle);
         client.Verify(c => c.GetCodespacesAsync(It.IsAny<GitHubAccount>(), It.IsAny<Uri?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task LoadFailure_SsoAuthorizationRemainsAvailableWithCoordinator()
+    {
+        var authorize = new Uri("https://github.com/orgs/example/sso");
+        var client = Client([]);
+        client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new GitHubApiException("Authorize access.", authorizeUrl: authorize));
+        using var page = CreatePage(client.Object, out var browser, out _);
+        page.GetItems();
+        await page.CurrentLoad;
+
+        Assert.IsEmpty(page.GetItems());
+        var empty = page.EmptyContent!;
+        ((InvokableCommand)empty.Command!).Invoke();
+        Assert.AreEqual(authorize, browser.LastOpened);
+        page.GetItems();
+        Assert.AreSame(empty, page.EmptyContent);
+        Assert.IsFalse(page.IsLoading);
+    }
+
+    [TestMethod]
+    public async Task StartUnknown_CoordinatorReportsUnknownAndKeepsWriteGateAfterRefresh()
+    {
+        var entries = new System.Collections.Concurrent.ConcurrentQueue<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Enqueue);
+        var client = Client([Codespace("one", "Shutdown")]);
+        client.Setup(c => c.StartCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new GitHubApiException("Response lost.", outcomeUnknown: true));
+        using var page = CreatePage(client.Object, out _, out _);
+        page.GetItems();
+        await page.CurrentLoad;
+
+        await page.StartAsync((CodespaceItem)page.GetItems().Single());
+        await page.RefreshAsync();
+        await page.StartAsync(page.GetItems().OfType<CodespaceItem>().Single());
+
+        client.Verify(c => c.StartCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()), Times.Once);
+        Assert.IsTrue(entries.Any(e => e.Event == DiagnosticEvent.CodespaceStart && e.Outcome == DiagnosticOutcome.Unknown));
+        Assert.IsFalse(page.IsLoading);
+    }
+
+    [TestMethod]
+    public async Task DeleteUnknown_RefreshKeepsConfirmationBlockedUntilAuthoritativeAbsence()
+    {
+        var client = DeleteClient();
+        client.Setup(c => c.DeleteCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new GitHubApiException("Response lost.", outcomeUnknown: true));
+        using var page = CreatePage(client.Object, out _, out _);
+        var confirmation = await DeletePageAsync(page);
+        await confirmation.ConfirmAsync();
+        await page.RefreshAsync();
+        var item = page.GetItems().OfType<CodespaceItem>().Single();
+        var repeated = (DeleteCodespacePage)item.MoreCommands.OfType<CommandContextItem>()
+            .Single(c => c.Command is DeleteCodespacePage).Command!;
+
+        Assert.IsFalse(repeated.GetItems().Any(i => i.Title == "Permanently delete this codespace"));
+        await repeated.ConfirmAsync();
+        client.Verify(c => c.DeleteCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()), Times.Once);
+        client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CodespacesPageResult([], null));
+        await page.RefreshAsync();
+        Assert.IsEmpty(page.GetItems());
+    }
+
+    [TestMethod]
+    [DataRow(false, false, "none reported", "none reported")]
+    [DataRow(true, true, "WARNING", "WARNING")]
+    [DataRow(null, null, "unknown", "unknown")]
+    [DataRow(true, false, "WARNING", "none reported")]
+    public async Task DeleteConfirmation_ShowsFreshIdentityAndNullableWarnings(
+        bool? uncommitted, bool? unpushed, string expectedUncommitted, string expectedUnpushed)
+    {
+        var client = Client([Codespace("one")]);
+        client.Setup(c => c.GetCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Codespace("one") with { Branch = "fresh", HasUncommittedChanges = uncommitted, HasUnpushedChanges = unpushed, Ahead = 2, Behind = 3 });
+        using var page = CreatePage(client.Object, out _, out _);
+        var confirmation = await DeletePageAsync(page);
+        var items = confirmation.GetItems();
+        Assert.AreEqual("one", items[0].Title);
+        Assert.AreEqual("microsoft/PowerToys", items[0].Subtitle);
+        Assert.Contains("Push or back up work first; reported status is not a guarantee",
+            items.Single(i => i.Title == "Permanent deletion").Subtitle);
+        Assert.IsTrue(items.Any(i => i.Title.Contains("fresh", StringComparison.Ordinal)));
+        Assert.IsTrue(items.Any(i => i.Title == "Commits ahead: 2; behind: 3"));
+        Assert.IsTrue(items.Any(i => i.Title.StartsWith("Uncommitted changes:", StringComparison.Ordinal)
+            && i.Title.Contains(expectedUncommitted, StringComparison.Ordinal)));
+        Assert.IsTrue(items.Any(i => i.Title.StartsWith("Unpushed changes:", StringComparison.Ordinal)
+            && i.Title.Contains(expectedUnpushed, StringComparison.Ordinal)));
+        Assert.IsTrue(items.Any(i => i.Title == "Permanently delete this codespace"));
+        client.Verify(c => c.DeleteCodespaceAsync(It.IsAny<GitHubAccount>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task DeleteConfirmation_CancelNeverMutates()
+    {
+        var client = DeleteClient();
+        using var page = CreatePage(client.Object, out _, out _);
+        var confirmation = await DeletePageAsync(page);
+        var confirm = confirmation.GetItems().Single(i => i.Title == "Permanently delete this codespace").Command;
+        confirmation.Cancel();
+        ((InvokableCommand)confirm!).Invoke();
+        await confirmation.CurrentOperation;
+        Assert.AreEqual("one", page.GetItems().OfType<CodespaceItem>().Single().Codespace.Name);
+        client.Verify(c => c.DeleteCodespaceAsync(It.IsAny<GitHubAccount>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task Delete_AcceptedButPresentThenAbsent_RefreshReconcilesWithoutRepeatingDelete()
+    {
+        var client = DeleteClient();
+        using var page = CreatePage(client.Object, out _, out _);
+        var confirmation = await DeletePageAsync(page);
+        await confirmation.ConfirmAsync();
+        await confirmation.ConfirmAsync();
+        Assert.AreEqual("one", page.GetItems().OfType<CodespaceItem>().Single().Codespace.Name);
+        Assert.IsTrue(page.GetItems().Any(i => i.Title == "Deletion pending"));
+        Assert.IsTrue(confirmation.GetItems().Any(i => i.Title.Contains("Deletion pending", StringComparison.Ordinal)));
+        client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CodespacesPageResult([], null));
+        await page.RefreshAsync();
+        Assert.IsEmpty(page.GetItems());
+        client.Verify(c => c.DeleteCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task Delete_ReconcilesEveryPageAndDeduplicates(bool targetOnSecondPage)
+    {
+        var client = DeleteClient();
+        using var page = CreatePage(client.Object, out _, out _);
+        var confirmation = await DeletePageAsync(page);
+        client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CodespacesPageResult([Codespace("other")], Next));
+        client.Setup(c => c.GetCodespacesAsync(Account, Next, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CodespacesPageResult(
+                targetOnSecondPage ? [Codespace("other"), Codespace("one")] : [Codespace("other")], null));
+        await confirmation.ConfirmAsync();
+        var items = page.GetItems().OfType<CodespaceItem>().ToArray();
+        Assert.AreEqual(targetOnSecondPage ? 2 : 1, items.Length);
+        Assert.AreEqual(targetOnSecondPage, items.Any(i => i.Codespace.Name == "one"));
+        client.Verify(c => c.GetCodespacesAsync(Account, Next, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    [DataRow("denied")]
+    [DataRow("timeout")]
+    public async Task Delete_FailureRetainsItemAndDoesNotRetry(string failure)
+    {
+        var client = DeleteClient();
+        client.Setup(c => c.DeleteCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new GitHubApiException(failure));
+        using var page = CreatePage(client.Object, out _, out _);
+        var confirmation = await DeletePageAsync(page);
+        await confirmation.ConfirmAsync();
+        await confirmation.ConfirmAsync();
+        Assert.AreEqual("one", page.GetItems().OfType<CodespaceItem>().Single().Codespace.Name);
+        Assert.IsTrue(page.GetItems().Any(i => i.Subtitle.Contains(failure, StringComparison.Ordinal)));
+        Assert.IsFalse(page.IsLoading);
+        client.Verify(c => c.DeleteCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()), Times.Once);
+        client.Verify(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    [DataRow("failed-page")]
+    [DataRow("malformed")]
+    [DataRow("cycle")]
+    [DataRow("total-count")]
+    public async Task Delete_PartialReconciliationNeverRemovesItems(string failure)
+    {
+        var client = DeleteClient();
+        using var page = CreatePage(client.Object, out _, out _);
+        var confirmation = await DeletePageAsync(page);
+        client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(failure switch
+            {
+                "malformed" => new CodespacesPageResult([], null, false),
+                "total-count" => new CodespacesPageResult([], null, true, 1),
+                _ => new CodespacesPageResult([], Next),
+            });
+        if (failure == "failed-page")
+        {
+            client.Setup(c => c.GetCodespacesAsync(Account, Next, It.IsAny<CancellationToken>()))
+                .ThrowsAsync(new GitHubApiException("permission denied"));
+        }
+        else
+        {
+            client.Setup(c => c.GetCodespacesAsync(Account, Next, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new CodespacesPageResult([], Next));
+        }
+
+        await confirmation.ConfirmAsync();
+        Assert.AreEqual("one", page.GetItems().OfType<CodespaceItem>().Single().Codespace.Name);
+        await page.RefreshAsync();
+        Assert.AreEqual("one", page.GetItems().OfType<CodespaceItem>().Single().Codespace.Name);
+        client.Verify(c => c.DeleteCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    [DataRow("denied")]
+    [DataRow("timeout")]
+    [DataRow("404")]
+    public async Task DeleteConfirmation_DetailsFailureDoesNotOfferDelete(string error)
+    {
+        var client = DeleteClient();
+        client.Setup(c => c.GetCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new GitHubApiException(error));
+        using var page = CreatePage(client.Object, out _, out _);
+        var confirmation = await DeletePageAsync(page);
+        Assert.IsFalse(confirmation.GetItems().Any(i => i.Title == "Permanently delete this codespace"));
+        Assert.IsTrue(confirmation.GetItems().Any(i => i.Title.Contains("Git status and safety are unknown", StringComparison.Ordinal)));
+        await confirmation.ConfirmAsync();
+        Assert.AreEqual("one", page.GetItems().OfType<CodespaceItem>().Single().Codespace.Name);
+        client.Verify(c => c.DeleteCodespaceAsync(It.IsAny<GitHubAccount>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    [DataRow("account")]
+    [DataRow("refresh")]
+    [DataRow("dispose")]
+    public async Task DeleteConfirmation_StaleConfirmationCannotDelete(string change)
+    {
+        var client = DeleteClient();
+        using var page = CreatePage(client.Object, out _, out var auth);
+        var confirmation = await DeletePageAsync(page);
+        if (change == "account")
+        {
+            auth.SignOut();
+        }
+        else if (change == "refresh")
+        {
+            await page.RefreshAsync();
+        }
+        else
+        {
+            page.Dispose();
+        }
+
+        await confirmation.ConfirmAsync();
+        Assert.IsFalse(confirmation.GetItems().Any(i => i.Title == "Permanently delete this codespace"));
+        client.Verify(c => c.DeleteCodespaceAsync(It.IsAny<GitHubAccount>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task DeleteConfirmation_AccountChangesDuringDetailsOrDeleteDiscardResponse(bool deleting)
+    {
+        var client = DeleteClient();
+        var details = new TaskCompletionSource<GitHubCodespace>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var deletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (deleting)
+        {
+            client.Setup(c => c.DeleteCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()))
+                .Returns(() => { started.SetResult(); return deletion.Task; });
+        }
+        else
+        {
+            client.Setup(c => c.GetCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()))
+                .Returns(() => { started.SetResult(); return details.Task; });
+        }
+
+        using var page = CreatePage(client.Object, out _, out var auth);
+        page.GetItems();
+        await page.CurrentLoad;
+        var item = page.GetItems().OfType<CodespaceItem>().Single();
+        var confirmation = (DeleteCodespacePage)item.MoreCommands.OfType<CommandContextItem>()
+            .Single(c => c.Command is DeleteCodespacePage).Command!;
+        confirmation.GetItems();
+        if (deleting)
+        {
+            await confirmation.CurrentOperation;
+            _ = confirmation.ConfirmAsync();
+        }
+
+        await started.Task;
+        var oldOperation = confirmation.CurrentOperation;
+        auth.SignOut();
+        await auth.SignInWithTokenAsync("github.com", "t", TestContext.CancellationToken);
+        client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CodespacesPageResult([Codespace("new")], null));
+        page.GetItems();
+        await page.CurrentLoad;
+        if (deleting)
+        {
+            deletion.SetResult();
+        }
+        else
+        {
+            details.SetResult(Codespace("one"));
+        }
+
+        await oldOperation;
+        Assert.AreEqual("new", page.GetItems().OfType<CodespaceItem>().Single().Codespace.Name);
+        await confirmation.ConfirmAsync();
+        client.Verify(c => c.DeleteCodespaceAsync(It.IsAny<GitHubAccount>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            deleting ? Times.Once() : Times.Never());
+    }
+
+    [TestMethod]
+    [DataRow("refresh")]
+    [DataRow("account")]
+    [DataRow("dispose")]
+    public async Task Delete_ConcurrentConfirmationAndLifecycleChangeNeverRepeatOrMutateStaleItems(string change)
+    {
+        var client = DeleteClient();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationToken deletionToken = default;
+        client.Setup(c => c.DeleteCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()))
+            .Returns((GitHubAccount _, string _, CancellationToken token) =>
+            {
+                deletionToken = token;
+                started.SetResult();
+                return response.Task;
+            });
+        using var page = CreatePage(client.Object, out _, out var auth);
+        var confirmation = await DeletePageAsync(page);
+        var deletion = confirmation.ConfirmAsync();
+        await started.Task;
+        var repeated = confirmation.ConfirmAsync();
+        Assert.AreSame(deletion, repeated);
+        if (change == "refresh")
+        {
+            client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new CodespacesPageResult([Codespace("new")], null));
+            await page.RefreshAsync();
+        }
+        else if (change == "account")
+        {
+            auth.SignOut();
+        }
+        else
+        {
+            page.Dispose();
+        }
+
+        Assert.IsTrue(deletionToken.IsCancellationRequested);
+        response.SetResult();
+        await deletion;
+        if (change == "account")
+        {
+            Assert.IsEmpty(page.GetItems());
+        }
+        else
+        {
+            Assert.AreEqual(change == "refresh" ? "new" : "one",
+                page.GetItems().OfType<CodespaceItem>().Single().Codespace.Name);
+        }
+
+        client.Verify(c => c.DeleteCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task Delete_AccountChangesDuringReconciliationNeverPublishesOldList()
+    {
+        var client = DeleteClient();
+        using var page = CreatePage(client.Object, out _, out var auth);
+        var confirmation = await DeletePageAsync(page);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource<CodespacesPageResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+            .Returns(() => { started.SetResult(); return response.Task; });
+        var deletion = confirmation.ConfirmAsync();
+        await started.Task;
+        auth.SignOut();
+        await auth.SignInWithTokenAsync("github.com", "t", TestContext.CancellationToken);
+        client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CodespacesPageResult([Codespace("new")], null));
+        page.GetItems();
+        await page.CurrentLoad;
+        response.SetResult(new CodespacesPageResult([], null));
+        await deletion;
+        Assert.AreEqual("new", page.GetItems().OfType<CodespaceItem>().Single().Codespace.Name);
+        Assert.IsFalse(page.IsLoading);
+    }
+
+    [TestMethod]
+    public async Task DeleteConfirmation_CancelWhileLoadingNeverResurrectsConfirmation()
+    {
+        var client = DeleteClient();
+        var response = new TaskCompletionSource<GitHubCodespace>(TaskCreationOptions.RunContinuationsAsynchronously);
+        client.Setup(c => c.GetCodespaceAsync(Account, "one", It.IsAny<CancellationToken>())).Returns(response.Task);
+        using var page = CreatePage(client.Object, out _, out _);
+        page.GetItems();
+        await page.CurrentLoad;
+        var confirmation = (DeleteCodespacePage)page.GetItems().Single().MoreCommands.OfType<CommandContextItem>()
+            .Single(c => c.Command is DeleteCodespacePage).Command!;
+        confirmation.GetItems();
+        var loading = confirmation.CurrentOperation;
+        confirmation.Cancel();
+        response.SetResult(Codespace("one"));
+        await loading;
+        Assert.IsFalse(confirmation.GetItems().Any(i => i.Title == "Permanently delete this codespace"));
+        await confirmation.ConfirmAsync();
+        client.Verify(c => c.DeleteCodespaceAsync(It.IsAny<GitHubAccount>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task DeleteConfirmation_ChangedRepositoryCannotBeConfirmed()
+    {
+        var client = DeleteClient();
+        client.Setup(c => c.GetCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Codespace("one") with { RepositoryFullName = "other/repository" });
+        using var page = CreatePage(client.Object, out _, out _);
+        var confirmation = await DeletePageAsync(page);
+        Assert.IsFalse(confirmation.GetItems().Any(i => i.Title == "Permanently delete this codespace"));
+        await confirmation.ConfirmAsync();
+        client.Verify(c => c.DeleteCodespaceAsync(It.IsAny<GitHubAccount>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task Delete_RefreshCancelsPendingReconciliationAndDiscardsStaleResponse(bool staleResponseHasNextPage)
+    {
+        var client = DeleteClient();
+        using var page = CreatePage(client.Object, out _, out _);
+        var confirmation = await DeletePageAsync(page);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource<CodespacesPageResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationToken reconciliationToken = default;
+        client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+            .Returns((GitHubAccount _, Uri? _, CancellationToken token) =>
+            {
+                reconciliationToken = token;
+                started.SetResult();
+                return response.Task;
+            });
+        var deletion = confirmation.ConfirmAsync();
+        await started.Task;
+        client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CodespacesPageResult([Codespace("new")], null));
+        await page.RefreshAsync();
+        Assert.IsTrue(reconciliationToken.IsCancellationRequested);
+        response.SetResult(new CodespacesPageResult([Codespace("old")], staleResponseHasNextPage ? Next : null));
+        await deletion;
+        Assert.AreEqual("new", page.GetItems().OfType<CodespaceItem>().Single().Codespace.Name);
+        Assert.IsFalse(page.IsLoading);
+        Assert.IsFalse(page.HasMoreItems);
+        client.Verify(c => c.GetCodespacesAsync(Account, Next, It.IsAny<CancellationToken>()), Times.Never);
+        client.Verify(c => c.DeleteCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    private static Mock<ICodespacesClient> DeleteClient()
+    {
+        var client = Client([Codespace("one")]);
+        client.Setup(c => c.GetCodespaceAsync(Account, "one", It.IsAny<CancellationToken>())).ReturnsAsync(Codespace("one"));
+        client.Setup(c => c.DeleteCodespaceAsync(Account, "one", It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+        return client;
+    }
+
+    private static async Task<DeleteCodespacePage> DeletePageAsync(CodespacesPage page)
+    {
+        page.GetItems();
+        await page.CurrentLoad;
+        var item = page.GetItems().OfType<CodespaceItem>().Single();
+        var confirmation = (DeleteCodespacePage)item.MoreCommands.OfType<CommandContextItem>()
+            .Single(c => c.Command is DeleteCodespacePage).Command!;
+        confirmation.GetItems();
+        await confirmation.CurrentOperation;
+        return confirmation;
     }
 
     private static GitHubCodespace Codespace(string name, string state = "Available", DateTimeOffset? lastUsed = null) =>

@@ -20,6 +20,7 @@ public sealed class PullRequestDetailsTests
     internal const string Payload = """
         {
           "number": 7,
+          "node_id": "PR_opaque_node_id",
           "title": "Fix login",
           "body": "## Why\n\nKeep **markdown** and [links](https://github.com/o/r).",
           "html_url": "https://github.example.com/o/r/pull/7",
@@ -43,6 +44,7 @@ public sealed class PullRequestDetailsTests
         using var json = JsonDocument.Parse(Payload);
         var subject = NotificationsClient.ParseSubject(json.RootElement);
         Assert.IsNotNull(subject.PullRequest);
+        Assert.AreEqual("PR_opaque_node_id", subject.PullRequest.NodeId);
 
         var details = new PullRequestDetails(subject.PullRequest);
         var item = new ListItem(new NoOpCommand()) { Details = details };
@@ -155,6 +157,15 @@ public sealed class PullRequestDetailsTests
         using var json = JsonDocument.Parse("""{"head":{},"base":{},"number":7,"title":"PR"}""");
         var error = Assert.ThrowsExactly<GitHubApiException>(() => NotificationsClient.ParseSubject(json.RootElement));
         Assert.AreEqual("GitHub sent back a pull request we couldn't read.", error.Message);
+    }
+
+    [TestMethod]
+    [DataRow("""{"number":7,"title":"PR","html_url":"https://github.com/o/r/pull/7"}""")]
+    [DataRow("""{"number":7,"title":"PR","html_url":"https://github.com/o/r/pull/7","node_id":null}""")]
+    public void ParsePullRequest_MissingNodeIdRemainsOptional(string payload)
+    {
+        using var json = JsonDocument.Parse(payload);
+        Assert.IsNull(GitHubPullRequest.Parse(json.RootElement, SubjectState.Open).NodeId);
     }
 
     private static string Text(PullRequestDetails details, string key)

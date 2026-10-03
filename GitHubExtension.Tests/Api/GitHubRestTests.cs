@@ -28,10 +28,7 @@ public sealed class GitHubRestTests
             GitHubRest.SendAsync(http, Account, HttpMethod.Get, Endpoint, TestContext.CancellationToken, logError: logs.Add));
 
         Assert.AreEqual(expectedError, error.Message);
-        Assert.AreEqual(
-            $"GitHub API error: GET https://api.github.com/repos/o/r/pulls/7; status={(int)status}; "
-            + "request-id=test-request; rate-limit-remaining=0; rate-limit-reset=1790975000; sso-header-present=True.",
-            Assert.ContainsSingle(logs));
+        AssertSafeFailure(logs, $"failure=Http; status={(int)status}; method=GET; route=/repos/{{owner}}/{{repo}}/pulls/{{number}}");
     }
 
     [TestMethod]
@@ -44,10 +41,7 @@ public sealed class GitHubRestTests
             http, Account, HttpMethod.Get, Endpoint, TestContext.CancellationToken, throwOnError: false, logError: logs.Add);
 
         Assert.AreEqual(HttpStatusCode.NotFound, response.StatusCode);
-        Assert.AreEqual(
-            "GitHub API error: GET https://api.github.com/repos/o/r/pulls/7; status=404; "
-            + "request-id=unknown; rate-limit-remaining=unknown; rate-limit-reset=unknown; sso-header-present=False.",
-            Assert.ContainsSingle(logs));
+        AssertSafeFailure(logs, "failure=Http; status=404; method=GET; route=/repos/{owner}/{repo}/pulls/{number}");
     }
 
     [TestMethod]
@@ -74,9 +68,7 @@ public sealed class GitHubRestTests
             GitHubRest.SendAsync(http, Account, HttpMethod.Get, Endpoint, TestContext.CancellationToken, logError: logs.Add));
 
         Assert.AreSame(failure, error.InnerException);
-        Assert.AreEqual(
-            "GitHub API error: GET https://api.github.com/repos/o/r/pulls/7; transport=NameResolutionError.",
-            Assert.ContainsSingle(logs));
+        AssertSafeFailure(logs, "failure=Transport");
     }
 
     [TestMethod]
@@ -91,9 +83,7 @@ public sealed class GitHubRestTests
             GitHubRest.ReadJsonAsync(response, TestContext.CancellationToken, logs.Add));
 
         Assert.AreEqual("GitHub sent back something we couldn't read.", error.Message);
-        Assert.AreEqual(
-            "GitHub API error: invalid JSON; endpoint=https://api.github.com/repos/o/r/pulls/7; status=200; request-id=test-request.",
-            Assert.ContainsSingle(logs));
+        AssertSafeFailure(logs, "failure=Schema; status=200; method=GET; route=/repos/{owner}/{repo}/pulls/{number}");
     }
 
     [TestMethod]
@@ -110,9 +100,7 @@ public sealed class GitHubRestTests
 
         Assert.AreSame(failure, error.InnerException);
         Assert.AreEqual("The request to api.github.com timed out. Try again.", error.Message);
-        Assert.AreEqual(
-            "GitHub API error: GET https://api.github.com/repos/o/r/pulls/7; transport=Timeout.",
-            Assert.ContainsSingle(logs));
+        AssertSafeFailure(logs, "failure=Timeout");
     }
 
     [TestMethod]
@@ -137,7 +125,7 @@ public sealed class GitHubRestTests
     {
         var uri = new Uri("https://user:secret-password@api.github.com/repos/o/r/pulls/7?token=secret-query#secret-fragment");
 
-        Assert.AreEqual("https://api.github.com/repos/o/r/pulls/7", GitHubRest.LogEndpoint(uri));
+        Assert.AreEqual("/repos/{owner}/{repo}/pulls/{number}", GitHubRest.LogEndpoint(uri));
         Assert.AreEqual("unknown", GitHubRest.LogEndpoint(null));
     }
 
@@ -173,6 +161,19 @@ public sealed class GitHubRestTests
         response.Headers.Add("X-RateLimit-Reset", "1790975000");
         response.Headers.Add("X-GitHub-SSO", "partial-results; organizations=21955855");
         return response;
+    }
+
+    private static void AssertSafeFailure(List<string> logs, string expected)
+    {
+        var log = Assert.ContainsSingle(logs);
+        StringAssert.Contains(log, expected);
+        StringAssert.Contains(log, "operation-id=");
+        StringAssert.Contains(log, "duration-ms=");
+        StringAssert.Contains(log, "severity=Error; outcome=Failed");
+        Assert.DoesNotContain("secret", log);
+        Assert.DoesNotContain("test-request", log);
+        Assert.DoesNotContain("api.github.com", log);
+        Assert.DoesNotContain("/repos/o/r", log);
     }
 
     [TestMethod]
@@ -274,6 +275,32 @@ public sealed class GitHubRestTests
     }
 
     [TestMethod]
+    public async Task SendMutationAsync_SchemaWrapperPreservesCorrelationWithoutDuplicateWarnings()
+    {
+        var entries = new List<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Add, verboseReads: true);
+        using var http = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.Created)
+        {
+            Content = new StringContent("secret-body"),
+        }));
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            OperationDiagnostics.RunAsync(DiagnosticEvent.Mutation, () =>
+                GitHubRest.SendMutationAsync(http, Account, HttpMethod.Post, Endpoint, TestContext.CancellationToken)));
+
+        Assert.IsTrue(error.OutcomeUnknown);
+        Assert.IsTrue(OperationDiagnostics.HasFailure(error));
+        Assert.HasCount(1, entries.Select(entry => entry.OperationId).Distinct());
+        var warning = entries.Single(entry => entry.Severity == DiagnosticSeverity.Warning);
+        Assert.AreEqual(DiagnosticEvent.SchemaRead, warning.Event);
+        Assert.AreEqual(DiagnosticFailure.Schema, warning.Failure);
+        Assert.AreEqual(201, warning.Status);
+        Assert.AreEqual(DiagnosticOutcome.Unknown, entries[^1].Outcome);
+        Assert.AreEqual(DiagnosticSeverity.Information, entries[^1].Severity);
+        Assert.DoesNotContain("secret-body", string.Join('\n', entries));
+    }
+
+    [TestMethod]
     public async Task SendMutationAsync_SsoDiagnosticsArePreserved()
     {
         using var http = new HttpClient(new StubHandler(_ =>
@@ -322,15 +349,20 @@ public sealed class GitHubRestTests
     [DataRow("/api/graphql", "query NodeId($number: Int!) { node(id: $number) { id } }")]
     public async Task SendAsync_GraphQLQueryTimeoutIsSafeToRetry(string path, string query)
     {
+        var entries = new List<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Add);
         using var http = new HttpClient(new StubHandler(_ => throw new TaskCanceledException()));
         using var content = JsonContent.Create(new { query });
 
         var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
             GitHubRest.SendAsync(http, Account, HttpMethod.Post, new Uri("https://api.github.com" + path),
-                TestContext.CancellationToken, content: content, logError: _ => { }));
+                TestContext.CancellationToken, content: content));
 
         Assert.AreEqual("The request to api.github.com timed out. Try again.", error.Message);
         Assert.IsFalse(error.OutcomeUnknown);
+        var failure = entries.Single(entry => entry.Failure == DiagnosticFailure.Timeout);
+        Assert.AreEqual(DiagnosticOutcome.Failed, failure.Outcome);
+        Assert.AreEqual(DiagnosticSeverity.Error, failure.Severity);
     }
 
     [TestMethod]

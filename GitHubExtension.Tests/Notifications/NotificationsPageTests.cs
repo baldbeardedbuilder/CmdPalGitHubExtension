@@ -334,6 +334,60 @@ public class NotificationsPageTests
     }
 
     [TestMethod]
+    public async Task Dispose_CancelsPendingNotificationRequest()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new Mock<INotificationsClient>();
+        CancellationToken requestToken = default;
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .Returns(async (GitHubAccount _, Uri? _, CancellationToken token) =>
+            {
+                requestToken = token;
+                started.SetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                return new NotificationsPageResult([], null);
+            });
+        var page = CreatePage(client.Object, out _);
+
+        page.GetItems();
+        var load = page.CurrentLoad;
+        await started.Task;
+        page.Dispose();
+        await load;
+
+        Assert.IsTrue(requestToken.IsCancellationRequested);
+        Assert.IsFalse(page.IsLoading);
+        Assert.IsEmpty(page.GetItems());
+    }
+
+    [TestMethod]
+    public async Task AccountChange_CancelsPendingNotificationRequest()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new Mock<INotificationsClient>();
+        CancellationToken requestToken = default;
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .Returns(async (GitHubAccount _, Uri? _, CancellationToken token) =>
+            {
+                requestToken = token;
+                started.SetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                return new NotificationsPageResult([], null);
+            });
+        var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(), new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
+        using var page = new NotificationsPage(auth, client.Object, new FakeBrowser(_ => null));
+
+        page.GetItems();
+        var load = page.CurrentLoad;
+        await started.Task;
+        auth.SignOut();
+        await load;
+
+        Assert.IsTrue(requestToken.IsCancellationRequested);
+        Assert.IsEmpty(page.GetItems());
+    }
+
+    [TestMethod]
     public async Task PullRequest_RefreshRetriesMissingDetails()
     {
         var api = new Uri("https://api.github.com/repos/o/r/pulls/7");
@@ -358,6 +412,34 @@ public class NotificationsPageTests
 
     private static NotificationsPage CreatePage(INotificationsClient client, out FakeBrowser browser)
         => CreatePage(client, out browser, out _);
+
+    [TestMethod]
+    public async Task Refresh_CancellationCallbacksCanReadPageOutsideItsLock()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callback = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new Mock<INotificationsClient>();
+        using var page = CreatePage(client.Object, out _);
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .Returns(async (GitHubAccount _, Uri? _, CancellationToken token) =>
+            {
+                using var registration = token.Register(() =>
+                    callback.TrySetResult(Task.Run(() => { _ = page.CurrentLoad; }).Wait(TimeSpan.FromSeconds(5))));
+                started.SetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                return null!;
+            });
+        page.GetItems();
+        var oldLoad = page.CurrentLoad;
+        await started.Task;
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationsPageResult([], null));
+
+        await page.RefreshAsync();
+        await oldLoad;
+        Assert.IsTrue(await callback.Task.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.IsFalse(page.IsLoading);
+    }
 
     [TestMethod]
     public async Task MarkRead_FailureKeepsUnreadAndDisplaysSsoError()

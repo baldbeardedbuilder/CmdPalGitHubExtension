@@ -215,6 +215,8 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
         string? branch,
         int generation)
     {
+        using var operation = OperationDiagnostics.Begin(DiagnosticEvent.CodespaceCreate, DiagnosticArea.Codespaces);
+        Exception? failure = null;
         try
         {
             var result = await _mutations.ExecuteAsync(
@@ -222,7 +224,16 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
                 _ => Task.FromResult(account.Host.IsGitHubDotCom && IsRepositoryName(repository)),
                 async token =>
                 {
-                    var codespace = await _client.CreateCodespaceAsync(account, repository, branch, token).ConfigureAwait(false);
+                    GitHubCodespace codespace;
+                    try
+                    {
+                        codespace = await _client.CreateCodespaceAsync(account, repository, branch, token).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        failure = ex;
+                        throw;
+                    }
                     if (!string.Equals(codespace.RepositoryFullName, repository, StringComparison.OrdinalIgnoreCase)
                         || (branch is not null && !string.Equals(codespace.Branch, branch, StringComparison.Ordinal)))
                     {
@@ -231,6 +242,22 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
 
                     return new MutationResult<GitHubCodespace>(MutationState.Completed, codespace);
                 }).ConfigureAwait(false);
+            var outcome = result.State switch
+            {
+                MutationState.Completed => DiagnosticOutcome.Accepted,
+                MutationState.Pending => DiagnosticOutcome.Accepted,
+                MutationState.Unknown => DiagnosticOutcome.Unknown,
+                MutationState.Stale => DiagnosticOutcome.Cancelled,
+                _ => DiagnosticOutcome.Failed,
+            };
+            if (failure is not null && result.State != MutationState.Stale)
+            {
+                operation.Fail(failure, outcome: outcome);
+            }
+            else
+            {
+                operation.Complete(operation.ChildOutcome == outcome ? null : outcome);
+            }
             lock (_lock)
             {
                 if (generation != _generation || _disposed || result.State == MutationState.Stale || !_mutations.IsCurrent(account))

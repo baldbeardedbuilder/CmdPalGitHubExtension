@@ -20,12 +20,22 @@ public class ActionsViewTests
     private static readonly DateTimeOffset Now = new(2025, 6, 1, 12, 0, 0, TimeSpan.Zero);
     private static readonly string[] RepositorySections = ["o/r", "Issues", "Pull Requests", "Actions", "Start Copilot task", "Discussions"];
     private static readonly string[] ExpectedFilters = ["Running", "Succeeded", "Failed"];
+    private static readonly string[] ExpectedCancelEndpoints =
+    [
+        "GET https://api.github.com/repos/o/r/actions/runs/1",
+        "POST https://api.github.com/repos/o/r/actions/runs/1/cancel",
+        "POST https://api.github.com/repos/o/r/actions/runs/1/force-cancel",
+    ];
     private const string RunJson = """
         {"workflow_runs":[{"id":9876543210,"name":"CI","display_title":"Fix palette flicker",
         "actor":{"login":"mona"},"status":"completed","conclusion":"failure",
         "event":"push","head_branch":"main","head_sha":"abc123","run_number":42,"run_attempt":2,
         "created_at":"2025-06-01T11:48:00Z","updated_at":"2025-06-01T11:50:00Z",
         "html_url":"https://github.com/o/r/actions/runs/9876543210"}]}
+        """;
+    private const string SingleRunJson = """
+        {"id":1,"name":"CI","display_title":"Fix palette flicker","actor":{"login":"mona"},
+        "status":"in_progress","html_url":"https://github.com/o/r/actions/runs/1"}
         """;
 
     public TestContext TestContext { get; set; } = null!;
@@ -490,6 +500,117 @@ public class ActionsViewTests
     }
 
     [TestMethod]
+    public async Task Client_ReadsRunAndUsesSeparateCancelEndpoints()
+    {
+        var handler = new RecordingHandler(request => request.Method == HttpMethod.Get
+            ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(SingleRunJson) }
+            : new HttpResponseMessage(HttpStatusCode.Accepted));
+        using var http = new HttpClient(handler);
+        var client = new ActionsClient(http);
+
+        var run = await client.GetRunAsync(Account, "o/r", 1, TestContext.CancellationToken);
+        await client.CancelRunAsync(Account, "o/r", 1, force: false, TestContext.CancellationToken);
+        await client.CancelRunAsync(Account, "o/r", 1, force: true, TestContext.CancellationToken);
+
+        Assert.AreEqual("in_progress", run.Status);
+        CollectionAssert.AreEqual(ExpectedCancelEndpoints, handler.Requests.Select(r => $"{r.Method} {r.Uri}").ToArray());
+    }
+
+    [TestMethod]
+    [DataRow(HttpStatusCode.Forbidden)]
+    [DataRow(HttpStatusCode.Conflict)]
+    public async Task Client_SurfacesCancelPermissionAndConflictErrors(HttpStatusCode status)
+    {
+        using var http = new HttpClient(new Handler(status, "{}"));
+        var client = new ActionsClient(http);
+
+        await Assert.ThrowsAsync<GitHubApiException>(() =>
+            client.CancelRunAsync(Account, "o/r", 1, force: false, TestContext.CancellationToken));
+    }
+
+    [TestMethod]
+    public async Task Cancel_RefreshesUntilTerminalAndDropsCancelActions()
+    {
+        var client = Client([Run()]);
+        client.SetupSequence(c => c.GetRunAsync(Account, "o/r", 1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Run())
+            .ReturnsAsync(Run() with { Status = "completed", Conclusion = "cancelled" });
+        client.Setup(c => c.CancelRunAsync(Account, "o/r", 1, false, It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        using var page = await Loaded(client.Object);
+        var item = Assert.IsInstanceOfType<WorkflowRunItem>(page.GetItems().Single());
+        page.Filters!.CurrentFilterId = ActionFilters.Failed;
+
+        await page.CancelAsync(item);
+        await page.CurrentCancellation;
+
+        client.Verify(c => c.CancelRunAsync(Account, "o/r", 1, false, It.IsAny<CancellationToken>()), Times.Once);
+        var cancelled = Assert.IsInstanceOfType<WorkflowRunItem>(page.GetItems().Single());
+        Assert.AreEqual("Cancelled", WorkflowRunFormatting.State(cancelled.Run));
+        Assert.IsFalse(cancelled.MoreCommands.OfType<CommandContextItem>().Any(c => c.Command is CancelWorkflowRunCommand));
+    }
+
+    [TestMethod]
+    public async Task Cancel_DoesNotPostWhenRunAlreadyCompleted()
+    {
+        var client = Client([Run()]);
+        client.Setup(c => c.GetRunAsync(Account, "o/r", 1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Run() with { Status = "completed", Conclusion = "success" });
+        using var page = await Loaded(client.Object);
+        var item = Assert.IsInstanceOfType<WorkflowRunItem>(page.GetItems().Single());
+        page.Filters!.CurrentFilterId = ActionFilters.Succeeded;
+
+        await page.CancelAsync(item);
+        await page.CurrentCancellation;
+
+        client.Verify(c => c.CancelRunAsync(Account, "o/r", 1, It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+        Assert.AreEqual("Success", WorkflowRunFormatting.State(((WorkflowRunItem)page.GetItems().Single()).Run));
+    }
+
+    [TestMethod]
+    public async Task ForceCancel_RequiresConfirmationAndUsesForceEndpoint()
+    {
+        var client = Client([Run()]);
+        client.SetupSequence(c => c.GetRunAsync(Account, "o/r", 1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Run())
+            .ReturnsAsync(Run() with { Status = "completed", Conclusion = "cancelled" });
+        client.Setup(c => c.CancelRunAsync(Account, "o/r", 1, true, It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        using var page = await Loaded(client.Object);
+        var item = Assert.IsInstanceOfType<WorkflowRunItem>(page.GetItems().Single());
+        var forcePage = Assert.IsInstanceOfType<ForceCancelWorkflowRunPage>(
+            item.MoreCommands.OfType<CommandContextItem>().Single(c => c.Command is ForceCancelWorkflowRunPage).Command);
+        var confirmation = Assert.IsInstanceOfType<FormContent>(forcePage.GetContent().Single());
+
+        confirmation.SubmitForm("", """{"action":"keep"}""");
+        client.Verify(c => c.GetRunAsync(Account, "o/r", 1, It.IsAny<CancellationToken>()), Times.Never);
+        confirmation.SubmitForm("", """{"action":"force"}""");
+        await page.CurrentCancellation;
+
+        client.Verify(c => c.CancelRunAsync(Account, "o/r", 1, true, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task Cancel_StopsBeforeMutationWhenAccountChangesDuringRefresh()
+    {
+        var response = new TaskCompletionSource<GitHubWorkflowRun>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = Client([Run()]);
+        client.Setup(c => c.GetRunAsync(Account, "o/r", 1, It.IsAny<CancellationToken>())).Returns(response.Task);
+        var auth = Auth();
+        using var page = await Loaded(client.Object, auth);
+        var item = Assert.IsInstanceOfType<WorkflowRunItem>(page.GetItems().Single());
+
+        var cancellation = page.CancelAsync(item);
+        auth.SignOut();
+        response.SetResult(Run());
+        await cancellation;
+
+        client.Verify(c => c.CancelRunAsync(Account, "o/r", 1, It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+        page.GetItems();
+        Assert.AreEqual("Sign in to view workflow runs", page.EmptyContent!.Title);
+    }
+
+    [TestMethod]
     [DataRow(HttpStatusCode.Forbidden, "{}")]
     [DataRow(HttpStatusCode.NotFound, "{}")]
     [DataRow(HttpStatusCode.OK, "not json")]
@@ -537,8 +658,11 @@ public class ActionsViewTests
     }
 
     private static async Task<ActionsPage> Loaded(IActionsClient client)
+        => await Loaded(client, Auth());
+
+    private static async Task<ActionsPage> Loaded(IActionsClient client, AuthService auth)
     {
-        var page = Page(client);
+        var page = Page(client, auth);
         page.OpenRepository("o/r");
         page.GetItems();
         await page.CurrentLoad;
@@ -585,5 +709,16 @@ public class ActionsViewTests
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
             Task.FromException<HttpResponseMessage>(new TaskCanceledException());
+    }
+
+    private sealed class RecordingHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
+    {
+        public List<(HttpMethod Method, Uri? Uri)> Requests { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Requests.Add((request.Method, request.RequestUri));
+            return Task.FromResult(respond(request));
+        }
     }
 }

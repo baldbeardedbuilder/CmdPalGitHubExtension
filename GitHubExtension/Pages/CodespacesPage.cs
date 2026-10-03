@@ -19,21 +19,19 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
     private readonly TimeProvider _time;
     private readonly PageEmptyContent _emptyContent;
     private readonly IContextItem[] _createCommands;
-    private readonly Lock _lock = new();
+    private readonly ListLoadState _load = new();
+    private Lock _lock => _load.SyncRoot;
     private readonly List<CodespaceItem> _items = [];
-    private Uri? _nextPage;
+    private ListLoadState.Operation? _currentOperation;
     private GitHubAccount? _loadedAccount;
-    private bool _loaded;
-    private bool _fetching;
-    private bool _disposed;
-    private string? _error;
     private Uri? _authorizeUrl;
     private Uri? _authorizeCommandUrl;
     private ICommand? _authorizeCommand;
+    private readonly HashSet<string> _pendingDeletes = new(StringComparer.Ordinal);
+    private bool _reconcileDeletes;
+    private int _deleteGeneration;
+    private CancellationTokenSource? _deleteCancellation = new();
     private string _errorTitle = "Couldn't load codespaces";
-    private int _generation;
-    private CancellationTokenSource? _loadCts;
-    private Task _currentLoad = Task.CompletedTask;
 
     public CodespacesPage(
         AuthService auth,
@@ -64,12 +62,189 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         {
             lock (_lock)
             {
-                return _currentLoad;
+                return _load.CurrentLoad;
             }
         }
     }
 
     internal CreateCodespacePage? CreatePage { get; }
+
+    internal (GitHubAccount? Account, int Generation, CancellationToken Token) DeleteContext()
+    {
+        lock (_lock)
+        {
+            return (_auth.CurrentAccount, _deleteGeneration, _deleteCancellation?.Token ?? new CancellationToken(true));
+        }
+    }
+
+    internal bool CanDelete(CodespaceItem item, GitHubAccount? account, int generation)
+    {
+        lock (_lock)
+        {
+            return !_load.Disposed && generation == _deleteGeneration && account is { Host.IsGitHubDotCom: true }
+                && ReferenceEquals(account, _auth.CurrentAccount) && _items.Contains(item)
+                && ReferenceEquals(account, _loadedAccount)
+                && !_pendingDeletes.Contains(item.Codespace.Name);
+        }
+    }
+
+    internal bool IsDeleteContextCurrent(GitHubAccount? account, int generation)
+    {
+        lock (_lock)
+        {
+            return !_load.Disposed && generation == _deleteGeneration && account is { Host.IsGitHubDotCom: true }
+                && ReferenceEquals(account, _auth.CurrentAccount);
+        }
+    }
+
+    internal Task<GitHubCodespace> GetDeleteDetailsAsync(GitHubAccount account, string name, CancellationToken token)
+        => _client.GetCodespaceAsync(account, name, token);
+
+    internal async Task<string> DeleteAsync(CodespaceItem item, GitHubAccount account, int generation)
+    {
+        ListLoadState.Operation operation;
+        lock (_lock)
+        {
+            if (!CanDelete(item, account, generation) || !_load.TryBegin(true, out operation))
+            {
+                return "This codespace is no longer current. Refresh the list.";
+            }
+
+            _reconcileDeletes = true;
+            _authorizeUrl = null;
+            _currentOperation = operation;
+        }
+
+        var status = "The account or list changed.";
+        _load.Publish(operation, () => IsLoading = true);
+        await _load.Run(operation, DeleteCoreAsync, () => PublishLoad(operation),
+            "GitHub took too long to respond. Refresh to check whether the codespace still exists.",
+            markLoadedOnError: false, area: DiagnosticArea.Codespaces,
+            diagnosticEvent: DiagnosticEvent.Mutation, mutation: true).ConfigureAwait(false);
+        return status;
+
+        async Task DeleteCoreAsync()
+        {
+            using var diagnostics = OperationDiagnostics.Begin(DiagnosticEvent.Mutation, DiagnosticArea.Codespaces);
+            async Task<MutationResult<List<GitHubCodespace>>> Reconcile(CancellationToken token)
+            {
+                var codespaces = await GetAllCodespacesAsync(account, token).ConfigureAwait(false);
+                var present = codespaces.Any(c => c.Name == item.Codespace.Name);
+                return new(present ? MutationState.Pending : MutationState.Completed, codespaces,
+                    present ? "Deletion pending. Refresh to check again." : null);
+            }
+
+            var result = await _mutations.ExecuteAsync<List<GitHubCodespace>>(
+                account, $"codespace:{item.Codespace.Name}:delete",
+                _ =>
+                {
+                    lock (_lock)
+                    {
+                        return Task.FromResult(_load.IsCurrent(operation)
+                            && IsDeleteContextCurrent(account, generation) && _items.Contains(item));
+                    }
+                },
+                async token =>
+                {
+                    await _client.DeleteCodespaceAsync(account, item.Codespace.Name, token).ConfigureAwait(false);
+                    try
+                    {
+                        return await Reconcile(token).ConfigureAwait(false);
+                    }
+                    catch (GitHubApiException ex)
+                    {
+                        return new(MutationState.Unknown, Error: ex.Message, AuthorizeUrl: ex.AuthorizeUrl);
+                    }
+                },
+                Reconcile, cancellationToken: operation.Token).ConfigureAwait(false);
+            var outcome = MutationOutcome(result.State);
+            diagnostics.Complete(diagnostics.ChildOutcome == outcome ? null : outcome);
+            lock (_lock)
+            {
+                if (!_load.IsCurrent(operation) || !_mutations.IsCurrent(account) || result.State == MutationState.Stale)
+                {
+                    return;
+                }
+
+                if (result.State is MutationState.Unknown or MutationState.Pending)
+                {
+                    _pendingDeletes.Add(item.Codespace.Name);
+                }
+
+                if (result.Value is { } codespaces)
+                {
+                    ApplyReconciliation(account, codespaces, operation);
+                }
+
+                status = result.State == MutationState.Completed ? "Codespace deleted."
+                    : result.Error ?? "Couldn't confirm deletion. Refresh to check whether the codespace still exists.";
+                if (result.State != MutationState.Completed)
+                {
+                    _errorTitle = result.State == MutationState.Pending ? "Deletion pending" : "Couldn't confirm deletion";
+                    _load.SetError(operation, status);
+                    _authorizeUrl = result.AuthorizeUrl;
+                }
+            }
+        }
+    }
+
+    private async Task<List<GitHubCodespace>> GetAllCodespacesAsync(GitHubAccount account, CancellationToken token)
+    {
+        var result = new List<GitHubCodespace>();
+        var visited = new HashSet<Uri>();
+        int? totalCount = null;
+        Uri? page = null;
+        do
+        {
+            token.ThrowIfCancellationRequested();
+            var batch = await _client.GetCodespacesAsync(account, page, token).ConfigureAwait(false);
+            if (!batch.IsComplete || (batch.NextPage is { } next
+                && (!next.IsAbsoluteUri || !visited.Add(next) || next.Scheme != account.Host.ApiUrl.Scheme
+                    || next.Authority != account.Host.ApiUrl.Authority
+                    || next.AbsolutePath != "/user/codespaces")))
+            {
+                throw new GitHubApiException("GitHub's codespaces list was incomplete. No items were removed.");
+            }
+
+            if (batch.TotalCount is { } count)
+            {
+                if (totalCount is { } previous && previous != count)
+                {
+                    throw new GitHubApiException("GitHub's codespaces list changed while checking deletion. Refresh to check again.");
+                }
+
+                totalCount = count;
+            }
+
+            result.AddRange(batch.Codespaces);
+            page = batch.NextPage;
+        }
+        while (page is not null);
+        var unique = result.DistinctBy(c => c.Name, StringComparer.Ordinal).ToList();
+        if (totalCount is { } expected && unique.Count != expected)
+        {
+            throw new GitHubApiException("GitHub's codespaces list was incomplete. No items were removed.");
+        }
+
+        return unique;
+    }
+
+    private void ApplyReconciliation(GitHubAccount account, List<GitHubCodespace> codespaces, ListLoadState.Operation operation)
+    {
+        foreach (var name in _pendingDeletes.Where(name => !codespaces.Any(c => c.Name == name)))
+        {
+            _mutations.ObserveCompletion(account, $"codespace:{name}:delete");
+        }
+
+        _pendingDeletes.RemoveWhere(name => !codespaces.Any(c => c.Name == name));
+        _reconcileDeletes = _pendingDeletes.Count > 0;
+        _items.Clear();
+        _items.AddRange(codespaces.OrderByDescending(c => c.LastUsedAt)
+            .Select(c => new CodespaceItem(this, c, _browser, _time.GetUtcNow())));
+        _loadedAccount = account;
+        ObserveCompletion(account, codespaces);
+        _load.Succeed(operation, null);
+    }
 
     public override IListItem[] GetItems()
     {
@@ -85,7 +260,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         bool needsLoad;
         lock (_lock)
         {
-            needsLoad = !_loaded && !_fetching;
+            needsLoad = _load.NeedsLoad;
         }
 
         if (needsLoad)
@@ -108,14 +283,14 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
             }
 
             ICommand refresh = _authorizeCommand ?? new RefreshCodespacesCommand(this);
-            if (_error is not null)
+            if (_load.Error is not null)
             {
                 var error = new ListItem(refresh)
                 {
-                    Title = _errorTitle, Subtitle = _error, Icon = Icons.Codespaces,
+                    Title = _errorTitle, Subtitle = _load.Error, Icon = Icons.Codespaces,
                     MoreCommands = _createCommands,
                 };
-                empty = Empty(_errorTitle, _error, refresh: true, command: _authorizeCommand);
+                empty = Empty(_errorTitle, _load.Error, refresh: true, command: _authorizeCommand);
                 if (items.Count > 0)
                 {
                     items.Add(error);
@@ -123,7 +298,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
             }
             else
             {
-                empty = _fetching && items.Count == 0
+                empty = _load.Fetching && items.Count == 0
                     ? Empty("Loading codespaces...", "Getting your development environments from GitHub")
                     : Empty(terms.Length == 0 ? "No codespaces yet" : "No codespaces found",
                         terms.Length == 0
@@ -143,19 +318,24 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
 
     public override void LoadMore() => StartLoad(reset: false);
 
-    public Task RefreshAsync()
+    public async Task RefreshAsync()
     {
+        Task cancellation;
         lock (_lock)
         {
-            CancelLoad();
+            _load.Invalidate();
+            InvalidateDeleteContext();
+            cancellation = _currentOperation?.CancelCallbacks ?? Task.CompletedTask;
         }
 
-        return StartLoad(reset: true);
+        await cancellation.ConfigureAwait(false);
+        await StartLoad(reset: true).ConfigureAwait(false);
     }
 
     internal Task CloseAsync(CodespaceItem item)
         => RunCodespaceActionAsync(
             item,
+            DiagnosticEvent.CodespaceStop,
             "Available",
             "Couldn't close codespace",
             (account, name, token) => _client.StopCodespaceAsync(account, name, token));
@@ -163,6 +343,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
     internal Task StartAsync(CodespaceItem item)
         => RunCodespaceActionAsync(
             item,
+            DiagnosticEvent.CodespaceStart,
             "Shutdown",
             "Couldn't start codespace",
             (account, name, token) => _client.StartCodespaceAsync(account, name, token),
@@ -182,7 +363,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
                     {
                         return !_mutations.IsCurrent(account)
                             ? ("The account changed. Return to Codespaces and review the action again.", null)
-                            : (_error ?? "Request completed. Return to Codespaces and refresh to check its state.", _authorizeUrl);
+                            : (_load.Error ?? "Request completed. Return to Codespaces and refresh to check its state.", _authorizeUrl);
                     }
                 },
                 () => _mutations.IsCurrent(account));
@@ -190,44 +371,36 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
 
     private Task RunCodespaceActionAsync(
         CodespaceItem item,
+        DiagnosticEvent diagnosticEvent,
         string requiredState,
         string errorTitle,
         Func<GitHubAccount, string, CancellationToken, Task<GitHubCodespace>> action,
         bool refreshUntilAvailable = false)
     {
         GitHubAccount account;
-        int generation;
-        CancellationToken token;
+        ListLoadState.Operation operation;
         lock (_lock)
         {
-            if (_disposed || _fetching || !_items.Contains(item) || item.Codespace.State != requiredState
+            if (!_items.Contains(item) || item.Codespace.State != requiredState
                 || _auth.CurrentAccount is not { Host.IsGitHubDotCom: true } currentAccount
-                || !ReferenceEquals(currentAccount, _loadedAccount))
+                || !ReferenceEquals(currentAccount, _loadedAccount)
+                || _pendingDeletes.Contains(item.Codespace.Name)
+                || !_load.TryBegin(true, out operation))
             {
-                return _currentLoad;
+                return _load.CurrentLoad;
             }
 
             account = currentAccount;
-            generation = _generation;
-            _loadCts?.Dispose();
-            _loadCts = new CancellationTokenSource();
-            token = _loadCts.Token;
-            _fetching = true;
-            _error = null;
             _authorizeUrl = null;
+            _errorTitle = errorTitle;
+            _currentOperation = operation;
         }
 
-        IsLoading = true;
-        lock (_lock)
-        {
-            if (generation != _generation || _disposed)
-            {
-                return _currentLoad;
-            }
-
-            _currentLoad = Task.Run(() => RunCodespaceActionCoreAsync(account, item, generation, requiredState, errorTitle, action, refreshUntilAvailable, token));
-            return _currentLoad;
-        }
+        _load.Publish(operation, () => IsLoading = true);
+        return _load.Run(operation, () => RunCodespaceActionCoreAsync(account, item, operation, requiredState, action, refreshUntilAvailable),
+            () => PublishLoad(operation), "GitHub took too long to respond. Try refreshing codespaces.", markLoadedOnError: false,
+            area: DiagnosticArea.Codespaces, diagnosticEvent: diagnosticEvent, mutation: true,
+            success: DiagnosticOutcome.Accepted);
     }
 
     public void Dispose()
@@ -235,8 +408,8 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         _auth.AccountChanged -= OnAccountChanged;
         lock (_lock)
         {
-            _disposed = true;
-            CancelLoad();
+            _load.Dispose();
+            InvalidateDeleteContext();
         }
 
         _mutations.Dispose();
@@ -257,309 +430,329 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
     private Task StartLoad(bool reset)
     {
         GitHubAccount account;
-        CancellationToken token;
-        Uri? page;
-        int generation;
+        ListLoadState.Operation operation;
         lock (_lock)
         {
-            if (_disposed || _auth.CurrentAccount is not { } currentAccount || !currentAccount.Host.IsGitHubDotCom
-                || _fetching || (!reset && _nextPage is null))
+            if (_auth.CurrentAccount is not { } currentAccount || !currentAccount.Host.IsGitHubDotCom
+                || !_load.TryBegin(reset, out operation))
             {
-                return _currentLoad;
+                return _load.CurrentLoad;
             }
 
-            _loadCts?.Dispose();
-            _loadCts = new CancellationTokenSource();
             account = currentAccount;
-            token = _loadCts.Token;
-            page = reset ? null : _nextPage;
-            generation = _generation;
-            _fetching = true;
-            _error = null;
             _errorTitle = "Couldn't load codespaces";
+            _authorizeUrl = null;
+            _currentOperation = operation;
         }
 
-        IsLoading = true;
-        lock (_lock)
-        {
-            if (generation != _generation || _disposed)
-            {
-                return _currentLoad;
-            }
-
-            _currentLoad = Task.Run(() => LoadAsync(account, page, reset, generation, token));
-            return _currentLoad;
-        }
+        _load.Publish(operation, () => IsLoading = true);
+        return _load.Run(operation, () => LoadWithAuthorizationAsync(account, operation), () => PublishLoad(operation),
+            "GitHub took too long to respond. Try refreshing codespaces.", area: DiagnosticArea.Codespaces);
     }
 
-    private async Task LoadAsync(GitHubAccount account, Uri? page, bool reset, int generation, CancellationToken token)
+    private async Task LoadWithAuthorizationAsync(GitHubAccount account, ListLoadState.Operation operation)
     {
         try
         {
-            var result = await _client.GetCodespacesAsync(account, page, token).ConfigureAwait(false);
-            foreach (var codespace in result.Codespaces)
-            {
-                if (codespace.State is "Available" or "Shutdown")
-                {
-                    _mutations.ObserveCompletion(account,
-                        $"codespace:{codespace.Name}:{(codespace.State == "Available" ? "Shutdown" : "Available")}");
-                }
-            }
-            var now = _time.GetUtcNow();
-            bool hasMore;
-            lock (_lock)
-            {
-                if (generation != _generation || !ReferenceEquals(account, _auth.CurrentAccount))
-                {
-                    return;
-                }
-
-                if (reset)
-                {
-                    _items.Clear();
-                }
-
-                var known = _items.Select(i => i.Codespace.Name).ToHashSet(StringComparer.Ordinal);
-                _items.AddRange(result.Codespaces.Where(c => known.Add(c.Name)).Select(c => new CodespaceItem(this, c, _browser, now)));
-                _items.Sort((a, b) => b.Codespace.LastUsedAt.CompareTo(a.Codespace.LastUsedAt));
-                _nextPage = result.NextPage;
-                _loaded = true;
-                _loadedAccount = account;
-                hasMore = _nextPage is not null;
-            }
-
-            HasMoreItems = hasMore;
-        }
-        catch (OperationCanceledException) when (token.IsCancellationRequested)
-        {
+            await LoadAsync(account, operation).ConfigureAwait(false);
         }
         catch (GitHubApiException ex)
         {
             lock (_lock)
             {
-                if (generation != _generation)
+                if (_load.IsCurrent(operation))
+                {
+                    _authorizeUrl = ex.AuthorizeUrl;
+                }
+            }
+
+            throw;
+        }
+    }
+
+    private async Task LoadAsync(GitHubAccount account, ListLoadState.Operation operation)
+    {
+        bool reconcile;
+        lock (_lock)
+        {
+            reconcile = operation.Reset && _reconcileDeletes;
+        }
+
+        if (reconcile)
+        {
+            var codespaces = await GetAllCodespacesAsync(account, operation.Token).ConfigureAwait(false);
+            lock (_lock)
+            {
+                if (!_load.IsCurrent(operation))
                 {
                     return;
                 }
 
-                _error = ex.Message;
-                _authorizeUrl = ex.AuthorizeUrl;
-                _loaded = true;
+                ApplyReconciliation(account, codespaces, operation);
+                if (_pendingDeletes.Count > 0)
+                {
+                    _errorTitle = "Deletion pending";
+                    _load.SetError(operation, "The codespace is still present. Refresh to check again.");
+                }
             }
+
+            return;
         }
-        finally
+
+        var result = await _client.GetCodespacesAsync(account, operation.Page, operation.Token).ConfigureAwait(false);
+        var now = _time.GetUtcNow();
+        lock (_lock)
         {
-            CompleteOperation(generation);
+            if (!_load.IsCurrent(operation))
+            {
+                return;
+            }
+
+            if (operation.Reset)
+            {
+                _items.Clear();
+            }
+
+            var known = _items.Select(i => i.Codespace.Name).ToHashSet(StringComparer.Ordinal);
+            _items.AddRange(result.Codespaces.Where(c => known.Add(c.Name)).Select(c => new CodespaceItem(this, c, _browser, now)));
+            _items.Sort((a, b) => b.Codespace.LastUsedAt.CompareTo(a.Codespace.LastUsedAt));
+            _loadedAccount = account;
+            ObserveCompletion(account, result.Codespaces);
+            _load.Succeed(operation, result.NextPage);
         }
     }
 
     private async Task RunCodespaceActionCoreAsync(
         GitHubAccount account,
         CodespaceItem item,
-        int generation,
+        ListLoadState.Operation operation,
         string requiredState,
-        string errorTitle,
         Func<GitHubAccount, string, CancellationToken, Task<GitHubCodespace>> action,
-        bool refreshUntilAvailable,
-        CancellationToken pollingToken)
+        bool refreshUntilAvailable)
     {
-        try
+        using var diagnostics = OperationDiagnostics.Begin(DiagnosticEvent.Mutation, DiagnosticArea.Codespaces);
+        var pollingToken = operation.Token;
+        var desiredState = requiredState == "Shutdown" ? "Available" : "Shutdown";
+        async Task<GitHubCodespace?> Read(CancellationToken token)
         {
-            var desiredState = requiredState == "Shutdown" ? "Available" : "Shutdown";
-            async Task<GitHubCodespace?> Read(CancellationToken token)
+            Uri? page = null;
+            do
             {
-                Uri? page = null;
-                do
+                var response = await _client.GetCodespacesAsync(account, page, token).ConfigureAwait(false);
+                var found = response.Codespaces.FirstOrDefault(c => c.Name == item.Codespace.Name);
+                if (found is not null)
                 {
-                    var response = await _client.GetCodespacesAsync(account, page, token).ConfigureAwait(false);
-                    var found = response.Codespaces.FirstOrDefault(c => c.Name == item.Codespace.Name);
-                    if (found is not null)
-                    {
-                        return found;
-                    }
-
-                    page = response.NextPage;
+                    return found;
                 }
-                while (page is not null);
-                return null;
+
+                page = response.NextPage;
             }
+            while (page is not null);
+            return null;
+        }
 
-            var result = await _mutations.ExecuteAsync(
-                account, $"codespace:{item.Codespace.Name}:{requiredState}",
-                async token =>
+        var result = await _mutations.ExecuteAsync(
+            account, $"codespace:{item.Codespace.Name}:{requiredState}",
+            async token =>
+            {
+                var fresh = await Read(token).ConfigureAwait(false);
+                return fresh is not null && fresh.State == requiredState
+                    && fresh.RepositoryFullName == item.Codespace.RepositoryFullName
+                    && fresh.Branch == item.Codespace.Branch;
+            },
+            async token =>
+            {
+                var updated = await action(account, item.Codespace.Name, token).ConfigureAwait(false);
+                if (updated.Name != item.Codespace.Name
+                    || updated.RepositoryFullName != item.Codespace.RepositoryFullName
+                    || updated.Branch != item.Codespace.Branch)
                 {
-                    var fresh = await Read(token).ConfigureAwait(false);
-                    return fresh is not null && fresh.State == requiredState
-                        && fresh.RepositoryFullName == item.Codespace.RepositoryFullName
-                        && fresh.Branch == item.Codespace.Branch;
-                },
-                async token =>
+                    return new MutationResult<GitHubCodespace>(MutationState.Unknown, Error: "GitHub returned a different Codespace. Refresh to check its state.");
+                }
+
+                try
                 {
-                    var updated = await action(account, item.Codespace.Name, token).ConfigureAwait(false);
-                    if (updated.Name != item.Codespace.Name
-                        || updated.RepositoryFullName != item.Codespace.RepositoryFullName
-                        || updated.Branch != item.Codespace.Branch)
-                    {
-                        return new MutationResult<GitHubCodespace>(MutationState.Unknown, Error: "GitHub returned a different Codespace. Refresh to check its state.");
-                    }
-
-                    try
-                    {
-                        var authoritative = await Read(token).ConfigureAwait(false);
-                        if (authoritative is null
-                            || authoritative.RepositoryFullName != item.Codespace.RepositoryFullName
-                            || authoritative.Branch != item.Codespace.Branch)
-                        {
-                            return new MutationResult<GitHubCodespace>(MutationState.Unknown,
-                                Error: "Couldn't verify this Codespace after the request. Refresh to check GitHub before retrying.");
-                        }
-
-                        return refreshUntilAvailable
-                            ? await PollUntilAvailableAsync(authoritative, token).ConfigureAwait(false)
-                            : new MutationResult<GitHubCodespace>(
-                                authoritative.State == desiredState ? MutationState.Completed : MutationState.Pending, authoritative);
-                    }
-                    catch (GitHubApiException ex)
+                    var authoritative = await Read(token).ConfigureAwait(false);
+                    if (authoritative is null
+                        || authoritative.RepositoryFullName != item.Codespace.RepositoryFullName
+                        || authoritative.Branch != item.Codespace.Branch)
                     {
                         return new MutationResult<GitHubCodespace>(MutationState.Unknown,
-                            Error: ex.Message, AuthorizeUrl: ex.AuthorizeUrl);
-                    }
-                },
-                async token =>
-                {
-                    var fresh = await Read(token).ConfigureAwait(false);
-                    if (fresh is not null && (fresh.RepositoryFullName != item.Codespace.RepositoryFullName
-                        || fresh.Branch != item.Codespace.Branch))
-                    {
-                        return new MutationResult<GitHubCodespace>(MutationState.Unknown,
-                            Error: "This Codespace's repository or branch changed. Check GitHub before retrying.");
+                            Error: "Couldn't verify this Codespace after the request. Refresh to check GitHub before retrying.");
                     }
 
-                    return fresh?.State == desiredState
-                        ? new MutationResult<GitHubCodespace>(MutationState.Completed, fresh)
-                        : new MutationResult<GitHubCodespace>(MutationState.Pending, fresh,
-                            "GitHub may still be processing this request. Refresh to check its state; no duplicate request was sent.");
-                }, cancellationToken: pollingToken).ConfigureAwait(false);
-            lock (_lock)
+                    return refreshUntilAvailable
+                        ? await PollUntilAvailableAsync(authoritative, token).ConfigureAwait(false)
+                        : new MutationResult<GitHubCodespace>(
+                            authoritative.State == desiredState ? MutationState.Completed : MutationState.Pending, authoritative);
+                }
+                catch (GitHubApiException ex)
+                {
+                    return new MutationResult<GitHubCodespace>(MutationState.Unknown,
+                        Error: ex.Message, AuthorizeUrl: ex.AuthorizeUrl);
+                }
+            },
+            async token =>
             {
-                if (generation != _generation || !_mutations.IsCurrent(account) || result.State == MutationState.Stale)
+                var fresh = await Read(token).ConfigureAwait(false);
+                if (fresh is not null && (fresh.RepositoryFullName != item.Codespace.RepositoryFullName
+                    || fresh.Branch != item.Codespace.Branch))
                 {
-                    return;
+                    return new MutationResult<GitHubCodespace>(MutationState.Unknown,
+                        Error: "This Codespace's repository or branch changed. Check GitHub before retrying.");
                 }
 
-                var index = _items.IndexOf(item);
-                if (index >= 0 && result.Value is { } codespace)
-                {
-                    _items[index] = new CodespaceItem(this, codespace, _browser, _time.GetUtcNow());
-                }
-
-                if (result.State != MutationState.Completed)
-                {
-                    _error = result.Error ?? "GitHub is processing this request. Refresh to check its state before retrying.";
-                    _errorTitle = errorTitle;
-                    _authorizeUrl = result.AuthorizeUrl;
-                }
-            }
-
-            async Task<MutationResult<GitHubCodespace>> PollUntilAvailableAsync(GitHubCodespace codespace, CancellationToken sessionToken)
-            {
-                using var polling = CancellationTokenSource.CreateLinkedTokenSource(sessionToken, pollingToken);
-                var token = polling.Token;
-                for (var attempt = 0; ; attempt++)
-                {
-                    token.ThrowIfCancellationRequested();
-                    if (codespace.Name != item.Codespace.Name
-                        || codespace.RepositoryFullName != item.Codespace.RepositoryFullName
-                        || codespace.Branch != item.Codespace.Branch)
-                    {
-                        return new(MutationState.Unknown, Error: "GitHub returned a different Codespace. Refresh to check its state.");
-                    }
-
-                    if (codespace.State == "Available")
-                    {
-                        return new(MutationState.Completed, codespace);
-                    }
-
-                    lock (_lock)
-                    {
-                        if (generation != _generation || !_mutations.IsCurrent(account))
-                        {
-                            return new(MutationState.Pending);
-                        }
-
-                        var index = _items.IndexOf(item);
-                        if (index >= 0)
-                        {
-                            item = new CodespaceItem(this, codespace, _browser, _time.GetUtcNow());
-                            _items[index] = item;
-                        }
-                    }
-
-                    RaiseItemsChanged();
-                    if (codespace.State is not ("Shutdown" or "Created" or "Queued" or "Provisioning" or "Starting" or "Updating" or "Awaiting" or "Rebuilding"))
-                    {
-                        return new(MutationState.Pending, codespace, "This codespace couldn't become available. Refresh to check its state.");
-                    }
-
-                    if (attempt >= 60)
-                    {
-                        return new(MutationState.Pending, codespace, "This codespace is still starting. Refresh to check its state.");
-                    }
-
-                    await Task.Delay(TimeSpan.FromSeconds(2), _time, token).ConfigureAwait(false);
-                    codespace = await _client.GetCodespaceAsync(account, codespace.Name, token).WaitAsync(token).ConfigureAwait(false);
-                }
-            }
-        }
-        finally
-        {
-            CompleteOperation(generation);
-        }
-    }
-
-    private void CompleteOperation(int generation)
-    {
-        bool publish;
+                return fresh?.State == desiredState
+                    ? new MutationResult<GitHubCodespace>(MutationState.Completed, fresh)
+                    : new MutationResult<GitHubCodespace>(MutationState.Pending, fresh,
+                        "GitHub may still be processing this request. Refresh to check its state; no duplicate request was sent.");
+            }, cancellationToken: pollingToken).ConfigureAwait(false);
+        var outcome = MutationOutcome(result.State);
+        diagnostics.Complete(diagnostics.ChildOutcome == DiagnosticOutcome.Failed || diagnostics.ChildOutcome == outcome ? null : outcome);
         lock (_lock)
         {
-            publish = generation == _generation && !_disposed;
-            if (publish)
+            if (!_load.IsCurrent(operation) || !_mutations.IsCurrent(account) || result.State == MutationState.Stale)
             {
-                _fetching = false;
+                return;
+            }
+
+            var index = _items.IndexOf(item);
+            if (index >= 0 && result.Value is { } codespace)
+            {
+                _items[index] = new CodespaceItem(this, codespace, _browser, _time.GetUtcNow());
+            }
+
+            if (result.State != MutationState.Completed)
+            {
+                _load.SetError(operation, result.Error ?? "GitHub is processing this request. Refresh to check its state before retrying.");
+                _authorizeUrl = result.AuthorizeUrl;
             }
         }
 
-        if (publish)
+        async Task<MutationResult<GitHubCodespace>> PollUntilAvailableAsync(GitHubCodespace codespace, CancellationToken sessionToken)
         {
-            IsLoading = false;
-            RaiseItemsChanged();
+            using var polling = CancellationTokenSource.CreateLinkedTokenSource(sessionToken, pollingToken);
+            var token = polling.Token;
+            for (var attempt = 0; ; attempt++)
+            {
+                token.ThrowIfCancellationRequested();
+                if (codespace.Name != item.Codespace.Name
+                    || codespace.RepositoryFullName != item.Codespace.RepositoryFullName
+                    || codespace.Branch != item.Codespace.Branch)
+                {
+                    return new(MutationState.Unknown, Error: "GitHub returned a different Codespace. Refresh to check its state.");
+                }
+
+                if (codespace.State == "Available")
+                {
+                    return new(MutationState.Completed, codespace);
+                }
+
+                lock (_lock)
+                {
+                    if (!_load.IsCurrent(operation) || !_mutations.IsCurrent(account))
+                    {
+                        return new(MutationState.Pending);
+                    }
+
+                    var index = _items.IndexOf(item);
+                    if (index >= 0)
+                    {
+                        item = new CodespaceItem(this, codespace, _browser, _time.GetUtcNow());
+                        _items[index] = item;
+                    }
+                }
+
+                _load.Publish(operation, () => RaiseItemsChanged());
+                if (codespace.State is not ("Shutdown" or "Created" or "Queued" or "Provisioning" or "Starting" or "Updating" or "Awaiting" or "Rebuilding"))
+                {
+                    return new(MutationState.Pending, codespace, "This codespace couldn't become available. Refresh to check its state.");
+                }
+
+                if (attempt >= 60)
+                {
+                    return new(MutationState.Pending, codespace, "This codespace is still starting. Refresh to check its state.");
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(2), _time, token).ConfigureAwait(false);
+                codespace = await _client.GetCodespaceAsync(account, codespace.Name, token).WaitAsync(token).ConfigureAwait(false);
+            }
         }
     }
 
-    private void CancelLoad()
+    private void ObserveCompletion(GitHubAccount account, IEnumerable<GitHubCodespace> codespaces)
     {
-        _generation++;
-        _loadCts?.Cancel();
-        _loadCts?.Dispose();
-        _loadCts = null;
-        _fetching = false;
+        foreach (var codespace in codespaces)
+        {
+            if (codespace.State is "Available" or "Shutdown")
+            {
+                _mutations.ObserveCompletion(account,
+                    $"codespace:{codespace.Name}:{(codespace.State == "Available" ? "Shutdown" : "Available")}");
+            }
+
+        }
+    }
+
+    private static DiagnosticOutcome MutationOutcome(MutationState state) => state switch
+    {
+        MutationState.Completed => DiagnosticOutcome.Completed,
+        MutationState.Pending => DiagnosticOutcome.Accepted,
+        MutationState.Unknown => DiagnosticOutcome.Unknown,
+        MutationState.Stale => DiagnosticOutcome.Cancelled,
+        _ => DiagnosticOutcome.Failed,
+    };
+
+    private void PublishLoad(ListLoadState.Operation operation)
+    {
+        bool hasMore;
+        lock (_lock)
+        {
+            hasMore = _load.NextPage is not null;
+        }
+
+        _load.Publish(operation, () => HasMoreItems = hasMore);
+        _load.Publish(operation, () => IsLoading = false);
+        _load.Publish(operation, () => RaiseItemsChanged());
     }
 
     private void OnAccountChanged(object? sender, EventArgs e)
     {
         lock (_lock)
         {
-            CancelLoad();
+            _load.Invalidate(reset: true);
+            InvalidateDeleteContext();
             _items.Clear();
-            _nextPage = null;
-            _loaded = false;
             _loadedAccount = null;
-            _error = null;
             _authorizeUrl = null;
+            _pendingDeletes.Clear();
+            _reconcileDeletes = false;
         }
 
         HasMoreItems = false;
         IsLoading = false;
         RaiseItemsChanged();
+    }
+
+    private void InvalidateDeleteContext()
+    {
+        _deleteGeneration++;
+        var previous = _deleteCancellation;
+        _deleteCancellation = _load.Disposed ? null : new CancellationTokenSource();
+        if (previous is not null)
+        {
+            _ = CancelDeleteContextAsync(previous);
+        }
+    }
+
+    private static async Task CancelDeleteContextAsync(CancellationTokenSource cancellation)
+    {
+        try
+        {
+            await cancellation.CancelAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            cancellation.Dispose();
+        }
     }
 }
