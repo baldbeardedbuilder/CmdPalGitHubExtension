@@ -291,6 +291,43 @@ public class CodespacesClientTests
     }
 
     [TestMethod]
+    public async Task CreateCodespaceAsync_SourceGeneratedJsonEscapesBranch()
+    {
+        const string branch = "feature/\"quotes\"\\path";
+        using var handler = new CreateCodespaceHandler(
+            (HttpStatusCode.OK, """{"id":12345}"""),
+            (HttpStatusCode.Created, CodespaceJson));
+        using var http = new HttpClient(handler);
+
+        await new CodespacesClient(http).CreateCodespaceAsync(
+            Account,
+            "octocat/hello",
+            branch,
+            TestContext.CancellationToken);
+
+        using var body = JsonDocument.Parse(handler.Requests[1].Body!);
+        Assert.AreEqual(branch, body.RootElement.GetProperty("ref").GetString());
+    }
+
+    [TestMethod]
+    public async Task CreateCodespaceAsync_OmitsBlankBranchFromRequest()
+    {
+        using var handler = new CreateCodespaceHandler(
+            (HttpStatusCode.OK, """{"id":12345}"""),
+            (HttpStatusCode.Created, CodespaceJson));
+        using var http = new HttpClient(handler);
+
+        await new CodespacesClient(http).CreateCodespaceAsync(
+            Account,
+            "octocat/hello",
+            "  ",
+            TestContext.CancellationToken);
+
+        using var body = JsonDocument.Parse(handler.Requests[1].Body!);
+        Assert.IsFalse(body.RootElement.TryGetProperty("ref", out _));
+    }
+
+    [TestMethod]
     public async Task CreateCodespaceAsync_RejectsInvalidRepositoryBeforeSendingRequest()
     {
         using var handler = new CreateCodespaceHandler((HttpStatusCode.OK, """{"id":12345}"""));

@@ -115,13 +115,13 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
             throw new GitHubApiException("GitHub sent back a repository we couldn't read.");
         }
 
-        var requestBody = new Dictionary<string, object?> { ["repository_id"] = repositoryId };
-        if (!string.IsNullOrWhiteSpace(branch))
-        {
-            requestBody["ref"] = branch.Trim();
-        }
-
-        using var content = new StringContent(JsonSerializer.Serialize(requestBody), Encoding.UTF8, "application/json");
+        var requestBody = new CreateCodespaceRequest(
+            repositoryId,
+            string.IsNullOrWhiteSpace(branch) ? null : branch.Trim());
+        using var content = new StringContent(
+            JsonSerializer.Serialize(requestBody, CodespacesJsonContext.Default.CreateCodespaceRequest),
+            Encoding.UTF8,
+            "application/json");
         var createUri = new Uri(account.Host.ApiUrl, "user/codespaces");
         using var response = await SendAsync(httpClient, account, HttpMethod.Post, createUri, cancellationToken, content: content).ConfigureAwait(false);
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
@@ -176,3 +176,12 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
             webUrl);
     }
 }
+
+internal sealed record CreateCodespaceRequest(
+    [property: System.Text.Json.Serialization.JsonPropertyName("repository_id")] long RepositoryId,
+    [property: System.Text.Json.Serialization.JsonPropertyName("ref")] string? Branch);
+
+[System.Text.Json.Serialization.JsonSourceGenerationOptions(
+    DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+[System.Text.Json.Serialization.JsonSerializable(typeof(CreateCodespaceRequest))]
+internal sealed partial class CodespacesJsonContext : System.Text.Json.Serialization.JsonSerializerContext;

@@ -37,7 +37,7 @@ Tasks still appear when the preview API leaves out their web links. The extensio
 
 ## Install
 
-Releases aren't published yet. Until they are, build it yourself using the steps in [CONTRIBUTING.md](CONTRIBUTING.md).
+Stable version tags drive the release workflow. See [RELEASING.md](RELEASING.md) for channel setup and installation details. Until the first release is available, build it yourself using the steps in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Signing in
 

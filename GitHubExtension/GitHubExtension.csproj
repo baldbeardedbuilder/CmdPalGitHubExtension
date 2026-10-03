@@ -74,7 +74,9 @@
   <PropertyGroup Condition=" '$(Configuration)' != 'Debug' ">
     <IsAotCompatible>true</IsAotCompatible>
     <PublishTrimmed>true</PublishTrimmed>
-    <PublishSingleFile>true</PublishSingleFile>
+    <!-- Native AOT already emits one executable; the extra single-file host conflicts with MSIX packaging. -->
+    <PublishSingleFile>false</PublishSingleFile>
+    <PublishReadyToRun>false</PublishReadyToRun>
     <PublishAot>true</PublishAot>
   </PropertyGroup>
 

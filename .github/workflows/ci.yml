@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
+  debug-build-and-test:
     runs-on: windows-latest
 
     steps:
@@ -23,14 +23,72 @@ jobs:
           dotnet-version: 10.x
 
       - name: Restore
+        shell: pwsh
         run: |
-          dotnet restore GitHubExtension/GitHubExtension.csproj -r win-x64
-          dotnet restore GitHubExtension.Tests/GitHubExtension.Tests.csproj -r win-x64
+          dotnet restore GitHubExtension/GitHubExtension.csproj -r win-x64 -p:Platform=x64
+          dotnet restore GitHubExtension.Tests/GitHubExtension.Tests.csproj -r win-x64 -p:Platform=x64
 
       - name: Build
+        shell: pwsh
         run: |
-          dotnet build GitHubExtension/GitHubExtension.csproj -r win-x64 --no-restore
-          dotnet build GitHubExtension.Tests/GitHubExtension.Tests.csproj -r win-x64 --no-restore
+          dotnet build GitHubExtension/GitHubExtension.csproj -r win-x64 --no-restore -p:Platform=x64 -p:GenerateAppxPackageOnBuild=false
+          dotnet build GitHubExtension.Tests/GitHubExtension.Tests.csproj -r win-x64 --no-restore -p:Platform=x64 -p:GenerateAppxPackageOnBuild=false
 
       - name: Test
-        run: dotnet test GitHubExtension.Tests/GitHubExtension.Tests.csproj -r win-x64 --no-build
+        shell: pwsh
+        run: dotnet test GitHubExtension.Tests/GitHubExtension.Tests.csproj -r win-x64 --no-build -p:Platform=x64 -p:GenerateAppxPackageOnBuild=false
+
+  release-build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: win-x64
+            platform: x64
+            runner: windows-latest
+            architecture: x64
+            profile: win-x64
+            test: true
+          - runtime: win-arm64
+            platform: ARM64
+            runner: windows-11-arm
+            architecture: arm64
+            profile: win-arm64
+            test: false
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.x
+          architecture: ${{ matrix.architecture }}
+
+      - name: Restore application
+        shell: pwsh
+        run: dotnet restore GitHubExtension/GitHubExtension.csproj -r ${{ matrix.runtime }} -p:Platform=${{ matrix.platform }}
+
+      - name: Restore test dependencies
+        if: matrix.test
+        shell: pwsh
+        run: dotnet restore GitHubExtension.Tests/GitHubExtension.Tests.csproj -r win-x64 -p:Platform=x64
+
+      - name: Release tests
+        if: matrix.test
+        shell: pwsh
+        run: dotnet test GitHubExtension.Tests/GitHubExtension.Tests.csproj -c Release -r win-x64 --no-restore -p:Platform=x64 -p:GenerateAppxPackageOnBuild=false
+
+      - name: Publish Release MSIX
+        shell: pwsh
+        run: dotnet publish GitHubExtension/GitHubExtension.csproj -c Release -r ${{ matrix.runtime }} --no-restore -p:Platform=${{ matrix.platform }} -p:PublishProfile=${{ matrix.profile }}
+
+      - name: Validate package manifest and versions
+        shell: pwsh
+        run: |
+          [xml] $manifest = Get-Content GitHubExtension/Package.appxmanifest
+          $version = $manifest.SelectSingleNode('//*[local-name()="Identity"]').Version
+          $publisher = $manifest.SelectSingleNode('//*[local-name()="Identity"]').Publisher
+          ./.github/scripts/Validate-Msix.ps1 -RuntimeIdentifier '${{ matrix.runtime }}' -Version $version -Publisher $publisher

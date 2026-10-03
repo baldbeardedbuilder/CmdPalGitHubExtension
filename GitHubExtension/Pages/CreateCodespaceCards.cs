@@ -35,7 +35,7 @@ internal static class CreateCodespaceCards
         ] }
         """);
 
-    internal static string Str(string value) => JsonSerializer.Serialize(value);
+    internal static string Str(string value) => JsonSerializer.Serialize(value, CreateCodespaceCardsJsonContext.Default.String);
 
     private static string Error(string? error) => string.IsNullOrEmpty(error)
         ? string.Empty
@@ -50,6 +50,9 @@ internal static class CreateCodespaceCards
         }
         """;
 }
+
+[System.Text.Json.Serialization.JsonSerializable(typeof(string))]
+internal sealed partial class CreateCodespaceCardsJsonContext : System.Text.Json.Serialization.JsonSerializerContext;
 
 internal static class CreateCodespaceActions
 {

@@ -1,0 +1,439 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-tag:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Stamp manifest from stable tag
+        id: version
+        shell: pwsh
+        run: ./.github/scripts/Set-ReleaseVersion.ps1 -Tag $env:GITHUB_REF_NAME -ManifestPath GitHubExtension/Package.appxmanifest
+
+  release-tests:
+    needs: validate-tag
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.x
+
+      - name: Stamp manifest
+        shell: pwsh
+        run: ./.github/scripts/Set-ReleaseVersion.ps1 -Tag $env:GITHUB_REF_NAME -ManifestPath GitHubExtension/Package.appxmanifest
+
+      - name: Restore
+        shell: pwsh
+        run: |
+          dotnet restore GitHubExtension/GitHubExtension.csproj -r win-x64 -p:Platform=x64
+          dotnet restore GitHubExtension.Tests/GitHubExtension.Tests.csproj -r win-x64 -p:Platform=x64
+
+      - name: Release tests
+        shell: pwsh
+        run: dotnet test GitHubExtension.Tests/GitHubExtension.Tests.csproj -c Release -r win-x64 --no-restore -p:Platform=x64 -p:GenerateAppxPackageOnBuild=false
+
+  package-sideload:
+    needs: [validate-tag, release-tests]
+    runs-on: ${{ matrix.runner }}
+    environment: release-signing
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: win-x64
+            platform: x64
+            runner: windows-latest
+            architecture: x64
+            profile: win-x64
+            package: GitHubExtension-win-x64.msix
+          - runtime: win-arm64
+            platform: ARM64
+            runner: windows-11-arm
+            architecture: arm64
+            profile: win-arm64
+            package: GitHubExtension-win-arm64.msix
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.x
+          architecture: ${{ matrix.architecture }}
+
+      - name: Stamp manifest
+        shell: pwsh
+        run: ./.github/scripts/Set-ReleaseVersion.ps1 -Tag $env:GITHUB_REF_NAME -ManifestPath GitHubExtension/Package.appxmanifest
+
+      - name: Restore and publish MSIX
+        shell: pwsh
+        run: |
+          dotnet restore GitHubExtension/GitHubExtension.csproj -r '${{ matrix.runtime }}' -p:Platform='${{ matrix.platform }}'
+          dotnet publish GitHubExtension/GitHubExtension.csproj -c Release -r '${{ matrix.runtime }}' --no-restore -p:Platform='${{ matrix.platform }}' -p:PublishProfile='${{ matrix.profile }}'
+
+      - name: Validate unsigned package
+        id: package
+        shell: pwsh
+        run: |
+          [xml] $manifest = Get-Content GitHubExtension/Package.appxmanifest
+          $publisher = $manifest.SelectSingleNode('//*[local-name()="Identity"]').Publisher
+          ./.github/scripts/Validate-Msix.ps1 -RuntimeIdentifier '${{ matrix.runtime }}' -Version '${{ needs.validate-tag.outputs.version }}' -Publisher $publisher
+          $file = Get-ChildItem "GitHubExtension/AppPackages/${{ matrix.runtime }}" -Filter '*.msix' -File -Recurse | Select-Object -First 1
+          New-Item -ItemType Directory -Path release-assets -Force | Out-Null
+          $destination = Join-Path release-assets '${{ matrix.package }}'
+          Copy-Item $file.FullName $destination
+          "file=$((Resolve-Path $destination).Path)" >> $env:GITHUB_OUTPUT
+
+      - name: Check signing configuration
+        id: signing-config
+        shell: pwsh
+        env:
+          AZURE_CREDS: ${{ secrets.AZURE_CREDS }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          SIGNING_PROFILE: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+        run: |
+          if (-not ($env:AZURE_CREDS -or ($env:AZURE_CLIENT_ID -and $env:AZURE_TENANT_ID -and $env:AZURE_SUBSCRIPTION_ID))) {
+            throw 'Configure AZURE_CREDS or the federated AZURE_CLIENT_ID, AZURE_TENANT_ID, and AZURE_SUBSCRIPTION_ID secrets in the release-signing environment.'
+          }
+          $authMode = if ($env:AZURE_CREDS) { 'service-principal' } else { 'federated' }
+          "auth_mode=$authMode" >> $env:GITHUB_OUTPUT
+          foreach ($name in @('SIGNING_ENDPOINT', 'SIGNING_ACCOUNT', 'SIGNING_PROFILE')) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Configure $name in the release-signing environment."
+            }
+          }
+
+      - name: Azure login with service-principal credentials
+        if: ${{ steps.signing-config.outputs.auth_mode == 'service-principal' }}
+        uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2.3.0
+        env:
+          AZURE_CREDS: ${{ secrets.AZURE_CREDS }}
+        with:
+          creds: ${{ secrets.AZURE_CREDS }}
+
+      - name: Azure login with federated identity
+        if: ${{ steps.signing-config.outputs.auth_mode == 'federated' }}
+        uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2.3.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign MSIX with Azure Artifact Signing
+        uses: azure/artifact-signing-action@b443cf8ea4124818d2ea9f043cba29fc3ec47b16 # v1
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          files: ${{ steps.package.outputs.file }}
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify package signature and identity
+        shell: pwsh
+        run: |
+          [xml] $manifest = Get-Content GitHubExtension/Package.appxmanifest
+          $publisher = $manifest.SelectSingleNode('//*[local-name()="Identity"]').Publisher
+          ./.github/scripts/Validate-Msix.ps1 -RuntimeIdentifier '${{ matrix.runtime }}' -Version '${{ needs.validate-tag.outputs.version }}' -Publisher $publisher -RequireSignature
+
+      - name: Upload signed package artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: github-${{ matrix.runtime }}
+          path: ${{ steps.package.outputs.file }}
+          if-no-files-found: error
+          retention-days: 7
+
+  github-release:
+    needs: [validate-tag, package-sideload]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download signed packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: github-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! gh release view "$TAG" --json tagName >/dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --generate-notes --title "$TAG"
+          fi
+          test "$(find release-assets -maxdepth 1 -type f -name '*.msix' | wc -l)" -eq 2
+          gh release upload "$TAG" release-assets/*.msix --clobber
+          gh release view "$TAG" --json url,assets --jq '"GitHub Release: " + .url + "\nAssets: " + ([.assets[].name] | join(", "))' >> "$GITHUB_STEP_SUMMARY"
+
+  publish-winget:
+    needs: [validate-tag, github-release]
+    runs-on: windows-latest
+    environment: winget
+    permissions:
+      contents: read
+    steps:
+      - name: Preflight WinGet token and package onboarding
+        id: winget-preflight
+        shell: pwsh
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          VERSION: ${{ needs.validate-tag.outputs.version }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINGET_TOKEN)) {
+            throw 'WINGET_TOKEN is missing from the winget environment.'
+          }
+          $headers = @{ Authorization = ('Bearer ' + $env:WINGET_TOKEN); 'User-Agent' = 'CmdPalGitHubExtension-release'; Accept = 'application/vnd.github+json' }
+          $user = Invoke-WebRequest 'https://api.github.com/user' -Headers $headers -SkipHttpErrorCheck
+          if ($user.StatusCode -ne 200) {
+            throw "WINGET_TOKEN was rejected by GitHub (HTTP $($user.StatusCode)); this is an authentication failure, not a missing package. Use a valid classic PAT with public_repo access."
+          }
+          if ($user.Headers['x-oauth-scopes'] -notmatch '(^|,\s*)public_repo(,|$)') {
+            throw 'WINGET_TOKEN must be a classic PAT with public_repo access.'
+          }
+          $package = Invoke-WebRequest 'https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/b/BaldBeardedBuilder/GitHubforCommandPalette' -Headers $headers -SkipHttpErrorCheck
+          if ($package.StatusCode -eq 404) {
+            throw 'The WinGet package is not onboarded. Follow the first-time onboarding steps in CONTRIBUTING.md, then retry this tag.'
+          }
+          if ($package.StatusCode -ne 200) {
+            throw "WinGet package preflight failed with HTTP $($package.StatusCode)."
+          }
+          $versionManifest = Invoke-WebRequest "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/b/BaldBeardedBuilder/GitHubforCommandPalette/$env:VERSION" -Headers $headers -SkipHttpErrorCheck
+          if ($versionManifest.StatusCode -notin @(200, 404)) {
+            throw "WinGet version preflight failed with HTTP $($versionManifest.StatusCode)."
+          }
+          $available = $versionManifest.StatusCode -eq 200
+          "version_available=$($available.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
+      - name: Submit signed release assets to WinGet
+        if: steps.winget-preflight.outputs.version_available != 'true'
+        uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e # v2
+        with:
+          identifier: BaldBeardedBuilder.GitHubforCommandPalette
+          installers-regex: '\.msix$'
+          release-repository: CmdPalGitHubExtension
+          release-tag: ${{ github.ref_name }}
+          version: ${{ needs.validate-tag.outputs.version }}
+          max-versions-to-keep: 3
+          token: ${{ secrets.WINGET_TOKEN }}
+
+      - name: Link WinGet submission
+        if: steps.winget-preflight.outputs.version_available != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          $pullRequests = gh pr list --repo microsoft/winget-pkgs --state open --search '"BaldBeardedBuilder.GitHubforCommandPalette" in:title' --json title,url --limit 10 | ConvertFrom-Json
+          $matching = @($pullRequests | Where-Object { $_.title -match 'BaldBeardedBuilder\.GitHubforCommandPalette' })
+          if ($matching.Count -gt 0) {
+            "WinGet update submitted for review: $($matching[0].url). Submission does not mean the PR has merged or the package is available." >> $env:GITHUB_STEP_SUMMARY
+          } else {
+            'WinGet releaser completed. Check the microsoft/winget-pkgs pull requests for the submitted update; submission does not mean it has merged or become available.' >> $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: Report existing WinGet version
+        if: steps.winget-preflight.outputs.version_available == 'true'
+        shell: pwsh
+        run: |
+          "WinGet already contains version ${{ needs.validate-tag.outputs.version }}. No duplicate update PR was submitted." >> $env:GITHUB_STEP_SUMMARY
+
+  package-store:
+    needs: [validate-tag, release-tests]
+    runs-on: ${{ matrix.runner }}
+    environment: microsoft-store
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: win-x64
+            platform: x64
+            runner: windows-latest
+            architecture: x64
+            profile: win-x64
+          - runtime: win-arm64
+            platform: ARM64
+            runner: windows-11-arm
+            architecture: arm64
+            profile: win-arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.x
+          architecture: ${{ matrix.architecture }}
+
+      - name: Stamp version and Store publisher
+        shell: pwsh
+        env:
+          STORE_PUBLISHER_NAME: ${{ secrets.STORE_PUBLISHER_NAME }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:STORE_PUBLISHER_NAME)) {
+            throw 'STORE_PUBLISHER_NAME is missing from the microsoft-store environment.'
+          }
+          ./.github/scripts/Set-ReleaseVersion.ps1 -Tag $env:GITHUB_REF_NAME -ManifestPath GitHubExtension/Package.appxmanifest
+          [xml] $manifest = Get-Content GitHubExtension/Package.appxmanifest
+          $identity = $manifest.SelectSingleNode('//*[local-name()="Identity"]')
+          $identity.SetAttribute('Publisher', $env:STORE_PUBLISHER_NAME)
+          $manifest.Save((Resolve-Path GitHubExtension/Package.appxmanifest))
+
+      - name: Restore and publish unsigned Store MSIX
+        shell: pwsh
+        run: |
+          dotnet restore GitHubExtension/GitHubExtension.csproj -r '${{ matrix.runtime }}' -p:Platform='${{ matrix.platform }}'
+          dotnet publish GitHubExtension/GitHubExtension.csproj -c Release -r '${{ matrix.runtime }}' --no-restore -p:Platform='${{ matrix.platform }}' -p:PublishProfile='${{ matrix.profile }}'
+
+      - name: Validate Store MSIX
+        shell: pwsh
+        env:
+          STORE_PUBLISHER_NAME: ${{ secrets.STORE_PUBLISHER_NAME }}
+        run: ./.github/scripts/Validate-Msix.ps1 -RuntimeIdentifier '${{ matrix.runtime }}' -Version '${{ needs.validate-tag.outputs.version }}' -Publisher $env:STORE_PUBLISHER_NAME
+
+      - name: Stage Store package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path store-packages -Force | Out-Null
+          $file = Get-ChildItem "GitHubExtension/AppPackages/${{ matrix.runtime }}" -Filter '*.msix' -File -Recurse | Select-Object -First 1
+          Copy-Item $file.FullName -Destination store-packages
+
+      - name: Upload unsigned Store package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: store-${{ matrix.runtime }}
+          path: store-packages/*.msix
+          if-no-files-found: error
+          retention-days: 7
+
+  submit-store:
+    needs: [validate-tag, package-store]
+    runs-on: windows-latest
+    environment: microsoft-store
+    concurrency:
+      group: microsoft-store-${{ github.repository }}
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download Store packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: store-*
+          path: store-packages
+          merge-multiple: true
+
+      - name: Validate package set and create Store bundle
+        id: bundle
+        shell: pwsh
+        env:
+          STORE_PUBLISHER_NAME: ${{ secrets.STORE_PUBLISHER_NAME }}
+          VERSION: ${{ needs.validate-tag.outputs.version }}
+        run: |
+          $packages = @(Get-ChildItem store-packages -Filter '*.msix' -File)
+          if ($packages.Count -ne 2) {
+            throw "Expected exactly two Store packages, found $($packages.Count)."
+          }
+          $bundleInput = Join-Path $env:GITHUB_WORKSPACE 'bundle-input'
+          New-Item -ItemType Directory -Path $bundleInput -Force | Out-Null
+          $packages | Copy-Item -Destination $bundleInput
+          $makeappx = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\makeappx.exe' -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $makeappx) {
+            throw 'makeappx.exe was not found in the Windows SDK.'
+          }
+          $bundlePath = Join-Path $env:GITHUB_WORKSPACE "GitHubExtension_$env:VERSION.msixbundle"
+          & $makeappx.FullName bundle /d $bundleInput /bv $env:VERSION /p $bundlePath /o
+          if ($LASTEXITCODE -ne 0) {
+            throw "makeappx bundle failed with exit code $LASTEXITCODE."
+          }
+          ./.github/scripts/Validate-MsixBundle.ps1 -BundlePath $bundlePath -Version $env:VERSION -Publisher $env:STORE_PUBLISHER_NAME
+          "path=$bundlePath" >> $env:GITHUB_OUTPUT
+
+      - name: Check Partner Center configuration
+        shell: pwsh
+        env:
+          STORE_PRODUCT_ID: ${{ secrets.STORE_PRODUCT_ID }}
+          STORE_PUBLISHER_NAME: ${{ secrets.STORE_PUBLISHER_NAME }}
+          PARTNER_CENTER_TENANT_ID: ${{ secrets.PARTNER_CENTER_TENANT_ID }}
+          PARTNER_CENTER_SELLER_ID: ${{ secrets.PARTNER_CENTER_SELLER_ID }}
+          PARTNER_CENTER_CLIENT_ID: ${{ secrets.PARTNER_CENTER_CLIENT_ID }}
+          PARTNER_CENTER_CLIENT_SECRET: ${{ secrets.PARTNER_CENTER_CLIENT_SECRET }}
+        run: |
+          foreach ($name in @('STORE_PRODUCT_ID', 'STORE_PUBLISHER_NAME', 'PARTNER_CENTER_TENANT_ID', 'PARTNER_CENTER_SELLER_ID', 'PARTNER_CENTER_CLIENT_ID', 'PARTNER_CENTER_CLIENT_SECRET')) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Configure $name in the microsoft-store environment."
+            }
+          }
+
+      - name: Setup Microsoft Store CLI
+        uses: microsoft/microsoft-store-apppublisher@b76227f539d68e6465f79bbbc82ed92f61081aa4 # v1.3
+        with:
+          version: v0.4.3
+
+      - name: Configure Microsoft Store CLI
+        shell: pwsh
+        env:
+          PARTNER_CENTER_TENANT_ID: ${{ secrets.PARTNER_CENTER_TENANT_ID }}
+          PARTNER_CENTER_SELLER_ID: ${{ secrets.PARTNER_CENTER_SELLER_ID }}
+          PARTNER_CENTER_CLIENT_ID: ${{ secrets.PARTNER_CENTER_CLIENT_ID }}
+          PARTNER_CENTER_CLIENT_SECRET: ${{ secrets.PARTNER_CENTER_CLIENT_SECRET }}
+        run: |
+          foreach ($name in @('PARTNER_CENTER_TENANT_ID', 'PARTNER_CENTER_SELLER_ID', 'PARTNER_CENTER_CLIENT_ID', 'PARTNER_CENTER_CLIENT_SECRET')) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            Write-Output "::add-mask::$value"
+          }
+          msstore reconfigure --tenantId $env:PARTNER_CENTER_TENANT_ID --sellerId $env:PARTNER_CENTER_SELLER_ID --clientId $env:PARTNER_CENTER_CLIENT_ID --clientSecret $env:PARTNER_CENTER_CLIENT_SECRET
+          if ($LASTEXITCODE -ne 0) {
+            throw "msstore reconfigure failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Submit or resume Store release
+        shell: pwsh
+        env:
+          STORE_PRODUCT_ID: ${{ secrets.STORE_PRODUCT_ID }}
+          STORE_PUBLISHER_NAME: ${{ secrets.STORE_PUBLISHER_NAME }}
+          PARTNER_CENTER_TENANT_ID: ${{ secrets.PARTNER_CENTER_TENANT_ID }}
+          PARTNER_CENTER_SELLER_ID: ${{ secrets.PARTNER_CENTER_SELLER_ID }}
+          PARTNER_CENTER_CLIENT_ID: ${{ secrets.PARTNER_CENTER_CLIENT_ID }}
+          PARTNER_CENTER_CLIENT_SECRET: ${{ secrets.PARTNER_CENTER_CLIENT_SECRET }}
+        run: ./.github/scripts/Submit-StoreRelease.ps1 -BundlePath '${{ steps.bundle.outputs.path }}' -Version '${{ needs.validate-tag.outputs.version }}'

@@ -63,6 +63,21 @@ Reuse the same `EmptyContent` item when its text and command haven't changed. Cr
 
 Open `GitHubExtension.slnx` in Visual Studio, set **GitHubExtension** as the startup project, and deploy it. Then open Command Palette and run **Reload Command Palette extensions**.
 
+## Preparing a release
+
+Stable `vMAJOR.MINOR.PATCH` tags trigger the release workflow. It stamps a four-part package version in the workflow checkout, runs Release tests, validates x64 and ARM64 packages, signs GitHub downloads, and submits WinGet and Microsoft Store updates. It does not commit version changes to `main`.
+
+See [RELEASING.md](RELEASING.md) for the required protected environments and channel configuration. A packaging-only dry run can be performed without distribution credentials on matching Windows x64 and ARM64 machines:
+
+```powershell
+./.github/scripts/Set-ReleaseVersion.ps1 -Tag v1.2.3 -ManifestPath GitHubExtension/Package.appxmanifest
+dotnet restore GitHubExtension/GitHubExtension.csproj -r win-x64 -p:Platform=x64
+dotnet publish GitHubExtension/GitHubExtension.csproj -c Release -r win-x64 --no-restore -p:Platform=x64 -p:PublishProfile=win-x64
+./.github/scripts/Validate-Msix.ps1 -RuntimeIdentifier win-x64 -Version 1.2.3.0 -Publisher 'CN=Bald Bearded Builder LLC, O=Bald Bearded Builder LLC, L=Odenville, S=Alabama, C=US'
+```
+
+Repeat on a Windows ARM64 machine using `win-arm64`, `Platform=ARM64`, and `PublishProfile=win-arm64`. Restore the manifest version afterward if this is a working checkout; release automation stamps fresh job checkouts instead.
+
 ## How to contribute
 
 ### Reporting bugs

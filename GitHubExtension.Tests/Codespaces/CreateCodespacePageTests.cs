@@ -26,6 +26,24 @@ public class CreateCodespacePageTests
     }
 
     [TestMethod]
+    public void Form_EscapesDynamicTextInValidJson()
+    {
+        const string repository = "octocat/repo\"\\";
+        const string branch = "feature\nbranch";
+        const string error = "Try again: \"later\"\\";
+
+        using var json = JsonDocument.Parse(CreateCodespaceCards.Form(repository, branch, error));
+        var body = json.RootElement.GetProperty("body").EnumerateArray().ToArray();
+        var repositoryInput = body.Single(item => item.TryGetProperty("id", out var id) && id.GetString() == "repository");
+        var branchInput = body.Single(item => item.TryGetProperty("id", out var id) && id.GetString() == "branch");
+        var errorBlock = body.Single(item => item.TryGetProperty("color", out var color) && color.GetString() == "Attention");
+
+        Assert.AreEqual(repository, repositoryInput.GetProperty("value").GetString());
+        Assert.AreEqual(branch, branchInput.GetProperty("value").GetString());
+        Assert.AreEqual(error, errorBlock.GetProperty("text").GetString());
+    }
+
+    [TestMethod]
     public async Task Submit_CreatesCodespaceAndOffersToOpenIt()
     {
         var client = new Mock<ICodespacesClient>();
