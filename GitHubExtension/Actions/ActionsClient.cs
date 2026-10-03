@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Text.Json;
+using BaldBeardedBuilder.CmdPal.GitHub.Api;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using static BaldBeardedBuilder.CmdPal.GitHub.Api.GitHubRest;
 
@@ -17,7 +18,8 @@ internal sealed class ActionsClient(HttpClient httpClient) : IActionsClient
 {
     private const string TimeoutMessage = "GitHub took too long to return workflow runs. Try refreshing.";
 
-    public async Task<WorkflowRunsPageResult> GetRunsAsync(GitHubAccount account, string repository, Uri? page, CancellationToken cancellationToken)
+    public Task<WorkflowRunsPageResult> GetRunsAsync(GitHubAccount account, string repository, Uri? page, CancellationToken cancellationToken) =>
+        DomainDiagnostics.RunAsync(DiagnosticArea.Actions, async () =>
     {
         var path = string.Join('/', repository.Split('/').Select(Uri.EscapeDataString));
         var uri = page ?? new Uri(account.Host.ApiUrl, $"repos/{path}/actions/runs?per_page=50");
@@ -35,9 +37,10 @@ internal sealed class ActionsClient(HttpClient httpClient) : IActionsClient
         {
             throw new GitHubApiException("The connection closed while loading workflow runs. Try refreshing.", ex);
         }
-    }
+    }, cancellationToken);
 
-    internal static List<GitHubWorkflowRun> ParseRuns(JsonElement root)
+    internal static List<GitHubWorkflowRun> ParseRuns(JsonElement root) =>
+        DomainDiagnostics.Read(DiagnosticArea.Actions, () =>
     {
         if (root.ValueKind != JsonValueKind.Object
             || !root.TryGetProperty("workflow_runs", out var runs)
@@ -72,7 +75,7 @@ internal sealed class ActionsClient(HttpClient httpClient) : IActionsClient
         }
 
         return result;
-    }
+    });
 
     private static int? GetOptionalInt(JsonElement element, string name) =>
         element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number)

@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Text.Json;
+using BaldBeardedBuilder.CmdPal.GitHub.Api;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using static BaldBeardedBuilder.CmdPal.GitHub.Api.GitHubRest;
@@ -20,26 +21,29 @@ internal sealed class IssuesClient(HttpClient httpClient) : IIssuesClient
 {
     internal const int PageSize = 100;
 
-    public async Task<IssuesPageResult> GetIssuesAsync(
+    public Task<IssuesPageResult> GetIssuesAsync(
         GitHubAccount account,
         string repository,
         Uri? page,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) =>
+        DomainDiagnostics.RunAsync(DiagnosticArea.Issues, async () =>
     {
         var uri = page ?? RepositoryIssuesUri(account, repository);
         using var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken).ConfigureAwait(false);
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
         return new IssuesPageResult(ParseIssues(json.RootElement), NextPage(response));
-    }
+    }, cancellationToken);
 
-    public async Task<GitHubIssue> GetIssueAsync(GitHubAccount account, Uri issueApiUrl, CancellationToken cancellationToken)
+    public Task<GitHubIssue> GetIssueAsync(GitHubAccount account, Uri issueApiUrl, CancellationToken cancellationToken) =>
+        DomainDiagnostics.RunAsync(DiagnosticArea.Issues, async () =>
     {
         using var response = await SendAsync(httpClient, account, HttpMethod.Get, issueApiUrl, cancellationToken).ConfigureAwait(false);
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
         return ParseIssue(json.RootElement);
-    }
+    }, cancellationToken);
 
-    internal static List<GitHubIssue> ParseIssues(JsonElement array)
+    internal static List<GitHubIssue> ParseIssues(JsonElement array) =>
+        DomainDiagnostics.Read(DiagnosticArea.Issues, () =>
     {
         if (array.ValueKind != JsonValueKind.Array)
         {
@@ -61,9 +65,10 @@ internal sealed class IssuesClient(HttpClient httpClient) : IIssuesClient
         }
 
         return issues;
-    }
+    });
 
-    internal static GitHubIssue ParseIssue(JsonElement element)
+    internal static GitHubIssue ParseIssue(JsonElement element) =>
+        DomainDiagnostics.Read(DiagnosticArea.Issues, () =>
     {
         var state = GetString(element, "state");
         var subjectState = state switch
@@ -85,7 +90,7 @@ internal sealed class IssuesClient(HttpClient httpClient) : IIssuesClient
             GetNames(element, "assignees", "login"),
             GetNames(element, "labels", "name"),
             GetInt(element, "comments"));
-    }
+    });
 
     private static Uri RepositoryIssuesUri(GitHubAccount account, string repository)
     {
