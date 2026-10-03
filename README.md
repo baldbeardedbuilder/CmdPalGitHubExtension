@@ -13,9 +13,9 @@ Your notifications, repos, agents, codespaces, and saved queries, one keystroke 
 - Browse your notifications with issue and PR state, open issue details in Command Palette, filter as you type, and mark them read or done.
 - Preview a pull request's description, branches, labels, and change counts beside its notification. Enter still opens it on GitHub.
 - Find repos fast. Yours filter instantly, and pausing on a search checks all of GitHub too. Qualifiers like `user:` and `language:` work.
-- Select a repo to open its menu with Issues, Pull Requests, Actions, and Discussions. Issues and pull requests open in Command Palette; discussions open on GitHub. Use **More > Open on GitHub** to skip the menu.
+- Select a repo to open its menu with Issues, Pull Requests, Actions, Copilot task creation, and Discussions. Issues and pull requests open in Command Palette; discussions open on GitHub. Use **More > Open on GitHub** to skip the menu.
 - Filter repository issue and pull request lists as you type, see issue labels and pull request status, and page through results.
-- Check your Copilot cloud agent tasks, newest activity first, with repository names, models, and status badges. Filter by title, repo, model, or status, press Enter to open a task, or use More to copy its URL and refresh.
+- Check your Copilot cloud agent tasks, newest activity first, with repository names, models, and status badges. Filter by title, repo, model, or status, press Enter to open a task, or use More to copy its URL and refresh. From a repository menu, start a task with a prompt and optional model, custom agent, branches, and pull request. Review its compute impact before confirming.
 - Pick **Actions** from the repository menu or a repo's **More** menu to browse workflow runs. Filter by workflow, run title, actor, or status, refresh the list, and open a run on GitHub.
 - Browse your codespaces with repository names, branches, last-used times, and status badges. Filter as you type, open one in your browser, or use **More** to copy its URL or name and refresh the list. Use **More > Create Codespace** from the Codespaces section or inside the Codespaces view to create one from a repository and optional branch, even when the list is empty.
 
@@ -29,7 +29,7 @@ On a completed run, use **More > Rerun workflow...** to rerun all jobs. Runs tha
 
 Rerunning keeps the same run ID. The extension rechecks its state before requesting a rerun, refreshes the Actions list, and shows the attempt and status reported by GitHub. **Rerun requested** means the request was accepted, not that the jobs succeeded or finished. Use **Refresh status** to follow the new attempt, including when GitHub hasn't updated it yet or a request timed out. Repeated confirmation won't submit another request; account changes invalidate the confirmation.
 
-Codespaces requires a github.com account and the `codespace` token scope. It isn't available on GitHub Enterprise Server. Use **More > Close Codespace** on an active codespace to stop it without deleting its files, or **More > Start Codespace** on a stopped one to start it. The list shows the state GitHub returns, and **Refresh** checks on a start or shutdown. Starting a codespace doesn't open it in your browser. Opening a stopped codespace still takes you to GitHub's browser editor, where it can start the environment.
+Codespaces requires a github.com account and the `codespace` token scope. It isn't available on GitHub Enterprise Server. Use **More > Close Codespace** on an active codespace to stop it without deleting its files, or **More > Start Codespace** on a stopped one to start it. Start asks you to confirm compute use and possible charges, then checks the codespace's state at two-second intervals until it is available, for up to 60 checks. **Refresh** cancels the pending checks and reloads the list; signing out or switching accounts also cancels them. Cancellation doesn't undo a start GitHub has already accepted. If starting takes longer or fails, use **Refresh** to check its state. Starting a codespace doesn't open it in your browser. Opening a stopped codespace still takes you to GitHub's browser editor, where it can start the environment.
 
 ### Agents access
 
@@ -38,6 +38,8 @@ Agents uses GitHub's [Agent Tasks API](https://docs.github.com/en/rest/agent-tas
 Only non-archived tasks are listed. More tasks load as you scroll, and **Refresh** checks for new activity. GitHub Enterprise Server hosts without this API show an availability error instead of an empty list. Repository or model lookup failures stay visible in the task's subtitle, and you can still open the task.
 
 Tasks still appear when the preview API leaves out their web links. The extension builds those links from the task IDs so you can open them on GitHub.
+
+Starting tasks is available only with Copilot Business or Enterprise and requires **Agent tasks: read and write** for the repository when using a fine-grained token. Organization policies can also prevent task creation. Model names are entered as text because available models depend on your plan and organization. Each request shows a review step before submission, including a notice that it uses Copilot cloud agent compute and may use premium requests or AI credits. If GitHub's response is lost, the extension checks for newly listed repository tasks and asks you to verify the result before trying again.
 
 ## Install
 

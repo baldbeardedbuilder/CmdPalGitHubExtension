@@ -48,17 +48,35 @@ internal sealed partial class StartCodespaceCommand : InvokableCommand
 {
     private readonly CodespacesPage _page;
     private readonly CodespaceItem _item;
+    private readonly bool _confirmed;
 
     public StartCodespaceCommand(CodespacesPage page, CodespaceItem item)
+        : this(page, item, false)
+    {
+    }
+
+    private StartCodespaceCommand(CodespacesPage page, CodespaceItem item, bool confirmed)
     {
         _page = page;
         _item = item;
+        _confirmed = confirmed;
         Name = "Start Codespace";
         Icon = Icons.Start;
     }
 
     public override ICommandResult Invoke()
     {
+        if (!_confirmed)
+        {
+            return CommandResult.Confirm(new ConfirmationArgs
+            {
+                Title = "Start Codespace?",
+                Description = $"Starting {_item.Codespace.Name} uses compute time and may incur charges. Continue?",
+                PrimaryCommand = new StartCodespaceCommand(_page, _item, true),
+                IsPrimaryCommandCritical = true,
+            });
+        }
+
         _ = _page.StartAsync(_item);
         return CommandResult.KeepOpen();
     }

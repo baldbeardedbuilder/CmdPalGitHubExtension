@@ -81,9 +81,10 @@ public sealed class RepositoryIssuesPageTests
         await page.CurrentLoad;
 
         var filters = Assert.IsInstanceOfType<IssueFilters>(page.Filters);
-        CollectionAssert.AreEqual(
-            ExpectedIssueFilters,
-            filters.GetFilters().Cast<Filter>().Select(filter => filter.Name).ToArray());
+        var options = filters.GetFilters().Cast<Filter>().ToArray();
+        CollectionAssert.AreEqual(ExpectedIssueFilters, options.Select(filter => filter.Name).ToArray());
+        Assert.AreSame(Icons.StateOpenIssue, options[0].Icon);
+        Assert.AreSame(Icons.StateClosedIssue, options[1].Icon);
         Assert.AreEqual(IssueFilters.Open, filters.CurrentFilterId);
         Assert.AreEqual("#1 Open", page.GetItems().Single().Title);
 
