@@ -66,9 +66,18 @@ internal sealed partial class HomePage : ListPage, IDisposable
         var items = new List<IListItem>
         {
             new ListItem(_notifications) { Title = "Notifications", Subtitle = "Your GitHub inbox", Icon = Icons.Notifications, MoreCommands = accountCommands },
-            ComingSoon("Saved Queries", Icons.SavedQueries, accountCommands),
             new ListItem(_repos) { Title = "Repos", Subtitle = "Find and open repositories", Icon = Icons.Repos, MoreCommands = accountCommands },
         };
+        if (_repos.WorkSearch is { } search)
+        {
+            items.Insert(1, new ListItem(search)
+            {
+                Title = "Saved Queries",
+                Subtitle = "Search issues and pull requests across repositories",
+                Icon = Icons.SavedQueries,
+                MoreCommands = accountCommands,
+            });
+        }
         if (_starredRepos is not null)
         {
             items.Add(new ListItem(_starredRepos)
@@ -93,9 +102,6 @@ internal sealed partial class HomePage : ListPage, IDisposable
         ]);
         return [.. items];
     }
-
-    private static ListItem ComingSoon(string title, IIconInfo icon, IContextItem[] more) =>
-        new(new NoOpCommand()) { Title = title, Subtitle = "Coming soon", Icon = icon, MoreCommands = more };
 
     private void OnAccountChanged(object? sender, EventArgs e)
     {

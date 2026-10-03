@@ -11,6 +11,7 @@ using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
 using BaldBeardedBuilder.CmdPal.GitHub.PullRequests;
 using BaldBeardedBuilder.CmdPal.GitHub.Repositories;
+using BaldBeardedBuilder.CmdPal.GitHub.Search;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub;
 
@@ -54,7 +55,8 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         IRepositoryStarsClient? repositoryStarsClient = null,
         IThreadSubscriptionsClient? threadSubscriptionsClient = null,
         bool ownsAuth = false,
-        Func<HttpClient>? httpFactory = null)
+        Func<HttpClient>? httpFactory = null,
+        IIssueSearchClient? issueSearchClient = null)
     {
         _auth = auth;
         _ownsAuth = ownsAuth;
@@ -63,16 +65,40 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         HttpClient Http() => http ??= httpFactory?.Invoke() ?? new HttpClient();
         _signInPage = new SignInPage(auth, logoProvider);
         repositoriesClient ??= new RepositoriesClient(Http());
+        issueSearchClient ??= new IssueSearchClient(Http());
+        codespacesClient ??= new CodespacesClient(Http());
+        Func<string, int, string?, ICommand?> codespaceFactory = (repository, number, head) =>
+            auth.CurrentAccount?.Host.IsGitHubDotCom == true
+                ? ContextualCodespacePage.ForPullRequest(auth, codespacesClient, browser, repository, number, head)
+                : null;
         var resolvedPullRequestActionsClient = pullRequestActionsClient ?? new PullRequestActionsClient(Http());
         issuesClient ??= new IssuesClient(Http());
+        pullRequestsClient ??= new PullRequestsClient(Http());
+        var workItemDetailFactories = new WorkItemDetailFactories(
+            PullRequestDetails: (account, repository, number, isCurrent) =>
+                isCurrent() && resolvedPullRequestActionsClient is IPullRequestFeatureClient features
+                    ? new PullRequestDetailsPage(auth, features, account, repository, number,
+                        codespaceFactory, isCurrent)
+                    : null,
+            Conversation: (account, repository, number, pullRequest, isCurrent) =>
+            {
+                var client = pullRequest
+                    ? pullRequestsClient as IIssueConversationClient
+                    : issuesClient as IIssueConversationClient;
+                return isCurrent() && client is not null
+                    ? new IssueConversationPage(auth, client, account, repository, number,
+                        pullRequest ? "Pull request" : "Issue", isCurrent)
+                    : null;
+            });
         _issueDetailsPage = new IssueDetailsPage(auth, issuesClient, browser);
         _repositoryIssuesPage = new RepositoryIssuesPage(auth, issuesClient, browser);
         _repositoryPullRequestsPage = new RepositoryPullRequestsPage(
             auth,
-            pullRequestsClient ?? new PullRequestsClient(Http()),
+            pullRequestsClient,
             browser,
             mergeClient: new PullRequestMergeClient(Http()),
-            actionsClient: resolvedPullRequestActionsClient);
+            actionsClient: resolvedPullRequestActionsClient,
+            contextualCodespaceFactory: codespaceFactory);
         var resolvedNotificationsClient = notificationsClient ?? new NotificationsClient(Http());
         _notificationsPage = new NotificationsPage(
             auth,
@@ -80,7 +106,8 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
             browser,
             issueDetails: _issueDetailsPage,
             subscriptionsClient: threadSubscriptionsClient,
-            pullRequestActionsClient: resolvedPullRequestActionsClient);
+            pullRequestActionsClient: resolvedPullRequestActionsClient,
+            workItemDetailFactories: workItemDetailFactories);
         agentsClient ??= new AgentsClient(Http());
         _agentsPage = new AgentsPage(auth, agentsClient, browser);
         _actionsPage = new ActionsPage(auth, actionsClient ?? new ActionsClient(Http()), browser);
@@ -92,12 +119,14 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
             _repositoryPullRequestsPage,
             actions: _actionsPage,
             agentsClient: agentsClient,
-            starsClient: repositoryStarsClient);
+            starsClient: repositoryStarsClient,
+            workItemDetailFactories: workItemDetailFactories,
+            issueSearchClient: issueSearchClient,
+            codespacesClient: codespacesClient);
         if (repositoryStarsClient is not null || repositoriesClient is IRepositoryStarsClient)
         {
             _starredReposPage = _reposPage.CreateStarredPage();
         }
-        codespacesClient ??= new CodespacesClient(Http());
         _createCodespacePage = new CreateCodespacePage(auth, codespacesClient, browser);
         _codespacesPage = new CodespacesPage(auth, codespacesClient, browser, createPage: _createCodespacePage);
         _homePage = new HomePage(auth, _notificationsPage, _reposPage, _agentsPage, _codespacesPage, _createCodespacePage, _starredReposPage);
@@ -130,6 +159,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         RepositoryIssuesPage.PageId => _repositoryIssuesPage,
         RepositoryPullRequestsPage.PageId => _repositoryPullRequestsPage,
         ReposPage.PageId => _reposPage,
+        IssueSearchPage.PageId => _reposPage.WorkSearch,
         ReposPage.StarredPageId when _starredReposPage is not null => _starredReposPage,
         AgentsPage.PageId => _agentsPage,
         ActionsPage.PageId => _actionsPage,

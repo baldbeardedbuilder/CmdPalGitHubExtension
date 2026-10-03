@@ -5,7 +5,9 @@
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using BaldBeardedBuilder.CmdPal.GitHub.Agents;
 using BaldBeardedBuilder.CmdPal.GitHub.Commands;
+using BaldBeardedBuilder.CmdPal.GitHub.Codespaces;
 using BaldBeardedBuilder.CmdPal.GitHub.Repositories;
+using BaldBeardedBuilder.CmdPal.GitHub.Search;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 
@@ -24,6 +26,8 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     private readonly RepositoryIssuesPage _repositoryIssuesPage;
     private readonly RepositoryPullRequestsPage _repositoryPullRequestsPage;
     private readonly IAgentsClient? _agentsClient;
+    private readonly WorkItemDetailFactories? _workItemDetailFactories;
+    private readonly IIssueSearchClient? _issueSearchClient;
     private readonly TimeProvider _time;
     private readonly PageEmptyContent _emptyContent;
     private readonly PageListContent _searchFailureContent;
@@ -51,7 +55,10 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         ActionsPage? actions = null,
         IAgentsClient? agentsClient = null,
         IRepositoryStarsClient? starsClient = null,
-        bool starred = false)
+        bool starred = false,
+        WorkItemDetailFactories? workItemDetailFactories = null,
+        IIssueSearchClient? issueSearchClient = null,
+        ICodespacesClient? codespacesClient = null)
     {
         _auth = auth;
         _client = client;
@@ -59,6 +66,9 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         _repositoryIssuesPage = repositoryIssuesPage;
         _repositoryPullRequestsPage = repositoryPullRequestsPage;
         _agentsClient = agentsClient;
+        _workItemDetailFactories = workItemDetailFactories;
+        _issueSearchClient = issueSearchClient ?? client as IIssueSearchClient;
+        CodespacesClient = codespacesClient;
         _starsClient = starsClient ?? client as IRepositoryStarsClient;
         _starred = starred;
         if (starred && _starsClient is null)
@@ -83,6 +93,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     }
 
     internal ActionsPage? Actions { get; }
+    internal ICodespacesClient? CodespacesClient { get; }
 
     internal GitHubAccount? CurrentAccount => _auth.CurrentAccount;
 
@@ -329,12 +340,17 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         }
 
         _starExecutor.Dispose();
+        DisposeBrowsingPages();
         IsLoading = false;
         HasMoreItems = false;
     }
 
-    private CommandItem Empty(string title, string subtitle, bool refresh = false) =>
-        _emptyContent.Get(title, subtitle, refresh);
+    private CommandItem Empty(string title, string subtitle, bool refresh = false)
+    {
+        var empty = _emptyContent.Get(title, subtitle, refresh);
+        empty.MoreCommands = WorkSearchCommands();
+        return empty;
+    }
 
     internal RepositoryPage CreateRepositoryPage(GitHubRepository repository)
     {
@@ -354,7 +370,10 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
             }
 
             var page = new RepositoryPage(_browser, Actions, repository, _repositoryIssuesPage, _repositoryPullRequestsPage,
-                _auth, _agentsClient, StarPage(repository, _auth.CurrentAccount, _accountGeneration));
+                _auth, _agentsClient, StarPage(repository, _auth.CurrentAccount, _accountGeneration),
+                WatchPage(repository, _auth.CurrentAccount, _accountGeneration),
+                RepositoryAgents(repository.FullName, _auth.CurrentAccount, _accountGeneration),
+                CodespacesClient);
             _repositoryPages[repository.FullName] = new(page);
             return page;
         }
@@ -526,6 +545,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
             page.Dispose();
         }
 
+        DisposeBrowsingPages();
         _load.Publish(revision, () => HasMoreItems = false);
         _load.Publish(revision, () => IsLoading = false);
         _load.Publish(revision, () => RaiseItemsChanged());

@@ -28,6 +28,16 @@ Open **Starred repositories** from the home page to browse your starred reposito
 
 Your token needs permission to read and write your starred repositories. Organization policies may also restrict access.
 
+## Watch or ignore a repository
+
+Choose **Manage watching** in a repository row's **More** menu. The extension reads your actual subscription and distinguishes **Watching**, **Not watching**, and **Ignored**. It doesn't infer your subscription from a public watcher count.
+
+**Watch repository**, **Unwatch repository**, and **Ignore repository** each require confirmation. Unwatch removes your subscription and clears an ignored state. Before writing, the extension checks that the subscription still matches the state you reviewed. If someone changed it, refresh and review again.
+
+These actions don't configure custom notification categories. Use GitHub's Watch menu when you need those settings. Token support and repository access matter; denied access isn't shown as “not watching.”
+
+Use OAuth sign-in or a classic PAT with the scopes your repository needs. GitHub doesn't advertise fine-grained PAT or GitHub App token support for these subscription endpoints. The extension doesn't use deprecated watched-repository listing endpoints.
+
 ## Find a missing repo
 
 Check the signed-in account and host first. For a private repository, your account and token both need access. Organization policies and single sign-on can further restrict results.

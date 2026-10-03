@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using BaldBeardedBuilder.CmdPal.GitHub.Commands;
+using BaldBeardedBuilder.CmdPal.GitHub.Issues;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
 using BaldBeardedBuilder.CmdPal.GitHub.PullRequests;
@@ -40,6 +41,70 @@ public sealed class RepositoryPullRequestsPageTests
         Assert.AreEqual("Open", item.Tags.Single().Text);
         Assert.IsNotNull(item.Tags.Single().Icon);
         Assert.AreEqual("octo/tool pull requests", page.Title);
+    }
+
+    [TestMethod]
+    public async Task RepositoryPullRequests_ExposesNativeDetailsAndConversationCommands()
+    {
+        var client = new Mock<IPullRequestsClient>();
+        client.As<IIssueConversationClient>();
+        client.Setup(c => c.GetPullRequestsAsync(Account, "octo/tool", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PullRequestsPageResult(
+                [CreatePullRequest(42, "Native details", SubjectState.Open, "contributor", "feature", "main", [])], null));
+        var actions = new Mock<IPullRequestActionsClient>();
+        actions.As<IPullRequestFeatureClient>();
+        var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(),
+            new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
+        using var page = new RepositoryPullRequestsPage(auth, client.Object, new FakeBrowser(_ => null), actionsClient: actions.Object);
+
+        page.Open("octo/tool");
+        await page.CurrentLoad;
+
+        var item = Assert.IsInstanceOfType<RepositoryPullRequestItem>(page.GetItems().Single());
+        var commands = item.MoreCommands.Cast<CommandContextItem>().Select(context => context.Command).ToArray();
+        Assert.IsTrue(commands.Any(command => command is PullRequestDetailsPage));
+        Assert.IsTrue(commands.Any(command => command is IssueConversationPage));
+    }
+
+    [TestMethod]
+    public async Task RepositoryPullRequests_ExposesInjectedContextualCodespaceFromNativeDetails()
+    {
+        var client = new Mock<IPullRequestsClient>();
+        client.As<IIssueConversationClient>();
+        client.Setup(c => c.GetPullRequestsAsync(Account, "octo/tool", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PullRequestsPageResult(
+                [CreatePullRequest(42, "Native details", SubjectState.Open, "contributor", "feature", "main", [])], null));
+        var actions = new Mock<IPullRequestActionsClient>();
+        var featureClient = actions.As<IPullRequestFeatureClient>();
+        featureClient.Setup(c => c.GetDetailsAsync(Account, "octo/tool", 42, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PullRequestDetailsSnapshot(
+                CreatePullRequest(42, "Native details", SubjectState.Open, "contributor", "feature", "main", []),
+                "head-42", "base-42", true, [], [], [], "success", PullRequestChecksState.Success,
+                null, null, null, null, true));
+        var browser = new FakeBrowser(_ => null);
+        var command = new OpenInBrowserCommand(browser, new Uri("https://github.com/octo/tool/codespaces"),
+            "Open Codespace", Icons.Codespaces);
+        using var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(),
+            browser, new OAuthOptions("id", "secret"));
+        using var page = new RepositoryPullRequestsPage(auth, client.Object, browser, actionsClient: actions.Object,
+            contextualCodespaceFactory: (repository, number, branch) =>
+            {
+                Assert.AreEqual("octo/tool", repository);
+                Assert.AreEqual(42, number);
+                Assert.AreEqual("feature", branch);
+                return command;
+            });
+
+        page.Open("octo/tool");
+        await page.CurrentLoad;
+        var item = Assert.IsInstanceOfType<RepositoryPullRequestItem>(page.GetItems().Single());
+        var detailsPage = Assert.IsInstanceOfType<PullRequestDetailsPage>(item.DetailsPage);
+        detailsPage.GetContent();
+        await detailsPage.CurrentWork;
+
+        item = Assert.IsInstanceOfType<RepositoryPullRequestItem>(page.GetItems().Single());
+        var commands = item.MoreCommands.Cast<CommandContextItem>().Select(context => context.Command).ToArray();
+        Assert.IsTrue(commands.Any(candidate => ReferenceEquals(candidate, command)));
     }
 
     [TestMethod]

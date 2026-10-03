@@ -13,6 +13,18 @@ Use **Manage pull request** in a row's **More** menu to close or reopen an unmer
 
 The same actions are available from pull request notifications after their details load. If the details aren't available, open the pull request on GitHub.
 
+## Review pull request details and conversation
+
+Choose **Pull request details** from a repository row's **More** menu to inspect changed files, submitted reviews, check runs, and combined commit status. Each section reports its own load failure; unavailable check data is never treated as a passing result. Choose **Conversation** to browse, post, edit, or delete comments using the same author and maintainer rules as issue comments.
+
+When contextual Codespaces are wired in, the repository row's **More** menu includes **Open Codespace** for the pull request's head branch.
+
+From native details, authorized repository writers can convert an open pull request to draft or mark it ready for review. These actions use GitHub's GraphQL mutations and verify the pull request afterward. A GitHub host that does not support the required GraphQL fields will report the limitation rather than silently falling back.
+
+The details page can also update the pull request branch from its base branch. The confirmation pins the inspected head SHA, and GitHub merges the base into the pull request branch; it does not rebase. GitHub may accept the operation asynchronously, so refresh to verify the result.
+
+To review another author's open pull request, prepare an approval, comment, or request-changes review and confirm it. The extension creates a pending review pinned to the inspected commit before submitting it. If submission is uncertain, refresh and inspect reviews before retrying; it will not create another pending draft automatically.
+
 ## Merge an eligible pull request
 
 An open, non-draft pull request can offer **Merge pull request** in **More**. The extension checks the current target and your repository permissions before showing a confirmation.

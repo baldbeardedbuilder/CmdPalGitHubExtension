@@ -5,9 +5,17 @@ description: Browse and filter the issues loaded for a repository.
 
 Open **GitHub > Repos**, choose a repository, then select **Issues**.
 
-Rows show the issue number, title, age, and comment count. Select a row to open the issue in your browser, or use **Copy link** from its **More** menu. Available issue details appear in Command Palette's details view.
+Rows show the issue number, title, age, and comment count. Select a row to open issue details in Command Palette, or use **Open in browser** or **Copy link** from its **More** menu.
 
-## Update an issue
+## Create, edit, and discuss issues
+
+Choose **Create an issue** at the top of a repository's issue list to write a title and description, choose an open milestone, review the result, and confirm. Open an issue's **More** menu to edit those fields and its milestone. Removing a milestone is supported; an existing closed milestone remains available while editing. The editor checks that the issue text and milestone have not changed since the row was loaded before saving.
+
+Choose **Conversation** from an issue's **More** menu to read paged comments, post a comment, edit your own comments, or delete a comment you authored or can manage as a repository maintainer. If GitHub accepts a comment but the follow-up refresh fails, the editor clears the submitted draft and asks you to refresh instead of risking a duplicate.
+
+Issue templates and forms are not applied in this editor, and fields beyond title, description, and milestone are not supported. Use GitHub when the repository requires a template or structured issue form.
+
+## Update issue state and metadata
 
 Open an issue's details to close it as completed or not planned, reopen it, assign or remove yourself, and add or remove an existing repository label. Each change has a confirmation step and is checked against the current issue state. These actions don't create labels or edit issue text.
 
@@ -23,6 +31,6 @@ A blank list doesn't mean the repository has no matching issues. Your match may 
 
 ## When to open GitHub
 
-Use the browser to create or edit issue text, manage other assignees, create labels, comment, or run a full repository search. The extension's issue actions cover common state and metadata changes, not every issue workflow.
+Use the browser to manage other assignees, create labels, or run a full repository search. The extension's issue actions cover common workflows, not every issue workflow.
 
 See [filtering and search](/CmdPalGitHubExtension/reference/filtering/) for the distinction between local filtering and repository search.

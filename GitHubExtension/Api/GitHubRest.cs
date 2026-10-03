@@ -52,7 +52,8 @@ internal static class GitHubRest
         Action<string>? logError = null,
         HttpContent? content = null,
         string? timeoutMessage = null,
-        bool? isMutation = null)
+        bool? isMutation = null,
+        DateTimeOffset? ifModifiedSince = null)
     {
         try
         {
@@ -94,6 +95,15 @@ internal static class GitHubRest
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
         request.Headers.UserAgent.Add(UserAgent);
         request.Headers.Add("X-GitHub-Api-Version", apiVersion);
+        if (ifModifiedSince is not null)
+        {
+            if (method != HttpMethod.Get)
+            {
+                throw new ArgumentException("Conditional refresh must use GET.", nameof(ifModifiedSince));
+            }
+
+            request.Headers.IfModifiedSince = ifModifiedSince;
+        }
 
         HttpResponseMessage response;
         try
@@ -138,7 +148,8 @@ internal static class GitHubRest
         }
 
         ResponseContexts.Add(response, new(operation.Id, mutation));
-        if (response.IsSuccessStatusCode)
+        if (response.IsSuccessStatusCode
+            || response.StatusCode == HttpStatusCode.NotModified && method == HttpMethod.Get && ifModifiedSince is not null)
         {
             operation.Complete(mutation ? DiagnosticOutcome.Accepted : DiagnosticOutcome.Completed,
                 (int)response.StatusCode, method, uri);

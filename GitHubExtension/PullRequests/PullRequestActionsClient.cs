@@ -42,7 +42,7 @@ internal interface IPullRequestActionsClient
     Task SetLabelAsync(GitHubAccount account, string repository, int number, string label, bool add, CancellationToken cancellationToken);
 }
 
-internal sealed class PullRequestActionsClient(HttpClient httpClient) : IPullRequestActionsClient
+internal sealed partial class PullRequestActionsClient(HttpClient httpClient) : IPullRequestActionsClient, IPullRequestFeatureClient
 {
     private const int PageSize = 100;
 

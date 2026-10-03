@@ -159,6 +159,8 @@ internal sealed partial class NotificationItem : ListItem
 
         more.Add(new CommandContextItem(new CopyTextCommand(WebUrl.AbsoluteUri) { Name = "Copy link", Icon = Icons.Copy }));
         more.Add(new CommandContextItem(new RefreshNotificationsCommand(_page)));
+        more.AddRange(_page.BrowsingCommands());
+        more.AddRange(_page.NativeDetailCommands(this));
         Publish(publish, () => MoreCommands = [.. more]);
     }
 

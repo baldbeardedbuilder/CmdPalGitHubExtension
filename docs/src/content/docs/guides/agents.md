@@ -7,6 +7,22 @@ Open **GitHub > Agents** to see your Copilot agent tasks. Rows include status an
 
 Select a task to open it on GitHub. **More** includes **Copy URL** and **Refresh**.
 
+## Read task details
+
+Choose **Task details** from a task's **More** menu without leaving Command Palette. You can inspect each returned session's prompt, state, model, timestamps, branches, and error message. Usage keeps GitHub's returned units, such as `ai_credits` or `premium_requests`. It isn't a dollar estimate.
+
+Branch artifacts open the generated branch. Pull request artifacts open the exact PR when GitHub returns a resolvable global node ID. If it doesn't, the action opens the repository's pull request list and labels the artifact ID clearly. That ID isn't a PR number. Unknown artifact types remain visible without an invented link.
+
+This view isn't a live log stream. Open the task on GitHub when you need more context.
+
+## Browse task history
+
+Use **Filter agent API results** in **More** to choose non-archived or archived tasks, a task state, and an optional `owner/name` repository scope. Changing the API query clears the previous results and starts pagination again. Typing still filters only the rows you've loaded.
+
+Repository rows also offer repository-scoped agents in **More**. Archived history is read-only. There isn't an archive or unarchive action here.
+
+The Agent Tasks API is in public preview and may not be available for every account or Enterprise host. GitHub App installation tokens aren't supported; supported fine-grained PATs need **Agent tasks: read** access.
+
 ## Start a task
 
 1. Open **GitHub > Repos** and choose a repository.

@@ -58,6 +58,46 @@ public sealed class GitHubRestTests
     }
 
     [TestMethod]
+    public async Task ConditionalRefreshSendsTypedHeaderAndAcceptsNotModified()
+    {
+        var since = new DateTimeOffset(2026, 10, 3, 20, 0, 0, TimeSpan.Zero);
+        var entries = new List<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Add, verboseReads: true);
+        using var http = new HttpClient(new StubHandler(request =>
+        {
+            Assert.AreEqual(since, request.Headers.IfModifiedSince);
+            Assert.AreEqual("secret-token", request.Headers.Authorization?.Parameter);
+            return new HttpResponseMessage(HttpStatusCode.NotModified);
+        }));
+
+        using var response = await GitHubRest.SendAsync(http, Account, HttpMethod.Get, Endpoint,
+            TestContext.CancellationToken, ifModifiedSince: since);
+
+        Assert.AreEqual(HttpStatusCode.NotModified, response.StatusCode);
+        Assert.AreEqual(DiagnosticOutcome.Completed, entries[^1].Outcome);
+        Assert.IsTrue(entries.All(entry => entry.Failure == DiagnosticFailure.None));
+        Assert.DoesNotContain("secret", string.Join('\n', entries));
+    }
+
+    [TestMethod]
+    public async Task UnconditionalNotModifiedRemainsAnError()
+    {
+        using var http = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.NotModified)));
+        await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            GitHubRest.SendAsync(http, Account, HttpMethod.Get, Endpoint, TestContext.CancellationToken));
+    }
+
+    [TestMethod]
+    public async Task ConditionalWriteIsRejectedBeforeSending()
+    {
+        using var http = new HttpClient(new StubHandler(_ =>
+            throw new AssertFailedException("A conditional write must not be sent.")));
+        await Assert.ThrowsExactlyAsync<ArgumentException>(() =>
+            GitHubRest.SendAsync(http, Account, HttpMethod.Put, Endpoint,
+                TestContext.CancellationToken, ifModifiedSince: DateTimeOffset.UtcNow));
+    }
+
+    [TestMethod]
     [DataRow(HttpStatusCode.Accepted)]
     [DataRow(HttpStatusCode.NoContent)]
     [DataRow(HttpStatusCode.OK)]

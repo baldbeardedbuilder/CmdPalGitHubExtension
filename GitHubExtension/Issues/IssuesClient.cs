@@ -17,7 +17,8 @@ internal interface IIssuesClient
     Task<GitHubIssue> GetIssueAsync(GitHubAccount account, Uri issueApiUrl, CancellationToken cancellationToken);
 }
 
-internal sealed partial class IssuesClient(HttpClient httpClient) : IIssuesClient, IIssueMutationsClient
+internal sealed partial class IssuesClient(HttpClient httpClient) :
+    IIssuesClient, IIssueMutationsClient, IIssueManagementClient, IIssueConversationClient
 {
     internal const int PageSize = 100;
 
@@ -41,6 +42,33 @@ internal sealed partial class IssuesClient(HttpClient httpClient) : IIssuesClien
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
         return ParseIssue(json.RootElement);
     }, cancellationToken: cancellationToken);
+
+    public Task<IssueMilestonesPage> GetMilestonesAsync(GitHubAccount account, string repository, Uri? page, CancellationToken token) =>
+        new IssueManagementClient(httpClient).GetMilestonesAsync(account, repository, page, token);
+
+    public Task<GitHubIssue> CreateIssueAsync(
+        GitHubAccount account, string repository, string title, string? body, int? milestone, CancellationToken token) =>
+        new IssueManagementClient(httpClient).CreateIssueAsync(account, repository, title, body, milestone, token);
+
+    public Task<GitHubIssue> UpdateIssueAsync(
+        GitHubAccount account, string repository, GitHubIssue expected, string title, string? body, int? milestone, CancellationToken token) =>
+        new IssueManagementClient(httpClient).UpdateIssueAsync(account, repository, expected, title, body, milestone, token);
+
+    public Task<IssueCommentsPage> GetCommentsAsync(
+        GitHubAccount account, string repository, int number, Uri? page, CancellationToken token) =>
+        new IssueConversationClient(httpClient).GetCommentsAsync(account, repository, number, page, token);
+
+    public Task<IssueComment> CreateCommentAsync(
+        GitHubAccount account, string repository, int number, string body, CancellationToken token) =>
+        new IssueConversationClient(httpClient).CreateCommentAsync(account, repository, number, body, token);
+
+    public Task<IssueComment> EditCommentAsync(
+        GitHubAccount account, string repository, int number, int commentId, string body, CancellationToken token) =>
+        new IssueConversationClient(httpClient).EditCommentAsync(account, repository, number, commentId, body, token);
+
+    public Task DeleteCommentAsync(
+        GitHubAccount account, string repository, int number, int commentId, CancellationToken token) =>
+        new IssueConversationClient(httpClient).DeleteCommentAsync(account, repository, number, commentId, token);
 
     internal static List<GitHubIssue> ParseIssues(JsonElement array) =>
         DomainDiagnostics.Read(DiagnosticArea.Issues, () =>
@@ -89,7 +117,9 @@ internal sealed partial class IssuesClient(HttpClient httpClient) : IIssuesClien
             element.TryGetProperty("user", out var user) ? GetString(user, "login") : null,
             GetNames(element, "assignees", "login"),
             GetNames(element, "labels", "name"),
-            GetInt(element, "comments"));
+            GetInt(element, "comments"),
+            element.TryGetProperty("milestone", out var milestone) && milestone.ValueKind == JsonValueKind.Object
+                && GetInt(milestone, "number") is > 0 ? GetInt(milestone, "number") : null);
     });
 
     private static Uri RepositoryIssuesUri(GitHubAccount account, string repository)

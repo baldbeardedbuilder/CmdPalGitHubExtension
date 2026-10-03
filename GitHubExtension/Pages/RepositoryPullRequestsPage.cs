@@ -20,8 +20,10 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     private readonly TimeProvider _time;
     private readonly IPullRequestMergeClient? _mergeClient;
     private readonly IPullRequestActionsClient? _actionsClient;
+    private readonly Func<string, int, string?, ICommand?>? _contextualCodespaceFactory;
     private readonly List<MergePullRequestPage> _mergePages = [];
     private readonly List<PullRequestActionsPage> _actionPages = [];
+    private readonly List<IDisposable> _featurePages = [];
     private readonly PageEmptyContent _emptyContent;
     private readonly PagedListPresentation _pagination;
     private readonly PullRequestFilters _filters = new();
@@ -36,7 +38,8 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         IBrowserLauncher browser,
         TimeProvider? time = null,
         IPullRequestMergeClient? mergeClient = null,
-        IPullRequestActionsClient? actionsClient = null)
+        IPullRequestActionsClient? actionsClient = null,
+        Func<string, int, string?, ICommand?>? contextualCodespaceFactory = null)
     {
         _auth = auth;
         _client = client;
@@ -44,6 +47,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         _time = time ?? TimeProvider.System;
         _mergeClient = mergeClient;
         _actionsClient = actionsClient;
+        _contextualCodespaceFactory = contextualCodespaceFactory;
         _emptyContent = new PageEmptyContent(Icons.PullRequests, new RefreshRepositoryItemsCommand(RefreshAsync, Icons.PullRequests));
         _pagination = new PagedListPresentation(Icons.PullRequests, () => StartLoad(reset: false));
         Id = PageId;
@@ -71,7 +75,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     internal RepositoryPage? Owner { get; private init; }
 
     internal RepositoryPullRequestsPage ForRepository(string repository, RepositoryPage? owner = null) =>
-        new(_auth, _client, _browser, _time, _mergeClient, _actionsClient)
+        new(_auth, _client, _browser, _time, _mergeClient, _actionsClient, _contextualCodespaceFactory)
         {
             Id = $"{PageId}.{Uri.EscapeDataString(repository)}",
             Title = $"{repository} pull requests",
@@ -83,17 +87,20 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     {
         MergePullRequestPage[] mergePages;
         PullRequestActionsPage[] actionPages;
+        IDisposable[] featurePages;
         lock (_lock)
         {
             _load.Invalidate(reset: true);
             mergePages = TakeMergePages();
             actionPages = TakeActionPages();
+            featurePages = TakeFeaturePages();
             _repository = repository;
             _items.Clear();
         }
 
         DisposeMergePages(mergePages);
         DisposeActionPages(actionPages);
+        DisposeFeaturePages(featurePages);
         Title = $"{repository} pull requests";
         SearchText = string.Empty;
         HasMoreItems = false;
@@ -185,6 +192,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     {
         MergePullRequestPage[] mergePages;
         PullRequestActionsPage[] actionPages;
+        IDisposable[] featurePages;
         lock (_lock)
         {
             if (_repository is null)
@@ -195,11 +203,13 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
             _load.Invalidate(reset: true);
             mergePages = TakeMergePages();
             actionPages = TakeActionPages();
+            featurePages = TakeFeaturePages();
             _items.Clear();
         }
 
         DisposeMergePages(mergePages);
         DisposeActionPages(actionPages);
+        DisposeFeaturePages(featurePages);
         HasMoreItems = false;
         return StartLoad(reset: true);
     }
@@ -209,15 +219,18 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         _accountSubscription.Dispose();
         MergePullRequestPage[] mergePages;
         PullRequestActionsPage[] actionPages;
+        IDisposable[] featurePages;
         lock (_lock)
         {
             _load.Dispose();
             mergePages = TakeMergePages();
             actionPages = TakeActionPages();
+            featurePages = TakeFeaturePages();
         }
 
         DisposeMergePages(mergePages);
         DisposeActionPages(actionPages);
+        DisposeFeaturePages(featurePages);
         IsLoading = false;
     }
 
@@ -288,7 +301,24 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
                         _actionPages.Add(actionsPage);
                     }
 
-                    return new RepositoryPullRequestItem(pullRequest, _browser, now, mergePage, actionsPage);
+                    PullRequestDetailsPage? detailsPage = null;
+                    if (_actionsClient is IPullRequestFeatureClient featureClient)
+                    {
+                        detailsPage = new PullRequestDetailsPage(_auth, featureClient, account, repository, pullRequest.Number,
+                            _contextualCodespaceFactory)
+                            { Owner = this };
+                        _featurePages.Add(detailsPage);
+                    }
+
+                    IssueConversationPage? conversationPage = null;
+                    if (_client is BaldBeardedBuilder.CmdPal.GitHub.Issues.IIssueConversationClient conversationClient)
+                    {
+                        conversationPage = new IssueConversationPage(_auth, conversationClient, account, repository,
+                            pullRequest.Number, "Pull request");
+                        _featurePages.Add(conversationPage);
+                    }
+
+                    return new RepositoryPullRequestItem(pullRequest, _browser, now, mergePage, actionsPage, detailsPage, conversationPage);
                 }));
             _load.Succeed(operation, result.NextPage);
         }
@@ -305,17 +335,20 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     {
         MergePullRequestPage[] mergePages;
         PullRequestActionsPage[] actionPages;
+        IDisposable[] featurePages;
         lock (_lock)
         {
             _load.Invalidate(reset: true);
             mergePages = TakeMergePages();
             actionPages = TakeActionPages();
+            featurePages = TakeFeaturePages();
             _repository = null;
             _items.Clear();
         }
 
         DisposeMergePages(mergePages);
         DisposeActionPages(actionPages);
+        DisposeFeaturePages(featurePages);
         HasMoreItems = false;
         IsLoading = false;
         RaiseItemsChanged();
@@ -337,12 +370,48 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         return pages;
     }
 
+    private IDisposable[] TakeFeaturePages()
+    {
+        var pages = _featurePages.ToArray();
+        _featurePages.Clear();
+        return pages;
+    }
+
+    internal void ApplyPullRequestUpdate(GitHubAccount account, string repository, PullRequestDetailsPage source, GitHubPullRequest updated)
+    {
+        MergePullRequestPage? retiredMergePage = null;
+        lock (_lock)
+        {
+            if (_load.Disposed || !ReferenceEquals(account, _auth.CurrentAccount) || _repository != repository)
+                return;
+            var existing = _items.FirstOrDefault(item => ReferenceEquals(item.DetailsPage, source));
+            if (existing is null) return;
+            if (updated.State != SubjectState.Open && existing.MergePage is { } mergePage)
+            {
+                retiredMergePage = mergePage;
+                _mergePages.Remove(mergePage);
+            }
+            var replacement = new RepositoryPullRequestItem(updated, _browser, _time.GetUtcNow(),
+                updated.State == SubjectState.Open ? existing.MergePage : null,
+                existing.ActionsPage, existing.DetailsPage, existing.ConversationPage);
+            var index = _items.IndexOf(existing);
+            _items[index] = replacement;
+        }
+        retiredMergePage?.Dispose();
+        RaiseItemsChanged();
+    }
+
     private static void DisposeMergePages(MergePullRequestPage[] pages)
     {
         foreach (var page in pages) page.Dispose();
     }
 
     private static void DisposeActionPages(PullRequestActionsPage[] pages)
+    {
+        foreach (var page in pages) page.Dispose();
+    }
+
+    private static void DisposeFeaturePages(IDisposable[] pages)
     {
         foreach (var page in pages) page.Dispose();
     }
@@ -367,9 +436,15 @@ internal sealed partial class RepositoryPullRequestItem : ListItem
         IBrowserLauncher browser,
         DateTimeOffset now,
         MergePullRequestPage? mergePage = null,
-        PullRequestActionsPage? actionsPage = null)
+        PullRequestActionsPage? actionsPage = null,
+        PullRequestDetailsPage? detailsPage = null,
+        IssueConversationPage? conversationPage = null)
     {
         PullRequest = pullRequest;
+        MergePage = mergePage;
+        ActionsPage = actionsPage;
+        DetailsPage = detailsPage;
+        ConversationPage = conversationPage;
         Command = new OpenInBrowserCommand(browser, pullRequest.WebUrl, "Open in browser", Icons.PullRequests);
         Title = $"#{pullRequest.Number} {pullRequest.Title}";
 
@@ -403,10 +478,18 @@ internal sealed partial class RepositoryPullRequestItem : ListItem
         };
         if (mergePage is not null) commands.Add(new CommandContextItem(mergePage));
         if (actionsPage is not null) commands.Add(new CommandContextItem(actionsPage));
+        if (detailsPage is not null) commands.Add(new CommandContextItem(detailsPage));
+        if (detailsPage?.ContextualCodespaceCommand is { } codespace)
+            commands.Add(new CommandContextItem(codespace));
+        if (conversationPage is not null) commands.Add(new CommandContextItem(conversationPage));
         MoreCommands = [.. commands];
     }
 
     public GitHubPullRequest PullRequest { get; }
+    internal MergePullRequestPage? MergePage { get; }
+    internal PullRequestActionsPage? ActionsPage { get; }
+    internal PullRequestDetailsPage? DetailsPage { get; }
+    internal IssueConversationPage? ConversationPage { get; }
 
     public bool Matches(string[] terms)
     {

@@ -3,11 +3,11 @@ title: Confirmations and pending requests
 description: Understand confirmation screens, accepted requests, and uncertain outcomes before retrying an action.
 ---
 
-Actions that start compute, create resources, rerun workflows, submit agent work, merge pull requests, or delete Codespaces need a review or confirmation. Read the target and warnings before submitting.
+Actions that start compute, create resources, rerun workflows or jobs, submit agent work, merge pull requests, or delete Codespaces need a review or confirmation. Read the target and warnings before submitting.
 
 ## Accepted isn't finished
 
-GitHub often accepts a request and completes it later. A Codespace may still be preparing, a cancellation may still be stopping jobs, and a merge may be queued.
+GitHub often accepts a request and completes it later. A Codespace may still be preparing, a cancellation may still be stopping jobs, a branch update may still be merging the base, and a merge may be queued.
 
 Refresh or use the page's status action to check the authoritative state. Don't treat an accepted request as proof that the requested change finished.
 
@@ -27,4 +27,4 @@ Likewise, stopping a merge status check doesn't cancel the submitted merge. Chec
 
 ## When not to use the extension
 
-Use GitHub directly when you need a full conversation, detailed workflow logs, or a merge with a fixed branch and exact downstack scope. A confirmation is useful, but it can't pin everything that GitHub's asynchronous APIs may change.
+Use GitHub directly when you need inline diff editing, a live workflow log viewer, or a merge with a fixed branch and exact downstack scope. A confirmation is useful, but it can't pin everything that GitHub's asynchronous APIs may change.

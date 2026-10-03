@@ -38,7 +38,15 @@ public sealed class TimeoutRecoveryTests
         await load();
 
         Assert.IsFalse(page.IsLoading);
-        Assert.IsEmpty(page.GetItems());
+        var failedItems = page.GetItems();
+        if (pullRequests)
+        {
+            Assert.IsEmpty(failedItems);
+        }
+        else
+        {
+            Assert.IsInstanceOfType<IssueWritePage>(Assert.IsInstanceOfType<ListItem>(failedItems.Single()).Command);
+        }
         Assert.AreEqual(TimeoutMessage, page.EmptyContent!.Subtitle);
         Assert.IsInstanceOfType<InvokableCommand>(page.EmptyContent.Command);
         var empty = page.EmptyContent;
@@ -50,7 +58,10 @@ public sealed class TimeoutRecoveryTests
         await load();
 
         Assert.IsFalse(page.IsLoading);
-        Assert.AreEqual("#1 Recovered", page.GetItems().Single().Title);
+        var recoveredItems = page.GetItems();
+        Assert.AreEqual("#1 Recovered", pullRequests
+            ? recoveredItems.OfType<RepositoryPullRequestItem>().Single().Title
+            : recoveredItems.OfType<RepositoryIssueItem>().Single().Title);
         Assert.AreEqual(2, requests);
     }
 
@@ -86,7 +97,10 @@ public sealed class TimeoutRecoveryTests
         await oldLoad;
 
         Assert.IsFalse(page.IsLoading);
-        Assert.AreEqual("#1 Recovered", page.GetItems().Single().Title);
+        var recoveredItems = page.GetItems();
+        Assert.AreEqual("#1 Recovered", pullRequests
+            ? recoveredItems.OfType<RepositoryPullRequestItem>().Single().Title
+            : recoveredItems.OfType<RepositoryIssueItem>().Single().Title);
         Assert.AreEqual(2, requests);
     }
 
@@ -167,7 +181,7 @@ public sealed class TimeoutRecoveryTests
               "repository":{"full_name":"o/r","html_url":"https://github.com/o/r"},"updated_at":"2025-06-01T12:00:00Z"}]
             """;
         var requests = 0;
-        using var http = new HttpClient(new StubHandler(_ =>
+        using var http = new HttpClient(new StubHandler(request =>
         {
             requests++;
             if (requests == 2)
@@ -175,7 +189,7 @@ public sealed class TimeoutRecoveryTests
                 return Task.FromException<HttpResponseMessage>(new TaskCanceledException("transport timeout"));
             }
 
-            return Task.FromResult(JsonResponse(requests is 1 or 3 ? notifications : PullRequestJson));
+            return Task.FromResult(JsonResponse(request.RequestUri!.AbsolutePath == "/notifications" ? notifications : PullRequestJson));
         }));
         var page = new NotificationsPage(CreateAuth(), new NotificationsClient(http), new FakeBrowser(_ => null));
         page.GetItems();
@@ -189,7 +203,7 @@ public sealed class TimeoutRecoveryTests
         Assert.IsFalse(page.IsLoading);
         Assert.IsInstanceOfType<PullRequestDetails>(page.GetItems().Single().Details);
         Assert.AreNotEqual(TimeoutMessage, page.GetItems().Single().Details!.Body);
-        Assert.AreEqual(4, requests);
+        Assert.AreEqual(3, requests);
     }
 
     private static (DynamicListPage Page, Func<Task> Load, Action Open, Action Retry) CreateList(

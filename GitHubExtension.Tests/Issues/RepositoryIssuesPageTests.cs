@@ -42,6 +42,27 @@ public sealed class RepositoryIssuesPageTests
     }
 
     [TestMethod]
+    public async Task RepositoryIssues_ExposesCreateEditAndConversationCommands()
+    {
+        var client = new Mock<IIssuesClient>();
+        client.As<IIssueManagementClient>();
+        client.As<IIssueConversationClient>();
+        client.Setup(c => c.GetIssuesAsync(Account, "octo/tool", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new IssuesPageResult([CreateIssue(42, "Keyboard navigation", SubjectState.Open, "octocat", 2, [])], null));
+        using var page = CreatePage(client.Object, out _);
+
+        page.Open("octo/tool");
+        await page.CurrentLoad;
+
+        var items = page.GetItems();
+        Assert.IsInstanceOfType<IssueWritePage>(Assert.IsInstanceOfType<ListItem>(items[0]).Command);
+        var issue = Assert.IsInstanceOfType<RepositoryIssueItem>(items[1]);
+        var commands = issue.MoreCommands.Cast<CommandContextItem>().Select(item => item.Command).ToArray();
+        Assert.IsTrue(commands.Any(command => command is IssueWritePage));
+        Assert.IsTrue(commands.Any(command => command is IssueConversationPage));
+    }
+
+    [TestMethod]
     public async Task Open_UsesClosedAndNotPlannedIssueStateIcons()
     {
         var client = new Mock<IIssuesClient>();

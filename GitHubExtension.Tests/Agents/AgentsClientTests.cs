@@ -96,7 +96,7 @@ public sealed class AgentsClientTests
     [TestMethod]
     public async Task GetTasksAsync_UsesNextLinkAndCachesRepositoryWithinPage()
     {
-        var next = new Uri("https://api.github.com/agents/tasks?page=2");
+        var next = new Uri("https://api.github.com/agents/tasks?per_page=30&sort=updated_at&direction=desc&is_archived=false&page=2");
         using var handler = Handler(tasks: $"{{\"tasks\":[{TaskJson},{TaskJson.Replace("task-1", "task-2", StringComparison.Ordinal)}]}}", next: next);
         using var http = new HttpClient(handler);
 

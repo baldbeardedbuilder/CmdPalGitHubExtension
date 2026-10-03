@@ -29,19 +29,35 @@ internal interface IAgentsClient
         CancellationToken cancellationToken);
 }
 
-internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
+internal interface IAgentBrowsingClient
+{
+    Task<AgentTasksPageResult> GetTasksAsync(GitHubAccount account, AgentQuery query, Uri? page, CancellationToken token);
+    Task<GitHubAgentTask> GetTaskAsync(GitHubAccount account, GitHubAgentTask task, CancellationToken token);
+}
+
+internal sealed partial class AgentsClient(HttpClient httpClient) : IAgentsClient, IAgentBrowsingClient
 {
     private const string ApiVersion = "2026-03-10";
     private const int MaxConcurrentRequests = 6;
 
     public Task<AgentTasksPageResult> GetTasksAsync(GitHubAccount account, Uri? page, CancellationToken cancellationToken) =>
+        GetTasksAsync(account, new AgentQuery(), page, cancellationToken);
+
+    public Task<AgentTasksPageResult> GetTasksAsync(GitHubAccount account, AgentQuery query, Uri? page, CancellationToken cancellationToken) =>
         DomainDiagnostics.RunAsync(DiagnosticArea.Agents, async () =>
     {
-        var uri = page ?? new Uri(account.Host.ApiUrl, "agents/tasks?per_page=30&sort=updated_at&direction=desc&is_archived=false");
+        var first = QueryUri(account, query);
+        var uri = page ?? first;
+        ValidatePage(uri, first);
         using var response = await SendAgentsAsync(account, uri, cancellationToken).ConfigureAwait(false);
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
         var tasks = ParseTasks(json.RootElement, account.Host);
         var nextPage = NextPage(response);
+        if (nextPage is not null) { ValidatePage(nextPage, first); }
+        if (query.Repository is { } repositoryScope)
+        {
+            tasks = tasks.Select(t => t with { RepositoryFullName = repositoryScope }).ToList();
+        }
 
         using var throttle = new SemaphoreSlim(MaxConcurrentRequests);
         var repositories = new ConcurrentDictionary<long, Lazy<Task<string>>>();
@@ -79,7 +95,7 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
                     var detailsUri = new Uri(account.Host.ApiUrl, $"agents/tasks/{Uri.EscapeDataString(task.Id)}");
                     using var detailsResponse = await SendAgentsAsync(account, detailsUri, cancellationToken).ConfigureAwait(false);
                     using var details = await ReadJsonAsync(detailsResponse, cancellationToken).ConfigureAwait(false);
-                    task = task with { Model = ParseModel(details.RootElement) };
+                    task = WithDetails(task, details.RootElement);
                 }
                 catch (Exception ex) when (ex is GitHubApiException or IOException
                     || (ex is OperationCanceledException && !cancellationToken.IsCancellationRequested))
@@ -305,7 +321,9 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
             }
 
             result.Add(new GitHubAgentTask(id, GetString(element, "name") is { Length: > 0 } name ? name : "Agent task",
-                webUrl, state, updatedAt, repositoryId, RepositoryError: repositoryError));
+                webUrl, state, updatedAt, repositoryId, RepositoryError: repositoryError,
+                Artifacts: ParseArtifacts(element),
+                ArchivedAt: GetDate(element, "archived_at") is var archived && archived != DateTimeOffset.MinValue ? archived : null));
         }
 
         return result;
