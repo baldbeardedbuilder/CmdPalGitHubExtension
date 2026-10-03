@@ -27,6 +27,16 @@ Actions lists start with **Running** selected, including queued runs; switch to 
 
 Codespaces requires a github.com account and the `codespace` token scope. It isn't available on GitHub Enterprise Server. Use **More > Close Codespace** on an active codespace to stop it without deleting its files, or **More > Start Codespace** on a stopped one to start it. The list shows the state GitHub returns, and **Refresh** checks on a start or shutdown. Starting a codespace doesn't open it in your browser. Opening a stopped codespace still takes you to GitHub's browser editor, where it can start the environment.
 
+Starting and creating a Codespace first shows a confirmation with the signed-in account, host, target, and billing implications. Repeated submissions do not send duplicate writes. Signing out or switching accounts cancels outstanding work and discards old results. Notification changes refresh the inbox from GitHub rather than claiming success optimistically. Errors remain visible, including organization SSO authorization links when GitHub supplies one.
+
+Accepted requests can still be processing. Refresh to check the authoritative state before retrying. If a creation request times out or its outcome cannot be verified, creation stays blocked on that page to prevent duplicate environments. You can inspect your Codespaces on GitHub, but absence from the list cannot prove a queued creation will not appear later. Without an exact authoritative reconciliation, the extension cannot safely retry that creation and does not offer an acknowledgement override.
+
+### Adding mutation commands
+
+Use the shared mutation executor and confirmation cards. Require confirmation for deletion, merge, compute start/create, workflow rerun/dispatch, and agent submission. Capture the account, host, and target; validate fresh permission and target state before submitting. Reconciliation must use authoritative reads to verify the requested fields, preserve pending/unknown outcomes when reads fail, and explicitly prove retry safety before resending non-idempotent requests.
+
+The executor accepts an optional caller cancellation token linked to the account session. Cancellation before submission is safe to retry; cancellation after submission leaves the outcome unknown because it cannot roll back GitHub's work.
+
 ### Agents access
 
 Agents uses GitHub's [Agent Tasks API](https://docs.github.com/en/rest/agent-tasks/agent-tasks), which is in public preview. You need Copilot cloud agent access. Fine-grained tokens need **Agent tasks: read** on the repositories you want to see. OAuth user tokens are supported too.

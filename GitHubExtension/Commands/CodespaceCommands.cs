@@ -43,23 +43,3 @@ internal sealed partial class CloseCodespaceCommand : InvokableCommand
         return CommandResult.KeepOpen();
     }
 }
-
-internal sealed partial class StartCodespaceCommand : InvokableCommand
-{
-    private readonly CodespacesPage _page;
-    private readonly CodespaceItem _item;
-
-    public StartCodespaceCommand(CodespacesPage page, CodespaceItem item)
-    {
-        _page = page;
-        _item = item;
-        Name = "Start Codespace";
-        Icon = Icons.Start;
-    }
-
-    public override ICommandResult Invoke()
-    {
-        _ = _page.StartAsync(_item);
-        return CommandResult.KeepOpen();
-    }
-}

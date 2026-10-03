@@ -108,6 +108,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
     public override void Dispose()
     {
         _auth.AccountChanged -= OnAccountChanged;
+        _notificationsPage.Dispose();
         _reposPage.Dispose();
         _agentsPage.Dispose();
         _actionsPage.Dispose();

@@ -39,14 +39,14 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
         const string timeoutMessage = "GitHub took too long to close this codespace. Refresh to check its state, then try again.";
         try
         {
-            using var response = await SendAsync(httpClient, account, HttpMethod.Post, uri, cancellationToken, timeoutMessage: timeoutMessage).ConfigureAwait(false);
-            using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
-            return ParseCodespace(json.RootElement)
-                ?? throw new GitHubApiException("GitHub sent back a codespace we couldn't read.");
+            using var response = await SendMutationAsync(httpClient, account, HttpMethod.Post, uri, cancellationToken, timeoutMessage: timeoutMessage).ConfigureAwait(false);
+            return response.IsAccepted || response.Json is null
+                ? await ReadAfterMutationAsync(account, name, cancellationToken).ConfigureAwait(false)
+                : ReadMutationCodespace(response.Json.RootElement, name);
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
-            throw new GitHubApiException(timeoutMessage, ex);
+            throw new GitHubApiException(timeoutMessage, ex, outcomeUnknown: true);
         }
     }
 
@@ -61,14 +61,14 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
         const string timeoutMessage = "GitHub took too long to start this codespace. Refresh to check its state, then try again.";
         try
         {
-            using var response = await SendAsync(httpClient, account, HttpMethod.Post, uri, cancellationToken, timeoutMessage: timeoutMessage).ConfigureAwait(false);
-            using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
-            return ParseCodespace(json.RootElement)
-                ?? throw new GitHubApiException("GitHub sent back a codespace we couldn't read.");
+            using var response = await SendMutationAsync(httpClient, account, HttpMethod.Post, uri, cancellationToken, timeoutMessage: timeoutMessage).ConfigureAwait(false);
+            return response.IsAccepted || response.Json is null
+                ? await ReadAfterMutationAsync(account, name, cancellationToken).ConfigureAwait(false)
+                : ReadMutationCodespace(response.Json.RootElement, name);
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
-            throw new GitHubApiException(timeoutMessage, ex);
+            throw new GitHubApiException(timeoutMessage, ex, outcomeUnknown: true);
         }
     }
 
@@ -123,10 +123,56 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
 
         using var content = new StringContent(JsonSerializer.Serialize(requestBody), Encoding.UTF8, "application/json");
         var createUri = new Uri(account.Host.ApiUrl, "user/codespaces");
-        using var response = await SendAsync(httpClient, account, HttpMethod.Post, createUri, cancellationToken, content: content).ConfigureAwait(false);
-        using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
-        return ParseCodespace(json.RootElement)
-            ?? throw new GitHubApiException("GitHub sent back a codespace we couldn't read.");
+        using var response = await SendMutationAsync(httpClient, account, HttpMethod.Post, createUri, cancellationToken, content: content).ConfigureAwait(false);
+        var created = response.Json is null ? null : ParseCodespace(response.Json.RootElement);
+        if (created is null)
+        {
+            throw new GitHubApiException(
+                "GitHub received the create request, but didn't identify a Codespace. Check Codespaces on GitHub before creating another.",
+                outcomeUnknown: true);
+        }
+
+        var authoritative = await ReadAfterMutationAsync(account, created.Name, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(authoritative.RepositoryFullName, repository, StringComparison.OrdinalIgnoreCase)
+            || (!string.IsNullOrWhiteSpace(branch) && !string.Equals(authoritative.Branch, branch.Trim(), StringComparison.Ordinal)))
+        {
+            throw new GitHubApiException(
+                "GitHub created a Codespace, but its repository or branch doesn't match the request. Check Codespaces on GitHub before creating another.",
+                outcomeUnknown: true);
+        }
+
+        return authoritative;
+    }
+
+    private async Task<GitHubCodespace> ReadAfterMutationAsync(GitHubAccount account, string name, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var uri = new Uri(account.Host.ApiUrl, $"user/codespaces/{Uri.EscapeDataString(name)}");
+            using var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken).ConfigureAwait(false);
+            using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
+            var codespace = ParseCodespace(json.RootElement);
+            return codespace is not null && string.Equals(codespace.Name, name, StringComparison.Ordinal)
+                ? codespace
+                : throw new GitHubApiException("GitHub sent back a codespace we couldn't verify.", outcomeUnknown: true);
+        }
+        catch (GitHubApiException ex) when (!ex.OutcomeUnknown)
+        {
+            throw new GitHubApiException(ex.Message, ex, ex.AuthorizeUrl, outcomeUnknown: true);
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new GitHubApiException("GitHub took too long to verify the Codespace. Refresh before retrying.", ex, outcomeUnknown: true);
+        }
+    }
+
+    private static GitHubCodespace ReadMutationCodespace(JsonElement root, string name)
+    {
+        var codespace = ParseCodespace(root)
+            ?? throw new GitHubApiException("GitHub sent back a codespace we couldn't read.", outcomeUnknown: true);
+        return string.Equals(codespace.Name, name, StringComparison.Ordinal)
+            ? codespace
+            : throw new GitHubApiException("GitHub returned a different Codespace. Refresh to verify the requested target.", outcomeUnknown: true);
     }
 
     internal static List<GitHubCodespace> ParseCodespaces(JsonElement root)

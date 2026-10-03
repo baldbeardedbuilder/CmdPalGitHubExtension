@@ -30,7 +30,7 @@ internal sealed partial class CodespaceItem : ListItem
         }
         else if (codespace.State == "Shutdown")
         {
-            more.Insert(0, new CommandContextItem(new StartCodespaceCommand(page, this)));
+            more.Insert(0, new CommandContextItem(page.StartConfirmation(this)));
         }
 
         if (page.CreatePage is { } createPage)

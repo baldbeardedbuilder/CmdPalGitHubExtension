@@ -66,13 +66,13 @@ internal sealed class NotificationsClient(HttpClient httpClient) : INotification
     public async Task MarkAsReadAsync(GitHubAccount account, string threadId, CancellationToken cancellationToken)
     {
         var uri = new Uri(account.Host.ApiUrl, $"notifications/threads/{Uri.EscapeDataString(threadId)}");
-        using var response = await SendAsync(httpClient, account, HttpMethod.Patch, uri, cancellationToken).ConfigureAwait(false);
+        using var response = await SendMutationAsync(httpClient, account, HttpMethod.Patch, uri, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task MarkAsDoneAsync(GitHubAccount account, string threadId, CancellationToken cancellationToken)
     {
         var uri = new Uri(account.Host.ApiUrl, $"notifications/threads/{Uri.EscapeDataString(threadId)}");
-        using var response = await SendAsync(httpClient, account, HttpMethod.Delete, uri, cancellationToken).ConfigureAwait(false);
+        using var response = await SendMutationAsync(httpClient, account, HttpMethod.Delete, uri, cancellationToken).ConfigureAwait(false);
     }
 
     internal static GitHubNotification ParseNotification(JsonElement element)

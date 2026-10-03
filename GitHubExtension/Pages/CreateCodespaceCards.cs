@@ -9,21 +9,33 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 
 internal static class CreateCodespaceCards
 {
-    public static string Form(string? repository, string? branch, string? error) => Card(
+    public static string Form(string? repository, string? branch, string? error, Uri? authorizeUrl = null) => Card(
         """{ "type": "TextBlock", "text": "Create a Codespace", "size": "Large", "weight": "Bolder", "wrap": true }""",
         """{ "type": "TextBlock", "text": "Enter a repository you can access as owner/name. Leave the branch blank to use its default branch.", "wrap": true, "isSubtle": true }""",
         $$"""{ "type": "Input.Text", "id": "repository", "label": "Repository", "placeholder": "microsoft/PowerToys", "isRequired": true, "errorMessage": "Enter a repository as owner/name", "value": {{Str(repository ?? string.Empty)}} }""",
         $$"""{ "type": "Input.Text", "id": "branch", "label": "Branch (optional)", "placeholder": "main", "value": {{Str(branch ?? string.Empty)}} }""",
         Error(error),
+        authorizeUrl is null ? string.Empty : $$"""{ "type": "ActionSet", "actions": [{ "type": "Action.OpenUrl", "title": "Authorize organization access", "url": {{Str(authorizeUrl.AbsoluteUri)}} }] }""",
         $$"""
         { "type": "ActionSet", "spacing": "Large", "actions": [
-            { "type": "Action.Submit", "id": "create", "title": "Create Codespace", "style": "positive", "data": { "action": "{{CreateCodespaceActions.Create}}" } }
+            { "type": "Action.Submit", "id": "create", "title": "Review creation", "style": "positive", "data": { "action": "{{CreateCodespaceActions.Create}}" } }
         ] }
         """);
 
     public static string Creating(string repository) => Card(
         """{ "type": "TextBlock", "text": "Creating your Codespace...", "size": "Large", "weight": "Bolder", "wrap": true }""",
         $$""" { "type": "TextBlock", "text": {{Str(repository)}}, "wrap": true, "isSubtle": true } """);
+
+    public static string Unknown(string error, Uri? authorizeUrl) => Card(
+        """{ "type": "TextBlock", "text": "Creation is blocked", "size": "Large", "weight": "Bolder", "wrap": true }""",
+        Error(error),
+        """{ "type": "TextBlock", "text": "The request may have succeeded or may still be processing. Check Codespaces on GitHub and refresh. Absence from the list cannot prove that a queued creation will not appear later. Creation stays blocked on this page because another request could incur duplicate charges.", "wrap": true }""",
+        authorizeUrl is null ? string.Empty : $$"""{ "type": "ActionSet", "actions": [{ "type": "Action.OpenUrl", "title": "Authorize organization access", "url": {{Str(authorizeUrl.AbsoluteUri)}} }] }""",
+        $$"""
+        { "type": "ActionSet", "actions": [
+          { "type": "Action.OpenUrl", "title": "Check Codespaces on GitHub", "url": "https://github.com/codespaces" }
+        ] }
+        """);
 
     public static string Created(GitHubCodespace codespace) => Card(
         """{ "type": "TextBlock", "text": "Codespace created", "size": "Large", "weight": "Bolder", "wrap": true }""",
@@ -54,6 +66,7 @@ internal static class CreateCodespaceCards
 internal static class CreateCodespaceActions
 {
     public const string Create = "create";
+    public const string Confirm = "confirmCreate";
     public const string Open = "open";
     public const string CreateAnother = "createAnother";
 }

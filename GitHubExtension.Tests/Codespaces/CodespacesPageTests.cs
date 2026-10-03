@@ -5,6 +5,7 @@
 using BaldBeardedBuilder.CmdPal.GitHub.Codespaces;
 using BaldBeardedBuilder.CmdPal.GitHub.Commands;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
+using Microsoft.CommandPalette.Extensions;
 using Microsoft.CommandPalette.Extensions.Toolkit;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Tests.Codespaces;
@@ -133,30 +134,33 @@ public class CodespacesPageTests
     {
         var client = Client([Codespace("one"), Codespace("two", "Shutdown")], Next);
         client.Setup(c => c.StartCodespaceAsync(Account, "two", It.IsAny<CancellationToken>()))
+            .Callback(() => client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new CodespacesPageResult([Codespace("one"), Codespace("two", state)], Next)))
             .ReturnsAsync(Codespace("two", state));
         using var page = CreatePage(client.Object, out var browser, out _);
         page.GetItems();
         await page.CurrentLoad;
         var item = page.GetItems().Cast<CodespaceItem>().Single(i => i.Codespace.Name == "two");
-        var start = item.MoreCommands.OfType<CommandContextItem>().Single(c => c.Command is StartCodespaceCommand);
+        var start = (MutationConfirmationPage)item.MoreCommands.OfType<CommandContextItem>().Single(c => c.Command is MutationConfirmationPage).Command!;
 
-        ((InvokableCommand)start.Command!).Invoke();
+        client.Verify(c => c.StartCodespaceAsync(Account, "two", It.IsAny<CancellationToken>()), Times.Never);
+        ((IFormContent)start.GetContent()[0]).SubmitForm("{}", """{"action":"confirm"}""");
         await page.CurrentLoad;
 
-        var items = page.GetItems().Cast<CodespaceItem>().ToArray();
+        var items = page.GetItems().OfType<CodespaceItem>().ToArray();
         Assert.HasCount(2, items);
         Assert.AreEqual("Available", items.Single(i => i.Codespace.Name == "one").Codespace.State);
         var started = items.Single(i => i.Codespace.Name == "two");
         Assert.AreEqual(state, started.Codespace.State);
         Assert.AreEqual(label, started.Tags.Single().Text);
-        Assert.IsFalse(started.MoreCommands.OfType<CommandContextItem>().Any(c => c.Command is StartCodespaceCommand));
+        Assert.IsFalse(started.MoreCommands.OfType<CommandContextItem>().Any(c => c.Command is MutationConfirmationPage));
         Assert.AreEqual(state == "Available",
             started.MoreCommands.OfType<CommandContextItem>().Any(c => c.Command is CloseCodespaceCommand));
         Assert.IsNull(browser.LastOpened);
         Assert.IsTrue(page.HasMoreItems);
         Assert.IsFalse(page.IsLoading);
         client.Verify(c => c.StartCodespaceAsync(Account, "two", It.IsAny<CancellationToken>()), Times.Once);
-        client.Verify(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()), Times.Once);
+        client.Verify(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()), Times.Exactly(3));
     }
 
     [TestMethod]
@@ -181,6 +185,8 @@ public class CodespacesPageTests
     {
         var client = Client([Codespace("one"), Codespace("two")], Next);
         client.Setup(c => c.StopCodespaceAsync(Account, "two", It.IsAny<CancellationToken>()))
+            .Callback(() => client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new CodespacesPageResult([Codespace("one"), Codespace("two", state)], Next)))
             .ReturnsAsync(Codespace("two", state));
         using var page = CreatePage(client.Object, out var browser, out _);
         page.GetItems();
@@ -191,7 +197,7 @@ public class CodespacesPageTests
         ((InvokableCommand)close.Command!).Invoke();
         await page.CurrentLoad;
 
-        var items = page.GetItems().Cast<CodespaceItem>().ToArray();
+        var items = page.GetItems().OfType<CodespaceItem>().ToArray();
         Assert.HasCount(2, items);
         Assert.AreEqual("Available", items.Single(i => i.Codespace.Name == "one").Codespace.State);
         var stopped = items.Single(i => i.Codespace.Name == "two");
@@ -202,7 +208,7 @@ public class CodespacesPageTests
         Assert.IsTrue(page.HasMoreItems);
         Assert.IsFalse(page.IsLoading);
         client.Verify(c => c.StopCodespaceAsync(Account, "two", It.IsAny<CancellationToken>()), Times.Once);
-        client.Verify(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()), Times.Once);
+        client.Verify(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()), Times.Exactly(3));
     }
 
     [TestMethod]
@@ -225,11 +231,13 @@ public class CodespacesPageTests
         Assert.AreEqual("github.com returned 402 Payment Required.", items[1].Subtitle);
         Assert.IsFalse(page.IsLoading);
         client.Setup(c => c.StartCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()))
+            .Callback(() => client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new CodespacesPageResult([Codespace("one", "Starting")], null)))
             .ReturnsAsync(Codespace("one", "Starting"));
 
         await page.StartAsync(item);
 
-        Assert.AreEqual("Starting", ((CodespaceItem)page.GetItems().Single()).Codespace.State);
+        Assert.AreEqual("Starting", page.GetItems().OfType<CodespaceItem>().Single().Codespace.State);
         client.Verify(c => c.StartCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()), Times.Exactly(2));
     }
 
@@ -253,6 +261,8 @@ public class CodespacesPageTests
         Assert.AreEqual("Your token is missing a scope", items[1].Subtitle);
         Assert.IsFalse(page.IsLoading);
         client.Setup(c => c.StopCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()))
+            .Callback(() => client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new CodespacesPageResult([Codespace("one", "Shutdown")], null)))
             .ReturnsAsync(Codespace("one", "Shutdown"));
 
         await page.CloseAsync(item);
@@ -398,7 +408,7 @@ public class CodespacesPageTests
     }
 
     [TestMethod]
-    public async Task Start_RefreshCancelsAndDiscardsSupersededResponse()
+    public async Task Start_RefreshDoesNotCancelWriteAndDiscardsSupersededResponse()
     {
         var response = new TaskCompletionSource<GitHubCodespace>(TaskCreationOptions.RunContinuationsAsynchronously);
         var started = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -422,7 +432,7 @@ public class CodespacesPageTests
         response.SetResult(Codespace("one", "Available"));
         await start;
 
-        Assert.IsTrue(token.IsCancellationRequested);
+        Assert.IsFalse(token.IsCancellationRequested);
         Assert.AreEqual("Starting", ((CodespaceItem)page.GetItems().Single()).Codespace.State);
         Assert.IsFalse(page.IsLoading);
         await page.StartAsync(item);
@@ -430,7 +440,7 @@ public class CodespacesPageTests
     }
 
     [TestMethod]
-    public async Task Close_RefreshCancelsAndDiscardsSupersededResponse()
+    public async Task Close_RefreshDoesNotCancelWriteAndDiscardsSupersededResponse()
     {
         var response = new TaskCompletionSource<GitHubCodespace>(TaskCreationOptions.RunContinuationsAsynchronously);
         var started = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -454,11 +464,94 @@ public class CodespacesPageTests
         response.SetResult(Codespace("one", "Shutdown"));
         await close;
 
-        Assert.IsTrue(token.IsCancellationRequested);
+        Assert.IsFalse(token.IsCancellationRequested);
         Assert.AreEqual("ShuttingDown", ((CodespaceItem)page.GetItems().Single()).Codespace.State);
         Assert.IsFalse(page.IsLoading);
         await page.CloseAsync(item);
         client.Verify(c => c.StopCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task StartConfirmation_FreshStateCheckPreventsStaleWrite()
+    {
+        var client = Client([Codespace("one", "Shutdown")]);
+        using var page = CreatePage(client.Object, out _, out _);
+        page.GetItems();
+        await page.CurrentLoad;
+        var item = (CodespaceItem)page.GetItems().Single();
+        var confirmation = (MutationConfirmationPage)page.StartConfirmation(item);
+        client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CodespacesPageResult([Codespace("one", "Available")], null));
+
+        var form = (IFormContent)confirmation.GetContent().Single();
+        form.SubmitForm("{}", """{"action":"confirm"}""");
+        await confirmation.CurrentSubmission;
+        Assert.Contains("target changed", form.TemplateJson);
+        client.Verify(c => c.StartCodespaceAsync(It.IsAny<GitHubAccount>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task StartConfirmation_FailureAndSsoLinkRemainVisibleOnConfirmationPage()
+    {
+        var client = Client([Codespace("one", "Shutdown")]);
+        client.Setup(c => c.StartCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new GitHubApiException("Authorize access.", authorizeUrl: new Uri("https://github.com/orgs/example/sso")));
+        using var page = CreatePage(client.Object, out _, out _);
+        page.GetItems();
+        await page.CurrentLoad;
+        var confirmation = (MutationConfirmationPage)page.StartConfirmation((CodespaceItem)page.GetItems().Single());
+        var form = (IFormContent)confirmation.GetContent().Single();
+
+        form.SubmitForm("{}", """{"action":"confirm"}""");
+        form.SubmitForm("{}", """{"action":"confirm"}""");
+        await confirmation.CurrentSubmission;
+        Assert.Contains("Authorize access.", form.TemplateJson);
+        Assert.Contains("https://github.com/orgs/example/sso", form.TemplateJson);
+        client.Verify(c => c.StartCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task StartUnknown_ReconcilesBeforeRetryAndObservesEventualCompletion()
+    {
+        var client = Client([Codespace("one", "Shutdown")]);
+        client.Setup(c => c.StartCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new GitHubApiException("Response lost.", outcomeUnknown: true));
+        using var page = CreatePage(client.Object, out _, out _);
+        page.GetItems();
+        await page.CurrentLoad;
+        var item = (CodespaceItem)page.GetItems().Single();
+        await page.StartAsync(item);
+        await page.StartAsync(item);
+        Assert.Contains("no duplicate request", page.GetItems().Last().Subtitle);
+        client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CodespacesPageResult([Codespace("one", "Available")], null));
+        await page.StartAsync(page.GetItems().OfType<CodespaceItem>().Single());
+        Assert.AreEqual("Available", page.GetItems().OfType<CodespaceItem>().Single().Codespace.State);
+        client.Verify(c => c.StartCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task Start_AuthoritativeRefreshFailurePreservesUnknownUntilReconciled()
+    {
+        var client = Client([Codespace("one", "Shutdown")]);
+        client.Setup(c => c.StartCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()))
+            .Callback(() => client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+                .ThrowsAsync(new GitHubApiException("Refresh failed.")))
+            .ReturnsAsync(Codespace("one", "Available"));
+        using var page = CreatePage(client.Object, out _, out _);
+        page.GetItems();
+        await page.CurrentLoad;
+        var item = (CodespaceItem)page.GetItems().Single();
+        await page.StartAsync(item);
+        await page.StartAsync(item);
+        Assert.AreEqual("Shutdown", page.GetItems().OfType<CodespaceItem>().Single().Codespace.State);
+        Assert.AreEqual("Refresh failed.", page.GetItems().Last().Subtitle);
+        client.Verify(c => c.StartCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()), Times.Once);
+        client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CodespacesPageResult([Codespace("one", "Available")], null));
+        await page.StartAsync(item);
+        Assert.AreEqual("Available", page.GetItems().OfType<CodespaceItem>().Single().Codespace.State);
+        client.Verify(c => c.StartCodespaceAsync(Account, "one", It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]
