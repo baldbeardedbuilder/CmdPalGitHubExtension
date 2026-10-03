@@ -15,19 +15,21 @@ internal interface IActionsClient
 
 internal sealed class ActionsClient(HttpClient httpClient) : IActionsClient
 {
+    private const string TimeoutMessage = "GitHub took too long to return workflow runs. Try refreshing.";
+
     public async Task<WorkflowRunsPageResult> GetRunsAsync(GitHubAccount account, string repository, Uri? page, CancellationToken cancellationToken)
     {
         var path = string.Join('/', repository.Split('/').Select(Uri.EscapeDataString));
         var uri = page ?? new Uri(account.Host.ApiUrl, $"repos/{path}/actions/runs?per_page=50");
         try
         {
-            using var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken).ConfigureAwait(false);
+            using var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken, timeoutMessage: TimeoutMessage).ConfigureAwait(false);
             using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
             return new WorkflowRunsPageResult(ParseRuns(json.RootElement), NextPage(response));
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
-            throw new GitHubApiException("GitHub took too long to return workflow runs. Try refreshing.", ex);
+            throw new GitHubApiException(TimeoutMessage, ex);
         }
         catch (HttpRequestException ex)
         {

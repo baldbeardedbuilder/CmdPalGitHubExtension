@@ -277,11 +277,11 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
                 _searchResults = [.. results.Select(r => new RepoItem(this, r, _browser, now))];
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             return;
         }
-        catch (GitHubApiException ex)
+        catch (Exception ex) when (ex is GitHubApiException or OperationCanceledException)
         {
             lock (_lock)
             {
@@ -292,7 +292,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
 
                 _searchQuery = query;
                 _searchResults = [];
-                _searchError = ex.Message;
+                _searchError = ex is OperationCanceledException ? "GitHub took too long to respond. Try searching again." : ex.Message;
             }
         }
 

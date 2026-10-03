@@ -34,7 +34,8 @@ internal static class GitHubRest
         bool throwOnError = true,
         string apiVersion = "2022-11-28",
         Action<string>? logError = null,
-        HttpContent? content = null)
+        HttpContent? content = null,
+        string? timeoutMessage = null)
     {
         logError ??= LogError;
         EnsureSameHost(account, uri);
@@ -56,10 +57,10 @@ internal static class GitHubRest
             logError($"GitHub API error: {method} {LogEndpoint(uri)}; transport={ex.HttpRequestError}.");
             throw new GitHubApiException($"Couldn't reach {uri.Host}. {ex.Message}", ex);
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
             logError($"GitHub API error: {method} {LogEndpoint(uri)}; transport=Timeout.");
-            throw;
+            throw new GitHubApiException(timeoutMessage ?? $"The request to {uri.Host} timed out. Try again.", ex);
         }
 
         if (!response.IsSuccessStatusCode)
