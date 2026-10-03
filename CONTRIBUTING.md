@@ -25,6 +25,24 @@ dotnet build GitHubExtension/GitHubExtension.csproj -r win-x64
 
 If you want to test the github.com sign in, set up your own OAuth app first. The [README](README.md#building-with-your-own-oauth-app) walks through it. Enterprise sign in works without it.
 
+#### Recovering from a locked executable
+
+Build, Deploy, and Publish do not stop running extension processes. Command Palette can keep an executable locked, so a rebuild may fail until you explicitly stop the development instance.
+
+1. Identify the locking instance in PowerShell:
+
+   ```powershell
+   Get-CimInstance Win32_Process -Filter "Name = 'BaldBeardedBuilder.GitHubExtension.exe'" |
+       Select-Object ProcessId, ExecutablePath
+   ```
+
+2. Verify that its full executable path is the output of the checkout you are rebuilding, not another worktree or the installed MSIX package. If the path is unavailable, inspect it with appropriate permissions rather than guessing.
+3. Prefer a graceful shutdown through the owning debugger or host. Closing the Command Palette window alone may leave the extension running. Stopping a shared host can also stop other extensions, so avoid it when preserving unrelated instances.
+4. If graceful shutdown is unavailable or fails, recheck the path and PID immediately before explicitly forcing termination of only that instance with `taskkill /F /PID <verified-pid>`. Do not use image-name-wide termination (`/IM`) or process-tree termination (`/T`).
+5. Retry the build, then redeploy and reload the extension as needed.
+
+To verify worktree isolation on Windows, run an extension from worktree A and record its PID and executable path. Build, Deploy, and Publish from worktree B and confirm A's PID is still running at the same path. Repeat with an installed extension instance. Also try rebuilding a worktree whose own executable is locked: a lock failure must leave all instances running until you explicitly stop the verified development instance.
+
 ### Running tests
 
 ```bash
