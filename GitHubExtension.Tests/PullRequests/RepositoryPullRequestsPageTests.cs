@@ -6,6 +6,7 @@ using BaldBeardedBuilder.CmdPal.GitHub.Commands;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
 using BaldBeardedBuilder.CmdPal.GitHub.PullRequests;
+using Microsoft.CommandPalette.Extensions;
 using Microsoft.CommandPalette.Extensions.Toolkit;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Tests.PullRequests;
@@ -207,6 +208,39 @@ public sealed class RepositoryPullRequestsPageTests
 
         Assert.IsEmpty(page.GetItems());
         Assert.AreEqual("Choose a repository", page.EmptyContent!.Title);
+    }
+
+    [TestMethod]
+    public async Task MergeMenu_NavigatesToConfirmationAndRefreshInvalidatesIt()
+    {
+        var client = new Mock<IPullRequestsClient>();
+        client.Setup(c => c.GetPullRequestsAsync(Account, "octo/tool", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PullRequestsPageResult(
+            [
+                CreatePullRequest(42, "Ready", SubjectState.Open, null, "feature", "main", []),
+                CreatePullRequest(43, "Draft", SubjectState.Draft, null, "feature", "main", []),
+            ], null));
+        var mergeClient = new Mock<IPullRequestMergeClient>();
+        mergeClient.Setup(c => c.GetTargetAsync(Account, "octo/tool", 42, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PullRequestMergeTarget("octo/tool", 42, "main", "abc123", ["squash"]));
+        var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(), new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
+        using var page = new RepositoryPullRequestsPage(auth, client.Object, new FakeBrowser(_ => null), mergeClient: mergeClient.Object);
+        page.Open("octo/tool");
+        await page.CurrentLoad;
+        var ready = page.GetItems().First();
+        var mergePage = Assert.IsInstanceOfType<MergePullRequestPage>(
+            ready.MoreCommands.Cast<CommandContextItem>().Single(c => c.Command is MergePullRequestPage).Command);
+        Assert.IsInstanceOfType<OpenInBrowserCommand>(ready.Command);
+        Assert.IsFalse(page.GetItems().Last().MoreCommands.Cast<CommandContextItem>().Any(c => c.Command is MergePullRequestPage));
+        mergePage.GetContent();
+        await mergePage.CurrentWork;
+        Assert.Contains("abc123", ((IFormContent)mergePage.GetContent()[0]).TemplateJson);
+
+        await page.RefreshAsync();
+
+        Assert.Contains("no longer active", ((IFormContent)mergePage.GetContent()[0]).TemplateJson);
+        mergeClient.Verify(c => c.MergeAsync(It.IsAny<GitHubAccount>(), It.IsAny<PullRequestMergeTarget>(),
+            It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     private static GitHubPullRequest CreatePullRequest(

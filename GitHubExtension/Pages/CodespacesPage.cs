@@ -165,7 +165,8 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
             item,
             "Shutdown",
             "Couldn't start codespace",
-            (account, name, token) => _client.StartCodespaceAsync(account, name, token));
+            (account, name, token) => _client.StartCodespaceAsync(account, name, token),
+            refreshUntilAvailable: true);
 
     internal ICommand StartConfirmation(CodespaceItem item)
     {
@@ -191,10 +192,12 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         CodespaceItem item,
         string requiredState,
         string errorTitle,
-        Func<GitHubAccount, string, CancellationToken, Task<GitHubCodespace>> action)
+        Func<GitHubAccount, string, CancellationToken, Task<GitHubCodespace>> action,
+        bool refreshUntilAvailable = false)
     {
         GitHubAccount account;
         int generation;
+        CancellationToken token;
         lock (_lock)
         {
             if (_disposed || _fetching || !_items.Contains(item) || item.Codespace.State != requiredState
@@ -206,6 +209,9 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
 
             account = currentAccount;
             generation = _generation;
+            _loadCts?.Dispose();
+            _loadCts = new CancellationTokenSource();
+            token = _loadCts.Token;
             _fetching = true;
             _error = null;
             _authorizeUrl = null;
@@ -219,7 +225,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
                 return _currentLoad;
             }
 
-            _currentLoad = Task.Run(() => RunCodespaceActionCoreAsync(account, item, generation, requiredState, errorTitle, action));
+            _currentLoad = Task.Run(() => RunCodespaceActionCoreAsync(account, item, generation, requiredState, errorTitle, action, refreshUntilAvailable, token));
             return _currentLoad;
         }
     }
@@ -353,7 +359,9 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         int generation,
         string requiredState,
         string errorTitle,
-        Func<GitHubAccount, string, CancellationToken, Task<GitHubCodespace>> action)
+        Func<GitHubAccount, string, CancellationToken, Task<GitHubCodespace>> action,
+        bool refreshUntilAvailable,
+        CancellationToken pollingToken)
     {
         try
         {
@@ -406,8 +414,10 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
                                 Error: "Couldn't verify this Codespace after the request. Refresh to check GitHub before retrying.");
                         }
 
-                        return new MutationResult<GitHubCodespace>(
-                            authoritative.State == desiredState ? MutationState.Completed : MutationState.Pending, authoritative);
+                        return refreshUntilAvailable
+                            ? await PollUntilAvailableAsync(authoritative, token).ConfigureAwait(false)
+                            : new MutationResult<GitHubCodespace>(
+                                authoritative.State == desiredState ? MutationState.Completed : MutationState.Pending, authoritative);
                     }
                     catch (GitHubApiException ex)
                     {
@@ -429,7 +439,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
                         ? new MutationResult<GitHubCodespace>(MutationState.Completed, fresh)
                         : new MutationResult<GitHubCodespace>(MutationState.Pending, fresh,
                             "GitHub may still be processing this request. Refresh to check its state; no duplicate request was sent.");
-                }).ConfigureAwait(false);
+                }, cancellationToken: pollingToken).ConfigureAwait(false);
             lock (_lock)
             {
                 if (generation != _generation || !_mutations.IsCurrent(account) || result.State == MutationState.Stale)
@@ -448,6 +458,56 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
                     _error = result.Error ?? "GitHub is processing this request. Refresh to check its state before retrying.";
                     _errorTitle = errorTitle;
                     _authorizeUrl = result.AuthorizeUrl;
+                }
+            }
+
+            async Task<MutationResult<GitHubCodespace>> PollUntilAvailableAsync(GitHubCodespace codespace, CancellationToken sessionToken)
+            {
+                using var polling = CancellationTokenSource.CreateLinkedTokenSource(sessionToken, pollingToken);
+                var token = polling.Token;
+                for (var attempt = 0; ; attempt++)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (codespace.Name != item.Codespace.Name
+                        || codespace.RepositoryFullName != item.Codespace.RepositoryFullName
+                        || codespace.Branch != item.Codespace.Branch)
+                    {
+                        return new(MutationState.Unknown, Error: "GitHub returned a different Codespace. Refresh to check its state.");
+                    }
+
+                    if (codespace.State == "Available")
+                    {
+                        return new(MutationState.Completed, codespace);
+                    }
+
+                    lock (_lock)
+                    {
+                        if (generation != _generation || !_mutations.IsCurrent(account))
+                        {
+                            return new(MutationState.Pending);
+                        }
+
+                        var index = _items.IndexOf(item);
+                        if (index >= 0)
+                        {
+                            item = new CodespaceItem(this, codespace, _browser, _time.GetUtcNow());
+                            _items[index] = item;
+                        }
+                    }
+
+                    RaiseItemsChanged();
+                    if (codespace.State is not ("Shutdown" or "Created" or "Queued" or "Provisioning" or "Starting" or "Updating" or "Awaiting" or "Rebuilding"))
+                    {
+                        return new(MutationState.Pending, codespace, "This codespace couldn't become available. Refresh to check its state.");
+                    }
+
+                    if (attempt >= 60)
+                    {
+                        return new(MutationState.Pending, codespace, "This codespace is still starting. Refresh to check its state.");
+                    }
+
+                    await Task.Delay(TimeSpan.FromSeconds(2), _time, token).ConfigureAwait(false);
+                    codespace = await _client.GetCodespaceAsync(account, codespace.Name, token).WaitAsync(token).ConfigureAwait(false);
                 }
             }
         }

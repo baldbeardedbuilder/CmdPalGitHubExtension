@@ -37,11 +37,10 @@ public class IssueDetailsPageTests
         var browser = new FakeBrowser(_ => null);
         var page = new IssueDetailsPage(auth, client.Object, browser);
 
-        var result = page.Open(Account, issueApiUrl, "octo/tool");
+        page.LoadIssue(Account, issueApiUrl, "octo/tool");
         await page.CurrentLoad;
         page.HandleSubmit(IssueDetailsActions.OpenInBrowser);
 
-        Assert.IsNotNull(result);
         Assert.AreEqual(issue.WebUrl, browser.LastOpened);
         client.Verify(c => c.GetIssueAsync(Account, issueApiUrl, It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -56,7 +55,7 @@ public class IssueDetailsPageTests
         var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(), new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
         var page = new IssueDetailsPage(auth, client.Object, new FakeBrowser(_ => null));
 
-        page.Open(Account, issueApiUrl, "octo/tool");
+        page.LoadIssue(Account, issueApiUrl, "octo/tool");
         await page.CurrentLoad;
 
         var content = (FormContent)page.GetContent().Single();
@@ -82,23 +81,31 @@ public class IssueDetailsPageTests
         var issueClient = new Mock<IIssuesClient>();
         issueClient.Setup(c => c.GetIssueAsync(Account, issueApiUrl, It.IsAny<CancellationToken>())).ReturnsAsync(issue);
         var notificationClient = new Mock<INotificationsClient>();
+        var notification = new GitHubNotification("thread", issue.Title, "Issue", issueApiUrl, "octo/tool", null, "subscribed", true, issue.CreatedAt);
         notificationClient.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new NotificationsPageResult(
-                [new GitHubNotification("thread", issue.Title, "Issue", issueApiUrl, "octo/tool", null, "subscribed", false, issue.CreatedAt)],
-                null));
+            .ReturnsAsync(() => new NotificationsPageResult([notification], null));
+        notificationClient.Setup(c => c.MarkAsReadAsync(Account, "thread", It.IsAny<CancellationToken>()))
+            .Callback(() => notification = notification with { Unread = false })
+            .Returns(Task.CompletedTask);
         notificationClient.Setup(c => c.GetSubjectAsync(Account, issueApiUrl, It.IsAny<CancellationToken>()))
             .ReturnsAsync((SubjectDetails?)null);
         var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(), new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
         var browser = new FakeBrowser(_ => null);
         var detailsPage = new IssueDetailsPage(auth, issueClient.Object, browser);
-        var notificationsPage = new NotificationsPage(auth, notificationClient.Object, browser, issueDetails: detailsPage);
+        using var notificationsPage = new NotificationsPage(auth, notificationClient.Object, browser, issueDetails: detailsPage);
 
         notificationsPage.GetItems();
         await notificationsPage.CurrentLoad;
-        ((InvokableCommand)notificationsPage.GetItems().Single().Command!).Invoke();
-        await detailsPage.CurrentLoad;
+        var item = (NotificationItem)notificationsPage.GetItems().Single();
+        var destinationPage = (IssueDetailsPage)item.Command!;
+        destinationPage.GetContent();
+        await destinationPage.CurrentLoad;
+        await notificationsPage.CurrentMutation;
 
+        Assert.IsFalse(((NotificationItem)notificationsPage.GetItems().Single()).Unread);
         Assert.IsNull(browser.LastOpened);
+        notificationClient.Verify(c => c.MarkAsReadAsync(Account, "thread", It.IsAny<CancellationToken>()), Times.Once);
         issueClient.Verify(c => c.GetIssueAsync(Account, issueApiUrl, It.IsAny<CancellationToken>()), Times.Once);
     }
+
 }

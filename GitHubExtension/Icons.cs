@@ -59,7 +59,7 @@ internal static class Icons
 
     internal static IconInfo PullRequests { get; } = Themed("git-pull-request");
 
-    internal static IconInfo StateOpenIssue { get; } = Octicon("state-issue-opened.svg");
+    internal static IconInfo StateOpenIssue { get; } = Octicon("state-issue-closed.svg");
 
     internal static IconInfo StateOpenPullRequest { get; } = Octicon("state-git-pull-request.svg");
 
@@ -67,7 +67,7 @@ internal static class Icons
 
     internal static IconInfo StateMerged { get; } = Octicon("state-git-merge.svg");
 
-    internal static IconInfo StateClosedIssue { get; } = Octicon("state-issue-closed.svg");
+    internal static IconInfo StateClosedIssue { get; } = Octicon("state-issue-opened.svg");
 
     internal static IconInfo StateNotPlanned { get; } = Octicon("state-skip.svg");
 
