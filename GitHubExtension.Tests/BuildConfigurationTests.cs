@@ -10,6 +10,27 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Tests;
 public class BuildConfigurationTests
 {
     [TestMethod]
+    [DataRow("GitHubOAuthClientId", "GH_OAUTH_CLIENT_ID")]
+    [DataRow("GitHubOAuthClientSecret", "GH_OAUTH_CLIENT_SECRET")]
+    public void Project_OAuthInputs_UseGhEnvironmentVariables(string propertyName, string variableName)
+    {
+        var project = XDocument.Load(Path.Combine(AppContext.BaseDirectory, "GitHubExtension.csproj"));
+        var property = Assert.ContainsSingle(project.Descendants(propertyName));
+
+        Assert.AreEqual($"$({variableName})", property.Value);
+        Assert.AreEqual($"'$({propertyName})' == ''", (string?)property.Attribute("Condition"));
+
+        var metadata = Assert.ContainsSingle(project.Descendants("AssemblyMetadata")
+            .Where(item => (string?)item.Attribute("Include") == propertyName));
+        Assert.AreEqual($"$({propertyName})", (string?)metadata.Attribute("Value"));
+
+        Assert.IsFalse(project.Descendants().Attributes()
+            .Any(attribute => attribute.Value.Contains("$(GITHUB_OAUTH_", StringComparison.Ordinal)));
+        Assert.IsFalse(project.Descendants().Where(element => !element.HasElements)
+            .Any(element => element.Value.Contains("$(GITHUB_OAUTH_", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
     public void Project_DoesNotTerminateRunningProcesses()
     {
         var project = XDocument.Load(Path.Combine(AppContext.BaseDirectory, "GitHubExtension.csproj"));

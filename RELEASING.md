@@ -45,7 +45,7 @@ Add these as repository secrets under **Settings > Secrets and variables > Actio
 
 `GITHUB_TOKEN` is provided automatically by GitHub Actions. The workflow grants it `contents: write` to create the GitHub Release and upload its MSIX assets. Do not create a separate secret for it.
 
-These are release-pipeline credentials. The application's optional `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET` are separate runtime/build configuration and are not referenced by this workflow.
+These are release-pipeline credentials. The application's optional `GH_OAUTH_CLIENT_ID` and `GH_OAUTH_CLIENT_SECRET` are separate runtime/build configuration and are not referenced by this workflow.
 
 ## Create a release
 
