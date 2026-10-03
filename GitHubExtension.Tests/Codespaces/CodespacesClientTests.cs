@@ -138,6 +138,74 @@ public class CodespacesClientTests
     }
 
     [TestMethod]
+    public async Task StartCodespaceAsync_PostsAuthenticatedStartEndpointAndReadsState()
+    {
+        using var handler = new StubHandler(HttpStatusCode.OK, CodespaceJson.Replace("Available", "Starting", StringComparison.Ordinal));
+        using var http = new HttpClient(handler);
+
+        var codespace = await new CodespacesClient(http).StartCodespaceAsync(Account, "workspace/name", TestContext.CancellationToken);
+
+        Assert.AreEqual(new Uri("https://api.github.com/user/codespaces/workspace%2Fname/start"), handler.Url);
+        Assert.AreEqual(HttpMethod.Post, handler.Method);
+        Assert.AreEqual("Bearer " + Account.Token, handler.Authorization);
+        Assert.AreEqual("application/vnd.github+json", handler.Accept);
+        Assert.AreEqual("2022-11-28", handler.ApiVersion);
+        Assert.AreEqual("octocat-hello-abc", codespace.Name);
+        Assert.AreEqual("Starting", codespace.State);
+        Assert.AreEqual(1, handler.RequestCount);
+    }
+
+    [TestMethod]
+    [DataRow(HttpStatusCode.PaymentRequired, "github.com returned 402")]
+    [DataRow(HttpStatusCode.Conflict, "github.com returned 409")]
+    [DataRow(HttpStatusCode.Unauthorized, "GitHub didn't accept your token.")]
+    [DataRow(HttpStatusCode.Forbidden, "GitHub said no.")]
+    public async Task StartCodespaceAsync_SurfacesApiErrors(HttpStatusCode status, string message)
+    {
+        using var handler = new StubHandler(status, "{}");
+        using var http = new HttpClient(handler);
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            new CodespacesClient(http).StartCodespaceAsync(Account, "one", TestContext.CancellationToken));
+
+        Assert.StartsWith(message, error.Message);
+        Assert.AreEqual(HttpMethod.Post, handler.Method);
+        Assert.AreEqual(1, handler.RequestCount);
+    }
+
+    [TestMethod]
+    public async Task StartCodespaceAsync_EnterpriseServerDoesNotMakeARequest()
+    {
+        Assert.IsTrue(GitHubHost.TryParse("github.example.com", out var host));
+        using var handler = new StubHandler(HttpStatusCode.OK, CodespaceJson);
+        using var http = new HttpClient(handler);
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            new CodespacesClient(http).StartCodespaceAsync(
+                new GitHubAccount(host!, "mona", "t"),
+                "one",
+                TestContext.CancellationToken));
+
+        Assert.Contains("isn't available on GitHub Enterprise Server", error.Message);
+        Assert.AreEqual(0, handler.RequestCount);
+    }
+
+    [TestMethod]
+    public async Task StartCodespaceAsync_TimeoutShowsAnError()
+    {
+        var handler = new Mock<HttpMessageHandler>();
+        handler.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync", ItExpr.IsAny<HttpRequestMessage>(), ItExpr.IsAny<CancellationToken>())
+            .ThrowsAsync(new TaskCanceledException());
+        using var http = new HttpClient(handler.Object);
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            new CodespacesClient(http).StartCodespaceAsync(Account, "one", TestContext.CancellationToken));
+
+        Assert.StartsWith("GitHub took too long to start this codespace.", error.Message);
+    }
+
+    [TestMethod]
     [DataRow(HttpStatusCode.Unauthorized, "GitHub didn't accept your token.")]
     [DataRow(HttpStatusCode.Forbidden, "GitHub said no.")]
     [DataRow(HttpStatusCode.NotFound, "github.com returned 404")]

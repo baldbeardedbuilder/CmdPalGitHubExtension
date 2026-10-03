@@ -23,7 +23,7 @@ Repository issue lists start with **Open** selected. Switch to **Closed** to see
 
 Actions lists start with **Running** selected, including queued runs; switch to **Succeeded** for successful runs or **Failed** for every other completed outcome, including cancelled and skipped runs. Each filter has a status icon, text search narrows the selected group, and more results load as you scroll.
 
-Codespaces requires a github.com account and the `codespace` token scope. It isn't available on GitHub Enterprise Server. Use **More > Close Codespace** on an active codespace to stop it without deleting its files. The list shows the state GitHub returns, and **Refresh** checks whether shutdown has finished. Opening a stopped codespace takes you to GitHub's browser editor, where it can start the environment.
+Codespaces requires a github.com account and the `codespace` token scope. It isn't available on GitHub Enterprise Server. Use **More > Close Codespace** on an active codespace to stop it without deleting its files, or **More > Start Codespace** on a stopped one to start it. The list shows the state GitHub returns, and **Refresh** checks on a start or shutdown. Starting a codespace doesn't open it in your browser. Opening a stopped codespace still takes you to GitHub's browser editor, where it can start the environment.
 
 ### Agents access
 

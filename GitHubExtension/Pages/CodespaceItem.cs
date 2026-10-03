@@ -28,6 +28,10 @@ internal sealed partial class CodespaceItem : ListItem
         {
             more.Insert(0, new CommandContextItem(new CloseCodespaceCommand(page, this)));
         }
+        else if (codespace.State == "Shutdown")
+        {
+            more.Insert(0, new CommandContextItem(new StartCodespaceCommand(page, this)));
+        }
 
         if (page.CreatePage is { } createPage)
         {
