@@ -337,6 +337,8 @@ public sealed class AgentsClientTests
 
         Assert.Contains("Copilot Business or Enterprise", error.Message);
         Assert.Contains("Agent tasks: read and write", error.Message);
+        Assert.IsTrue(OperationDiagnostics.HasFailure(error));
+        Assert.AreEqual(DiagnosticFailure.Http, OperationDiagnostics.FailureCategory(error));
     }
 
     [TestMethod]
@@ -351,6 +353,29 @@ public sealed class AgentsClientTests
                 new AgentTaskRequest("prompt", null, null, null, null, false), TestContext.CancellationToken));
 
         Assert.Contains("Check the repository's agent tasks", error.Message);
+        Assert.IsTrue(OperationDiagnostics.HasFailure(error));
+        Assert.AreEqual(DiagnosticFailure.Timeout, OperationDiagnostics.FailureCategory(error));
+    }
+
+    [TestMethod]
+    public async Task StartTaskAsync_ServerFailurePreservesUnknownDiagnosticCorrelation()
+    {
+        var entries = new List<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Add, verboseReads: false);
+        using var handler = new RequestHandler(_ => Task.FromResult(Response(HttpStatusCode.InternalServerError, "{}")));
+        using var http = new HttpClient(handler);
+
+        var error = await Assert.ThrowsExactlyAsync<AgentTaskOutcomeUnknownException>(() =>
+            OperationDiagnostics.RunAsync(DiagnosticEvent.Mutation, () =>
+                new AgentsClient(http).StartTaskAsync(Account, "octocat/hello",
+                    new AgentTaskRequest("prompt", null, null, null, null, false), TestContext.CancellationToken)));
+
+        Assert.IsTrue(OperationDiagnostics.HasFailure(error));
+        Assert.AreEqual(DiagnosticFailure.Http, OperationDiagnostics.FailureCategory(error));
+        Assert.HasCount(1, entries.Select(entry => entry.OperationId).Distinct());
+        Assert.HasCount(1, entries.Where(entry => entry.Severity == DiagnosticSeverity.Warning));
+        Assert.AreEqual(DiagnosticOutcome.Unknown, entries[^1].Outcome);
+        Assert.AreEqual(DiagnosticSeverity.Information, entries[^1].Severity);
     }
 
     [TestMethod]

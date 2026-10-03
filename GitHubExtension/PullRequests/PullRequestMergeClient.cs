@@ -190,8 +190,8 @@ internal sealed class PullRequestMergeClient(HttpClient httpClient) : IPullReque
             return;
         }
 
-        if (SsoRequired(account, response) is { } sso) throw sso;
-        throw new GitHubApiException(response.StatusCode switch
+        if (SsoRequired(account, response) is { } sso) throw CorrelateFailure(response, sso);
+        throw CorrelateFailure(response, new GitHubApiException(response.StatusCode switch
         {
             HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed or HttpStatusCode.NotImplemented =>
                 "The async merge API or request is unavailable on this host, inaccessible, or expired. Open the PR on GitHub. No legacy merge will be attempted.",
@@ -199,7 +199,7 @@ internal sealed class PullRequestMergeClient(HttpClient httpClient) : IPullReque
                 "GitHub denied merge access. Check token permissions (Contents: write), repository rules, and single sign-on.",
             HttpStatusCode.UnprocessableEntity => "GitHub rejected the merge request. Check the head SHA, method, and repository rules on GitHub.",
             _ => $"GitHub returned {(int)response.StatusCode}. The merge outcome may be unknown. Check the PR on GitHub before trying again.",
-        });
+        }, outcomeUnknown: submission && (int)response.StatusCode >= 500));
     }
 
     private static void EnsureSupport(GitHubAccount account)

@@ -80,9 +80,12 @@ public class NotificationsPageTests
     [TestMethod]
     public async Task Open_LaunchesBrowserAndMarksRead()
     {
+        var read = false;
         var client = new Mock<INotificationsClient>();
         client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new NotificationsPageResult([NotificationParsingTests.Notification("1", "Issue", new Uri("https://api.github.com/repos/o/r/issues/3"))], null));
+            .ReturnsAsync(() => new NotificationsPageResult([NotificationParsingTests.Notification("1", "Issue", new Uri("https://api.github.com/repos/o/r/issues/3")) with { Unread = !read }], null));
+        client.Setup(c => c.MarkAsReadAsync(Account, "1", It.IsAny<CancellationToken>()))
+            .Callback(() => read = true).Returns(Task.CompletedTask);
         var page = CreatePage(client.Object, out var browser);
         page.GetItems();
         await page.CurrentLoad;
@@ -92,8 +95,9 @@ public class NotificationsPageTests
 
         Assert.AreEqual(new Uri("https://github.com/o/r/issues/3"), browser.LastOpened);
         Assert.AreEqual(CommandResultKind.Dismiss, result.Kind);
-        Assert.IsFalse(item.Unread);
-        await WaitFor(() => client.Invocations.Any(i => i.Method.Name == nameof(INotificationsClient.MarkAsReadAsync)));
+        await page.CurrentMutation;
+        Assert.IsFalse(((NotificationItem)page.GetItems().Single()).Unread);
+        client.Verify(c => c.MarkAsReadAsync(Account, "1", It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]
@@ -120,17 +124,23 @@ public class NotificationsPageTests
     [TestMethod]
     public async Task MarkAsDone_RemovesTheItem()
     {
+        var done = false;
         var client = new Mock<INotificationsClient>();
         client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new NotificationsPageResult([NotificationParsingTests.Notification("1"), NotificationParsingTests.Notification("2")], null));
+            .ReturnsAsync(() => new NotificationsPageResult(done
+                ? [NotificationParsingTests.Notification("2")]
+                : [NotificationParsingTests.Notification("1"), NotificationParsingTests.Notification("2")], null));
+        client.Setup(c => c.MarkAsDoneAsync(Account, "1", It.IsAny<CancellationToken>()))
+            .Callback(() => done = true).Returns(Task.CompletedTask);
         var page = CreatePage(client.Object, out _);
         page.GetItems();
         await page.CurrentLoad;
 
         page.MarkAsDone((NotificationItem)page.GetItems()[0]);
 
+        await page.CurrentMutation;
         Assert.HasCount(1, page.GetItems());
-        await WaitFor(() => client.Invocations.Any(i => i.Method.Name == nameof(INotificationsClient.MarkAsDoneAsync)));
+        client.Verify(c => c.MarkAsDoneAsync(Account, "1", It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]
@@ -175,8 +185,8 @@ public class NotificationsPageTests
         Assert.AreEqual(subject.PullRequest!.Body, item.Details.Body);
         ((InvokableCommand)item.Command!).Invoke();
         Assert.AreEqual(subject.WebUrl, browser.LastOpened);
-        Assert.IsFalse(item.Unread);
-        await WaitFor(() => client.Invocations.Any(i => i.Method.Name == nameof(INotificationsClient.MarkAsReadAsync)));
+        Assert.IsTrue(item.Unread);
+        await page.CurrentMutation;
         await page.RefreshAsync();
         Assert.AreEqual("#7 Fix login", page.GetItems().Single().Details!.Title);
         client.Verify(c => c.GetSubjectAsync(Account, api, It.IsAny<CancellationToken>()), Times.Once);
@@ -401,8 +411,124 @@ public class NotificationsPageTests
     }
 
     private static NotificationsPage CreatePage(INotificationsClient client, out FakeBrowser browser)
+        => CreatePage(client, out browser, out _);
+
+    [TestMethod]
+    public async Task Refresh_CancellationCallbacksCanReadPageOutsideItsLock()
     {
-        var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(), new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callback = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new Mock<INotificationsClient>();
+        using var page = CreatePage(client.Object, out _);
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .Returns(async (GitHubAccount _, Uri? _, CancellationToken token) =>
+            {
+                using var registration = token.Register(() =>
+                    callback.TrySetResult(Task.Run(() => { _ = page.CurrentLoad; }).Wait(TimeSpan.FromSeconds(5))));
+                started.SetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                return null!;
+            });
+        page.GetItems();
+        var oldLoad = page.CurrentLoad;
+        await started.Task;
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationsPageResult([], null));
+
+        await page.RefreshAsync();
+        await oldLoad;
+        Assert.IsTrue(await callback.Task.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.IsFalse(page.IsLoading);
+    }
+
+    [TestMethod]
+    public async Task MarkRead_FailureKeepsUnreadAndDisplaysSsoError()
+    {
+        var client = new Mock<INotificationsClient>();
+        var authorize = new Uri("https://github.com/orgs/example/sso");
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationsPageResult([NotificationParsingTests.Notification("1")], null));
+        client.Setup(c => c.MarkAsReadAsync(Account, "1", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new GitHubApiException("Authorize access.", authorizeUrl: authorize));
+        using var page = CreatePage(client.Object, out var browser);
+        page.GetItems();
+        await page.CurrentLoad;
+        var item = (NotificationItem)page.GetItems().Single();
+        page.MarkAsRead(item);
+        await page.CurrentMutation;
+        Assert.IsTrue(item.Unread);
+        var error = page.GetItems().Last();
+        Assert.AreEqual("Authorize access.", error.Subtitle);
+        ((InvokableCommand)error.Command!).Invoke();
+        Assert.AreEqual(authorize, browser.LastOpened);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task MarkDone_SessionChangeCancelsAndSuppressesLateFailure(bool dispose)
+    {
+        var response = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new Mock<INotificationsClient>();
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationsPageResult([NotificationParsingTests.Notification("1")], null));
+        client.Setup(c => c.MarkAsDoneAsync(Account, "1", It.IsAny<CancellationToken>()))
+            .Returns((GitHubAccount _, string _, CancellationToken token) =>
+            {
+                started.SetResult(token);
+                return response.Task;
+            });
+        using var page = CreatePage(client.Object, out _, out var auth);
+        page.GetItems();
+        await page.CurrentLoad;
+        var item = (NotificationItem)page.GetItems().Single();
+        page.MarkAsDone(item);
+        var task = page.CurrentMutation;
+        var token = await started.Task;
+        page.MarkAsDone(item);
+        if (dispose)
+        {
+            page.Dispose();
+        }
+        else
+        {
+            auth.SignOut();
+        }
+
+        Assert.IsTrue(token.IsCancellationRequested);
+        response.SetException(new GitHubApiException("Late failure."));
+        await task;
+        await page.CurrentMutation;
+        Assert.IsFalse(page.GetItems().Any(i => i.Subtitle == "Late failure."));
+        client.Verify(c => c.MarkAsDoneAsync(Account, "1", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task MarkDone_PendingWriteReconcilesWithoutResubmission()
+    {
+        var completed = false;
+        var client = new Mock<INotificationsClient>();
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => new NotificationsPageResult(completed ? [] : [NotificationParsingTests.Notification("1")], null));
+        client.Setup(c => c.MarkAsDoneAsync(Account, "1", It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+        using var page = CreatePage(client.Object, out _);
+        page.GetItems();
+        await page.CurrentLoad;
+        var item = (NotificationItem)page.GetItems().Single();
+        page.MarkAsDone(item);
+        await page.CurrentMutation;
+        Assert.Contains("still be updating", page.GetItems().Last().Subtitle);
+        completed = true;
+        page.MarkAsDone(item);
+        await page.CurrentMutation;
+        Assert.IsEmpty(page.GetItems());
+        client.Verify(c => c.MarkAsDoneAsync(Account, "1", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    private static NotificationsPage CreatePage(INotificationsClient client, out FakeBrowser browser, out AuthService auth)
+    {
+        auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(), new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
         browser = new FakeBrowser(_ => null);
         var time = new Mock<TimeProvider>();
         time.Setup(t => t.GetUtcNow()).Returns(new DateTimeOffset(2025, 6, 1, 12, 0, 0, TimeSpan.Zero));

@@ -93,6 +93,46 @@ public sealed class OperationDiagnosticsTests
     }
 
     [TestMethod]
+    [DataRow(false, 0)]
+    [DataRow(true, 2)]
+    public async Task ReadOnlyGraphQLSuccessUsesReadDiagnostics(bool verbose, int expectedEntries)
+    {
+        var entries = new List<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Add, verbose);
+        using var http = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)));
+        using var content = new StringContent("""{"query":"query { viewer { id } }"}""");
+        var account = new GitHubAccount(GitHubHost.GitHubDotCom, "secret-login", "secret-token");
+
+        using var response = await GitHubRest.SendAsync(http, account, HttpMethod.Post,
+            new Uri("https://api.github.com/graphql"), TestContext.CancellationToken, content: content);
+
+        Assert.HasCount(expectedEntries, entries);
+        if (verbose)
+        {
+            Assert.AreEqual(DiagnosticOutcome.Requested, entries[0].Outcome);
+            Assert.AreEqual(DiagnosticOutcome.Completed, entries[^1].Outcome);
+        }
+    }
+
+    [TestMethod]
+    public async Task GraphQLForeignHostIsRejectedBeforeReadingContent()
+    {
+        var entries = new List<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Add, verboseReads: false);
+        using var http = new HttpClient(new StubHandler(_ => throw new AssertFailedException("No request should be sent.")));
+        using var content = new StringContent("""{"query":"query { viewer { id } }"}""");
+        content.Dispose();
+        var account = new GitHubAccount(GitHubHost.GitHubDotCom, "secret-login", "secret-token");
+
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            GitHubRest.SendAsync(http, account, HttpMethod.Post, new Uri("https://foreign.example/graphql"),
+                TestContext.CancellationToken, content: content));
+
+        Assert.AreEqual(DiagnosticFailure.Authentication, entries.Single().Failure);
+        Assert.IsFalse(error.OutcomeUnknown);
+    }
+
+    [TestMethod]
     public async Task ConcurrentOperationsKeepCorrelationAndSinksIsolated()
     {
         var first = new List<DiagnosticEntry>();

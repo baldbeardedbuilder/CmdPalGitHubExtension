@@ -7,6 +7,7 @@ using BaldBeardedBuilder.CmdPal.GitHub.Commands;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
 using BaldBeardedBuilder.CmdPal.GitHub.Repositories;
+using BaldBeardedBuilder.CmdPal.GitHub.Tests.Notifications;
 using Microsoft.CommandPalette.Extensions.Toolkit;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Tests;
@@ -104,11 +105,43 @@ public class GitHubCommandsProviderTests
         Assert.IsInstanceOfType<CreateCodespacePage>(provider.GetCommand(CreateCodespacePage.PageId));
     }
 
-    private static GitHubCommandsProvider CreateProvider(InMemoryAccountStore store, out AuthService auth)
+    [TestMethod]
+    public async Task Dispose_CancelsNotificationWriteAndSuppressesLateResult()
+    {
+        var account = new GitHubAccount(GitHubHost.GitHubDotCom, "octocat", "t");
+        var client = new Mock<INotificationsClient>();
+        client.Setup(c => c.GetNotificationsAsync(account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NotificationsPageResult([NotificationParsingTests.Notification("1")], null));
+        var started = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        client.Setup(c => c.MarkAsReadAsync(account, "1", It.IsAny<CancellationToken>()))
+            .Returns((GitHubAccount _, string _, CancellationToken token) =>
+            {
+                started.SetResult(token);
+                return finish.Task;
+            });
+        using var provider = CreateProvider(new InMemoryAccountStore(account), out _, client.Object);
+        var page = (NotificationsPage)provider.GetCommand(NotificationsPage.PageId)!;
+        page.GetItems();
+        await page.CurrentLoad;
+        page.MarkAsRead((NotificationItem)page.GetItems().Single());
+        var token = await started.Task.WaitAsync(TestContext.CancellationToken);
+
+        provider.Dispose();
+        Assert.IsTrue(token.IsCancellationRequested);
+        var changes = 0;
+        page.ItemsChanged += (_, _) => changes++;
+        finish.SetResult();
+        await page.CurrentMutation;
+
+        Assert.AreEqual(0, changes);
+    }
+
+    private static GitHubCommandsProvider CreateProvider(InMemoryAccountStore store, out AuthService auth, INotificationsClient? notificationsClient = null)
     {
         var client = new Mock<IGitHubAuthClient>();
         client.Setup(c => c.GetLoginAsync(It.IsAny<GitHubHost>(), It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync("mona");
         auth = new AuthService(store, client.Object, new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
-        return new GitHubCommandsProvider(auth, () => string.Empty, Mock.Of<INotificationsClient>(), new FakeBrowser(_ => null), Mock.Of<IRepositoriesClient>(), agentsClient: Mock.Of<IAgentsClient>());
+        return new GitHubCommandsProvider(auth, () => string.Empty, notificationsClient ?? Mock.Of<INotificationsClient>(), new FakeBrowser(_ => null), Mock.Of<IRepositoriesClient>(), agentsClient: Mock.Of<IAgentsClient>());
     }
 }
