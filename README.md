@@ -94,6 +94,16 @@ Yes, the client secret ships inside the app. That's normal for desktop OAuth app
 
 ## Contributing
 
+### GraphQL transport
+
+`GitHubGraphQLClient` sits beside the REST transport and uses the account supplied on each call. It routes github.com and GHE.com tenants to `/graphql`, and GitHub Enterprise Server to `/api/graphql`, with the same authentication, host validation, and HTTP error handling as REST.
+
+`ExecuteAsync` accepts queries or mutations with JSON variables and an optional operation name. Its result owns its JSON data and exposes `Errors`, `IsSuccess`, and `HasPartialData`. HTTP 200 does not imply GraphQL success. Callers must check errors before treating a mutation as successful, and may use partial data while reporting the errors. GraphQL messages, queries, variables, and response bodies are not logged.
+
+Schema errors with `extensions.code = undefinedField` expose `UnsupportedField` with the exact type and field name. Limit any fallback to the affected feature; do not disable GraphQL or unrelated features for that host. The transport does not cache capability or account data.
+
+Pull request models preserve REST `node_id`. `GetNodeIdAsync` resolves a pull request or discussion number to its opaque GraphQL `id` and retains the complete response, including errors. Use IDs only with the account and host that supplied them. This is transport infrastructure; existing REST features and browser-only discussion navigation are unchanged.
+
 Bugs, ideas, and pull requests are all welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Contributors

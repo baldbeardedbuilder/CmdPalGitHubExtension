@@ -17,11 +17,14 @@ internal sealed record GitHubHost
     {
         WebUrl = webUrl;
         ApiUrl = BuildApiUrl(webUrl);
+        GraphQLUrl = new Uri(ApiUrl, ApiUrl.AbsolutePath == "/" ? "graphql" : "/api/graphql");
     }
 
     public Uri WebUrl { get; }
 
     public Uri ApiUrl { get; }
+
+    public Uri GraphQLUrl { get; }
 
     public string Name => WebUrl.Authority;
 
