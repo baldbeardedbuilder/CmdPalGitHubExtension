@@ -2,8 +2,8 @@
 // Bald Bearded Builder LLC licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System.Text.Json;
 using BaldBeardedBuilder.CmdPal.GitHub.Agents;
+using BaldBeardedBuilder.CmdPal.GitHub.Api;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 
@@ -77,7 +77,7 @@ internal static class CreateAgentTaskCards
         ] }
         """);
 
-    internal static string Str(string value) => JsonSerializer.Serialize(value);
+    internal static string Str(string value) => GitHubJson.String(value);
 
     private static string CandidateLinks(IReadOnlyList<GitHubAgentTask> candidates) => $$"""
         { "type": "Container", "items": [

@@ -121,6 +121,9 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
         }, "GitHub took too long to respond. Try loading the issue again.", area: DiagnosticArea.Issues);
     }
 
+    internal void Open(GitHubAccount account, Uri issueApiUrl, string repository) =>
+        LoadIssue(account, issueApiUrl, repository);
+
     internal ICommandResult HandleSubmit(string action)
     {
         if (_load.Disposed)

@@ -19,6 +19,7 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
     private readonly IBrowserLauncher _browser;
     private readonly TimeProvider _time;
     private readonly PageEmptyContent _emptyContent;
+    private readonly PagedListPresentation _pagination;
     private readonly IssueFilters _filters = new();
     private readonly ListLoadState _load = new();
     private Lock _lock => _load.SyncRoot;
@@ -32,15 +33,16 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         _browser = browser;
         _time = time ?? TimeProvider.System;
         _emptyContent = new PageEmptyContent(Icons.Issues, new RefreshRepositoryItemsCommand(RefreshAsync, Icons.Issues));
+        _pagination = new PagedListPresentation(Icons.Issues, () => StartLoad(reset: false));
         Id = PageId;
         Name = "Issues";
         Title = "Issues";
         Icon = Icons.Issues;
-        PlaceholderText = "Filter issues...";
+        PlaceholderText = "Filter loaded issues...";
         _filters.CurrentFilterId = IssueFilters.Open;
-        _filters.PropChanged += OnFilterChanged;
+        _filters.PropChanged += (_, _) => RaiseItemsChanged();
         Filters = _filters;
-        _accountSubscription = auth.Subscribe(this, static page => page.Reset());
+        _accountSubscription = auth.Subscribe(this, static page => page.OnAccountChanged(null, EventArgs.Empty));
     }
 
     internal Task CurrentLoad
@@ -69,11 +71,6 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
     {
         lock (_lock)
         {
-            if (_load.Disposed)
-            {
-                return CommandResult.KeepOpen();
-            }
-
             _load.Invalidate(reset: true);
             _repository = repository;
             _items.Clear();
@@ -94,18 +91,19 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         string? repository;
         string? error;
         string filter;
+        bool hasMore;
+        bool loading;
+        bool loaded;
         lock (_lock)
         {
-            if (_load.Disposed)
-            {
-                return [];
-            }
-
             needsLoad = _repository is not null && _load.NeedsLoad;
             snapshot = [.. _items];
             repository = _repository;
             error = _load.Error;
             filter = _filters.CurrentFilterId;
+            hasMore = _load.NextPage is not null;
+            loading = _load.Fetching || needsLoad;
+            loaded = _load.Loaded;
         }
 
         if (needsLoad)
@@ -128,47 +126,41 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
             .ToArray();
         var status = filter == IssueFilters.Closed ? "closed" : "open";
 
+        var partial = hasMore || !loaded;
         EmptyContent = error is not null
             ? Empty("Couldn't load issues", error, refresh: true)
+            : loading
+                ? Empty("Loading issues...", "Filtering loaded results")
             : matches.Length == 0
-                ? Empty(terms.Length == 0 ? "No issues found" : "No matching issues", terms.Length == 0
+                ? Empty(partial ? "No matching loaded issues" : terms.Length == 0 ? "No issues found" : "No matching issues", partial
+                    ? $"No loaded {status} issues match. More issues may be available."
+                    : terms.Length == 0
                     ? $"{repository} doesn't have any {status} issues"
                     : $"Nothing matches \"{SearchText.Trim()}\"")
                 : Empty("No issues found", $"{repository} doesn't have any {status} issues");
 
-        return matches;
+        return hasMore || loading || (error is not null && snapshot.Length > 0)
+            ? _pagination.Append(matches, loading ? "Loading issues..." : "Filtering loaded issues",
+                $"{matches.Length} matching {status} issues in {snapshot.Length} loaded issues. More issues may be available.",
+                hasMore, loading, error)
+            : matches;
     }
 
     public override void UpdateSearchText(string oldSearch, string newSearch)
     {
-        bool hasMore;
-        lock (_lock)
-        {
-            if (_load.Disposed)
-            {
-                return;
-            }
-
-            hasMore = newSearch.Trim().Length == 0 && _load.NextPage is not null;
-        }
-
-        HasMoreItems = hasMore;
         RaiseItemsChanged();
     }
 
     public override void LoadMore()
     {
-        if (SearchText.Trim().Length == 0)
-        {
-            StartLoad(reset: false);
-        }
+        StartLoad(reset: false);
     }
 
     internal Task RefreshAsync()
     {
         lock (_lock)
         {
-            if (_load.Disposed || _repository is null)
+            if (_repository is null)
             {
                 return _load.CurrentLoad;
             }
@@ -184,20 +176,8 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
     public void Dispose()
     {
         _accountSubscription.Dispose();
-        _filters.PropChanged -= OnFilterChanged;
-        lock (_lock)
-        {
-            if (_load.Disposed)
-            {
-                return;
-            }
-
-            _load.Dispose();
-            _items.Clear();
-        }
-
+        _load.Dispose();
         IsLoading = false;
-        HasMoreItems = false;
     }
 
     private CommandItem Empty(string title, string subtitle, bool refresh = false) =>
@@ -249,13 +229,7 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
 
     private void PublishLoad(ListLoadState.Operation operation)
     {
-        bool hasMore;
-        lock (_lock)
-        {
-            hasMore = _load.NextPage is not null && SearchText.Trim().Length == 0;
-        }
-
-        _load.Publish(operation, () => HasMoreItems = hasMore);
+        _load.Publish(operation, () => HasMoreItems = false);
         _load.Publish(operation, () => IsLoading = false);
         _load.Publish(operation, () => RaiseItemsChanged());
     }
@@ -264,11 +238,6 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
     {
         lock (_lock)
         {
-            if (_load.Disposed)
-            {
-                return;
-            }
-
             _load.Invalidate(reset: true);
             _repository = null;
             _items.Clear();
@@ -279,13 +248,7 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         RaiseItemsChanged();
     }
 
-    private void OnFilterChanged(object? sender, IPropChangedEventArgs e)
-    {
-        if (!_load.Disposed)
-        {
-            RaiseItemsChanged();
-        }
-    }
+    private void OnAccountChanged(object? sender, EventArgs e) => Reset();
 }
 
 internal sealed partial class IssueFilters : Filters

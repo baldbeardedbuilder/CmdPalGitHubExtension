@@ -27,13 +27,15 @@ internal sealed partial class AuthService : IDisposable
         IGitHubAuthClient client,
         IBrowserLauncher browser,
         OAuthOptions options,
-        Func<LoopbackCallbackListener>? listenerFactory = null)
+        Func<LoopbackCallbackListener>? listenerFactory = null,
+        HttpClient? ownedHttpClient = null)
     {
         _store = store;
         _client = client;
         _browser = browser;
         _options = options;
         _listenerFactory = listenerFactory ?? (() => new LoopbackCallbackListener());
+        _ownedHttp = ownedHttpClient;
         _currentAccount = store.Load();
     }
 

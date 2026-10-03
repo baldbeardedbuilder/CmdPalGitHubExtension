@@ -182,6 +182,42 @@ public sealed class PageLifetimeTests
     }
 
     [TestMethod]
+    public async Task NotificationMutation_RefreshKeepsSubmittedRequestAndDeduplicatesReplacementRow()
+    {
+        var started = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = NotificationClient();
+        client.Setup(c => c.MarkAsReadAsync(Account, "1", It.IsAny<CancellationToken>()))
+            .Returns((GitHubAccount _, string _, CancellationToken token) =>
+            {
+                started.SetResult(token);
+                return response.Task;
+            });
+        using var page = new NotificationsPage(CreateAuth(), client.Object, new FakeBrowser(_ => null));
+        page.GetItems();
+        await page.CurrentLoad;
+        var original = (NotificationItem)page.GetItems().Single();
+        page.MarkAsRead(original);
+        var token = await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var mutation = page.CurrentMutation;
+
+        await page.RefreshAsync();
+        var replacement = (NotificationItem)page.GetItems().Single();
+        Assert.AreNotSame(original, replacement);
+        page.MarkAsRead(replacement);
+        Assert.AreSame(mutation, page.CurrentMutation);
+        Assert.IsFalse(token.IsCancellationRequested);
+        Assert.IsTrue(original.Unread);
+        Assert.IsTrue(replacement.Unread);
+
+        response.SetResult();
+        await mutation;
+        Assert.AreEqual("Couldn't update notification", page.GetItems().Last().Title);
+        Assert.Contains("Refresh before retrying", page.GetItems().Last().Subtitle);
+        client.Verify(c => c.MarkAsReadAsync(Account, "1", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
     public async Task NotificationDetails_RefreshPreservesDestinationAndDisposalCancelsIt()
     {
         var auth = CreateAuth();
@@ -196,7 +232,14 @@ public sealed class PageLifetimeTests
             });
         var browser = new FakeBrowser(_ => null);
         using var template = new IssueDetailsPage(auth, issues.Object, browser);
-        using var page = new NotificationsPage(auth, NotificationClient().Object, browser, issueDetails: template);
+        var notifications = NotificationClient();
+        var unread = true;
+        notifications.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => new NotificationsPageResult([Notification("1") with { Unread = unread }], null));
+        notifications.Setup(c => c.MarkAsReadAsync(Account, "1", It.IsAny<CancellationToken>()))
+            .Callback(() => unread = false)
+            .Returns(Task.CompletedTask);
+        using var page = new NotificationsPage(auth, notifications.Object, browser, issueDetails: template);
         page.GetItems();
         await page.CurrentLoad;
         var destination = (IssueDetailsPage)page.GetItems().Single().Command!;
@@ -287,9 +330,9 @@ public sealed class PageLifetimeTests
         var client = new Mock<IRepositoriesClient>();
         client.Setup(c => c.GetMyRepositoriesAsync(Account, null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new RepositoriesPageResult([], null));
-        client.Setup(c => c.SearchAsync(Account, It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((GitHubAccount _, string query, CancellationToken _) =>
-                new List<GitHubRepository> { Repository($"o/{query}") });
+        client.Setup(c => c.SearchAsync(Account, It.IsAny<string>(), null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((GitHubAccount _, string query, Uri? _, CancellationToken _) =>
+                new RepositorySearchPageResult([Repository($"o/{query}")], null, 1));
         using var issues = new RepositoryIssuesPage(auth, Mock.Of<IIssuesClient>(), browser);
         using var pulls = new RepositoryPullRequestsPage(auth, Mock.Of<IPullRequestsClient>(), browser);
         using var actions = new ActionsPage(auth, Mock.Of<IActionsClient>(), browser);
@@ -386,7 +429,7 @@ public sealed class PageLifetimeTests
         response.SetException(new GitHubApiException("stale failure"));
         await Task.WhenAll(first, second);
         Assert.IsEmpty(page.GetItems());
-        Assert.IsTrue(items.All(item => !item.Unread));
+        Assert.IsTrue(items.All(item => item.Unread));
     }
 
     [TestMethod]

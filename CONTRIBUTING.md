@@ -65,6 +65,8 @@ The provider owns its root pages and the HTTP clients it creates, not injected c
 
 Don't dispose an active destination just because a search or notification refresh replaced its row. Account changes and owner disposal invalidate every live destination, cancel its requests, and detach subscriptions.
 
+Notification refresh keeps submitted mutations alive. Deduplicate writes for the same notification and use `MutationExecutor` to reconcile uncertain results before retrying; don't show an unread or done change until GitHub confirms it.
+
 ### Trying it in Command Palette
 
 Open `GitHubExtension.slnx` in Visual Studio, set **GitHubExtension** as the startup project, and deploy it. Then open Command Palette and run **Reload Command Palette extensions**.

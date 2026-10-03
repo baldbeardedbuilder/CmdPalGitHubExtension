@@ -72,7 +72,7 @@ public sealed class PageDiagnosticsTests
     [DataRow(true, false)]
     [DataRow(false, true)]
     [DataRow(true, true)]
-    public async Task NotificationMutation_FailureRestoresItemAndShowsFeedback(bool done, bool ambiguous)
+    public async Task NotificationMutation_FailurePreservesItemAndShowsFeedback(bool done, bool ambiguous)
     {
         var entries = new ConcurrentQueue<DiagnosticEntry>();
         using var sink = OperationDiagnostics.UseSink(entries.Enqueue);
@@ -99,7 +99,8 @@ public sealed class PageDiagnosticsTests
         await page.CurrentMutation;
         Assert.IsTrue(item.Unread);
         Assert.Contains(item, page.GetItems());
-        Assert.Contains("Couldn't mark notification as", page.GetItems().Last().Subtitle);
+        Assert.AreEqual("Couldn't update notification", page.GetItems().Last().Title);
+        Assert.IsFalse(string.IsNullOrWhiteSpace(page.GetItems().Last().Subtitle));
         var outcome = entries.Single(e => e.Event == (done ? DiagnosticEvent.NotificationDone : DiagnosticEvent.NotificationRead)
             && e.Outcome != DiagnosticOutcome.Requested);
         Assert.AreEqual(ambiguous ? DiagnosticOutcome.Unknown : DiagnosticOutcome.Failed, outcome.Outcome);
@@ -146,12 +147,31 @@ public sealed class PageDiagnosticsTests
     {
         var entries = new ConcurrentQueue<DiagnosticEntry>();
         using var sink = OperationDiagnostics.UseSink(entries.Enqueue);
-        using var http = new HttpClient(new StubHandler(_ =>
-            Task.FromResult(new HttpResponseMessage((System.Net.HttpStatusCode)status))));
+        var submitted = false;
+        using var http = new HttpClient(new StubHandler(request =>
+        {
+            if (request.Method != HttpMethod.Get)
+            {
+                submitted = true;
+                return Task.FromResult(new HttpResponseMessage((System.Net.HttpStatusCode)status));
+            }
+
+            var completed = submitted && status == 204;
+            var json = completed && done ? "[]" : $$"""
+                [{"id":"1","subject":{"title":"private title","type":"Discussion","url":null},
+                  "repository":{"full_name":"private/repository","html_url":"https://github.com/private/repository"},
+                  "reason":"mention","unread":{{(!completed).ToString().ToLowerInvariant()}},"updated_at":"2025-06-01T12:00:00Z"}]
+                """;
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(json),
+            });
+        }));
         var browser = new FakeBrowser(_ => null);
         var page = new NotificationsPage(CreateAuth(), new NotificationsClient(http), browser);
-        var notification = new GitHubNotification("1", "private title", "Discussion", null, "private/repository", WebUrl, "mention", true, Now);
-        var item = new NotificationItem(page, notification, WebUrl, browser, Now);
+        page.GetItems();
+        await page.CurrentLoad;
+        var item = Assert.IsInstanceOfType<NotificationItem>(page.GetItems().Single());
         if (done)
         {
             page.MarkAsDone(item);
@@ -180,9 +200,13 @@ public sealed class PageDiagnosticsTests
         client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new CodespacesPageResult([codespace], null));
         client.Setup(c => c.StopCodespaceAsync(Account, codespace.Name, It.IsAny<CancellationToken>()))
+            .Callback(() => codespace = codespace with { State = "ShuttingDown" })
             .ReturnsAsync(codespace with { State = "ShuttingDown" });
         client.Setup(c => c.StartCodespaceAsync(Account, codespace.Name, It.IsAny<CancellationToken>()))
+            .Callback(() => codespace = codespace with { State = "Starting" })
             .ReturnsAsync(codespace with { State = "Starting" });
+        client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => new CodespacesPageResult([codespace], null));
         client.Setup(c => c.GetCodespaceAsync(Account, codespace.Name, It.IsAny<CancellationToken>()))
             .ReturnsAsync(codespace with { State = "Available" });
         using var page = new CodespacesPage(CreateAuth(), client.Object, new FakeBrowser(_ => null));
@@ -208,7 +232,7 @@ public sealed class PageDiagnosticsTests
         client.Setup(c => c.CreateCodespaceAsync(Account, "private/repository", "private-branch", It.IsAny<CancellationToken>()))
             .ReturnsAsync(new GitHubCodespace("private-name", "private title", "private/repository", "private-branch", "Starting", Now, WebUrl));
         using var page = new CreateCodespacePage(CreateAuth(), client.Object, new FakeBrowser(_ => null));
-        page.HandleSubmit("""{"repository":"private/repository","branch":"private-branch"}""", """{"action":"create"}""");
+        SubmitCreate(page, """{"repository":"private/repository","branch":"private-branch"}""");
         await page.CurrentCreate;
 
         var outcome = entries.Single(e => e.Event == DiagnosticEvent.CodespaceCreate && e.Outcome != DiagnosticOutcome.Requested);
@@ -230,6 +254,8 @@ public sealed class PageDiagnosticsTests
             {
                 using var domain = OperationDiagnostics.Begin(DiagnosticEvent.CodespaceStart, DiagnosticArea.Codespaces);
                 domain.Complete(DiagnosticOutcome.Failed);
+                client.Setup(c => c.GetCodespacesAsync(Account, null, It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(new CodespacesPageResult([codespace with { State = "Failed" }], null));
                 return Task.FromResult(codespace with { State = "Failed" });
             });
         using var page = new CodespacesPage(CreateAuth(), client.Object, new FakeBrowser(_ => null));
@@ -269,7 +295,7 @@ public sealed class PageDiagnosticsTests
             });
         }));
         using var page = new CreateCodespacePage(CreateAuth(), new CodespacesClient(http), new FakeBrowser(_ => null));
-        page.HandleSubmit("""{"repository":"private/repository"}""", """{"action":"create"}""");
+        SubmitCreate(page, """{"repository":"private/repository"}""");
         await page.CurrentCreate;
 
         var outcome = entries.Last(e => e.Event == DiagnosticEvent.CodespaceCreate && e.Outcome != DiagnosticOutcome.Requested);
@@ -310,11 +336,11 @@ public sealed class PageDiagnosticsTests
         var entries = new ConcurrentQueue<DiagnosticEntry>();
         using var sink = OperationDiagnostics.UseSink(entries.Enqueue, verboseReads: true);
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var pending = new TaskCompletionSource<IReadOnlyList<GitHubRepository>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pending = new TaskCompletionSource<RepositorySearchPageResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         var client = new Mock<IRepositoriesClient>();
-        client.Setup(c => c.SearchAsync(Account, "private-query", It.IsAny<CancellationToken>()))
+        client.Setup(c => c.SearchAsync(Account, "private-query", null, It.IsAny<CancellationToken>()))
             .Returns(() => { started.SetResult(); return pending.Task; });
-        client.Setup(c => c.SearchAsync(Account, "timeout", It.IsAny<CancellationToken>()))
+        client.Setup(c => c.SearchAsync(Account, "timeout", null, It.IsAny<CancellationToken>()))
             .ThrowsAsync(new TaskCanceledException("private timeout"));
         var auth = CreateAuth();
         var browser = new FakeBrowser(_ => null);
@@ -326,7 +352,7 @@ public sealed class PageDiagnosticsTests
         await started.Task;
         page.SearchText = "timeout";
         await page.CurrentSearch;
-        pending.SetResult([]);
+        pending.SetResult(new RepositorySearchPageResult([], null, 0));
         await oldSearch;
 
         var outcomes = entries.Where(e => e.Event == DiagnosticEvent.PageSearch && e.Outcome != DiagnosticOutcome.Requested).ToArray();
@@ -334,6 +360,14 @@ public sealed class PageDiagnosticsTests
         Assert.AreEqual(DiagnosticSeverity.Information, outcomes.Single(e => e.Outcome == DiagnosticOutcome.Cancelled).Severity);
         Assert.AreEqual(DiagnosticFailure.Timeout, outcomes.Single(e => e.Outcome == DiagnosticOutcome.Failed).Failure);
         Assert.IsFalse(entries.Any(e => e.ToString().Contains("private", StringComparison.Ordinal)));
+    }
+
+    private static void SubmitCreate(CreateCodespacePage page, string inputs)
+    {
+        ((Microsoft.CommandPalette.Extensions.IFormContent)page.GetContent()[0])
+            .SubmitForm(inputs, """{"action":"create"}""");
+        ((Microsoft.CommandPalette.Extensions.IFormContent)page.GetContent()[0])
+            .SubmitForm("{}", """{"action":"confirmCreate"}""");
     }
 
     private sealed class StubHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> send) : HttpMessageHandler

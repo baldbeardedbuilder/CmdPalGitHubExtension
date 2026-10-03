@@ -173,14 +173,19 @@ public sealed class PullRequestMergeClientTests
     [DataRow(404)]
     [DataRow(405)]
     [DataRow(501)]
+    [DataRow(500)]
+    [DataRow(503)]
     [DataRow(403)]
     [DataRow(422)]
     public async Task RejectedOrUnsupportedApi_NeverFallsBack(int status)
     {
         using var handler = Handler(((HttpStatusCode)status, "{}"));
         using var http = new HttpClient(handler);
-        await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+        var error = await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
             new PullRequestMergeClient(http).MergeAsync(Account, Target, "squash", TestContext.CancellationToken));
+        Assert.AreEqual(status >= 500, error.OutcomeUnknown);
+        Assert.IsTrue(OperationDiagnostics.HasFailure(error));
+        Assert.AreEqual(DiagnosticFailure.Http, OperationDiagnostics.FailureCategory(error));
         Assert.HasCount(3, handler.Requests);
         Assert.EndsWith("/merge-async", handler.Requests.Last().Url);
     }

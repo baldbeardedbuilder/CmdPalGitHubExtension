@@ -11,6 +11,7 @@ using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
 using BaldBeardedBuilder.CmdPal.GitHub.PullRequests;
 using BaldBeardedBuilder.CmdPal.GitHub.Repositories;
+using Microsoft.CommandPalette.Extensions;
 using Microsoft.CommandPalette.Extensions.Toolkit;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Tests.Pages;
@@ -128,7 +129,7 @@ public sealed class PageNotificationTests
 
             fail = false;
             await refresh();
-            Assert.HasCount(1, page.GetItems());
+            Assert.HasCount(1, ResultItems(page));
             Assert.IsFalse(page.IsLoading);
             Assert.AreNotEqual("rate limited", page.EmptyContent!.Subtitle);
             Assert.IsLessThan(10, emptyEvents);
@@ -174,16 +175,16 @@ public sealed class PageNotificationTests
         {
             page.GetItems();
             await currentLoad();
-            Assert.HasCount(1, page.GetItems());
+            Assert.HasCount(1, ResultItems(page));
             Assert.IsFalse(page.IsLoading);
-            Assert.IsTrue(page.HasMoreItems);
+            Assert.AreEqual(name is not ("issues" or "pull-requests"), page.HasMoreItems);
 
             page.LoadMore();
             await currentLoad();
-            Assert.HasCount(1, page.GetItems());
+            Assert.HasCount(1, ResultItems(page));
 
             await refresh();
-            Assert.HasCount(1, page.GetItems());
+            Assert.HasCount(1, ResultItems(page));
             Assert.IsFalse(page.IsLoading);
 
             page.SearchText = "missing";
@@ -192,16 +193,19 @@ public sealed class PageNotificationTests
                 await repos.CurrentSearch;
             }
 
-            Assert.IsEmpty(page.GetItems());
+            Assert.IsEmpty(ResultItems(page));
             page.SearchText = string.Empty;
-            Assert.HasCount(1, page.GetItems());
+            Assert.HasCount(1, ResultItems(page));
 
             auth.SignOut();
             Assert.IsEmpty(page.GetItems());
             Assert.IsFalse(page.IsLoading);
             Assert.IsFalse(page.HasMoreItems);
             Assert.Contains("IsLoading", properties);
-            Assert.Contains("HasMoreItems", properties);
+            if (name is not ("issues" or "pull-requests"))
+            {
+                Assert.Contains("HasMoreItems", properties);
+            }
             Assert.Contains("EmptyContent", properties);
             Assert.IsGreaterThan(0, itemEvents);
             Assert.IsEmpty(blocked, string.Join(", ", blocked));
@@ -247,13 +251,13 @@ public sealed class PageNotificationTests
 
         Assert.IsTrue(oldToken.IsCancellationRequested);
         Assert.IsTrue(page.IsLoading);
-        Assert.IsEmpty(page.GetItems());
+        Assert.IsEmpty(ResultItems(page));
         Assert.AreNotEqual("stale error", page.EmptyContent!.Subtitle);
         second.SetResult();
         await newLoad;
-        Assert.HasCount(1, page.GetItems());
+        Assert.HasCount(1, ResultItems(page));
         Assert.IsFalse(page.IsLoading);
-        Assert.IsTrue(page.HasMoreItems);
+        Assert.AreEqual(name is not ("issues" or "pull-requests"), page.HasMoreItems);
     }
 
     [TestMethod]
@@ -330,7 +334,7 @@ public sealed class PageNotificationTests
         using var lifetime = (IDisposable)page;
         page.GetItems();
         await currentLoad();
-        var item = page.GetItems().Single();
+        var item = ResultItems(page).Single();
         fail = true;
         page.LoadMore();
         await currentLoad();
@@ -341,7 +345,7 @@ public sealed class PageNotificationTests
         Assert.AreEqual(2, calls);
         fail = false;
         await refresh();
-        Assert.HasCount(1, page.GetItems());
+        Assert.HasCount(1, ResultItems(page));
         Assert.AreNotEqual("rate limited", page.EmptyContent!.Subtitle);
     }
 
@@ -370,7 +374,7 @@ public sealed class PageNotificationTests
         Assert.AreSame(empty, page.EmptyContent);
         timeout = false;
         await refresh();
-        Assert.HasCount(1, page.GetItems());
+        Assert.HasCount(1, ResultItems(page));
         Assert.IsFalse(page.IsLoading);
     }
 
@@ -450,6 +454,13 @@ public sealed class PageNotificationTests
     private static AuthService CreateAuth() =>
         new(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(), new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
 
+    private static IListItem[] ResultItems(DynamicListPage page) => page switch
+    {
+        RepositoryIssuesPage => [.. page.GetItems().OfType<RepositoryIssueItem>()],
+        RepositoryPullRequestsPage => [.. page.GetItems().OfType<RepositoryPullRequestItem>()],
+        _ => page.GetItems(),
+    };
+
     private static (DynamicListPage Page, Func<Task> CurrentLoad, Func<Task> Refresh) CreateListPage(
         string name, AuthService auth, Func<bool>? fail = null, Func<Uri?, CancellationToken, Task>? beforeLoad = null)
     {
@@ -483,8 +494,8 @@ public sealed class PageNotificationTests
                 repos.Setup(c => c.GetMyRepositoriesAsync(Account, It.IsAny<Uri?>(), It.IsAny<CancellationToken>()))
                     .Returns((GitHubAccount _, Uri? next, CancellationToken token) =>
                         LoadResult(new RepositoriesPageResult([new GitHubRepository("o/r", WebUrl, "Test repo", false, false, false, "C#", 0, 0, Now, null)], NextPage), fail, next, beforeLoad, token));
-                repos.Setup(c => c.SearchAsync(Account, It.IsAny<string>(), It.IsAny<CancellationToken>()))
-                    .ReturnsAsync([]);
+                repos.Setup(c => c.SearchAsync(Account, It.IsAny<string>(), null, It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(new RepositorySearchPageResult([], null, 0));
                 var issuesPage = new RepositoryIssuesPage(auth, Mock.Of<IIssuesClient>(), browser);
                 var pullRequestsPage = new RepositoryPullRequestsPage(auth, Mock.Of<IPullRequestsClient>(), browser);
                 var reposPage = new ReposPage(auth, repos.Object, browser, issuesPage, pullRequestsPage, searchDelay: TimeSpan.Zero);

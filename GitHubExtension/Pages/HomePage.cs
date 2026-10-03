@@ -21,7 +21,7 @@ internal sealed partial class HomePage : ListPage, IDisposable
     private readonly CodespacesPage _codespaces;
     private readonly CreateCodespacePage _createCodespace;
     private readonly SignOutCommand _signOut;
-    private bool _disposed;
+    private volatile bool _disposed;
 
     public HomePage(
         AuthService auth,

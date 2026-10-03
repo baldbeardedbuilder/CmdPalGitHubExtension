@@ -116,16 +116,13 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
     {
         ValidateRequest(repository, request);
         var uri = RepositoryTasksUri(account, repository);
-        var body = new Dictionary<string, object?>
-        {
-            ["prompt"] = request.Prompt.Trim(),
-            ["create_pull_request"] = request.CreatePullRequest,
-        };
-        AddOptional(body, "model", request.Model);
-        AddOptional(body, "custom_agent", request.CustomAgent);
-        AddOptional(body, "base_ref", request.BaseRef);
-        AddOptional(body, "head_ref", request.HeadRef);
-        using var content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+        var body = new CreateAgentTaskRequest(
+            request.Prompt.Trim(), request.CreatePullRequest,
+            GitHubJson.Optional(request.Model), GitHubJson.Optional(request.CustomAgent),
+            GitHubJson.Optional(request.BaseRef), GitHubJson.Optional(request.HeadRef));
+        using var content = new StringContent(
+            JsonSerializer.Serialize(body, GitHubJsonContext.Default.CreateAgentTaskRequest),
+            Encoding.UTF8, "application/json");
 
         HttpResponseMessage response;
         try
@@ -136,7 +133,7 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
         }
         catch (GitHubApiException ex) when (ex.InnerException is HttpRequestException or OperationCanceledException)
         {
-            throw new AgentTaskOutcomeUnknownException(
+            throw UnknownOutcome(
                 "GitHub may have started this task, but the response was lost. Check the repository's agent tasks before trying again.", ex);
         }
 
@@ -146,11 +143,11 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
             {
                 if ((int)response.StatusCode >= 500)
                 {
-                    throw new AgentTaskOutcomeUnknownException(
-                        $"GitHub returned {(int)response.StatusCode} while starting the task. Check the repository's agent tasks before trying again.");
+                    throw CorrelateFailure(response, new AgentTaskOutcomeUnknownException(
+                        $"GitHub returned {(int)response.StatusCode} while starting the task. Check the repository's agent tasks before trying again."));
                 }
 
-                throw response.StatusCode switch
+                throw CorrelateFailure(response, response.StatusCode switch
                 {
                     HttpStatusCode.Unauthorized => new GitHubApiException("GitHub didn't accept your token. Sign out and back in to fix it."),
                     HttpStatusCode.Forbidden when SsoRequired(account, response) is { } sso => sso,
@@ -159,7 +156,7 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
                     HttpStatusCode.UnprocessableEntity => new GitHubApiException("GitHub couldn't start this task. Check the prompt, model, custom agent, and branch names against your repository and Copilot policies."),
                     HttpStatusCode.TooManyRequests => new GitHubApiException("GitHub's rate limit was reached. Try starting this task later."),
                     _ => new GitHubApiException($"{account.Host.Name} returned {(int)response.StatusCode} {response.ReasonPhrase}."),
-                };
+                });
             }
 
             try
@@ -169,25 +166,32 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
             }
             catch (GitHubApiException ex)
             {
-                throw new AgentTaskOutcomeUnknownException(
+                throw UnknownOutcome(
                     "GitHub accepted the request, but its response couldn't be read. Check the repository's agent tasks before trying again.", ex);
             }
             catch (IOException ex)
             {
-                throw new AgentTaskOutcomeUnknownException(
+                throw UnknownOutcome(
                     "GitHub accepted the request, but its response couldn't be read. Check the repository's agent tasks before trying again.", ex);
             }
             catch (HttpRequestException ex)
             {
-                throw new AgentTaskOutcomeUnknownException(
+                throw UnknownOutcome(
                     "GitHub accepted the request, but its response couldn't be read. Check the repository's agent tasks before trying again.", ex);
             }
             catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
-                throw new AgentTaskOutcomeUnknownException(
+                throw UnknownOutcome(
                     "GitHub accepted the request, but its response couldn't be read. Check the repository's agent tasks before trying again.", ex);
             }
         }
+    }
+
+    private static AgentTaskOutcomeUnknownException UnknownOutcome(string message, Exception innerException)
+    {
+        var error = new AgentTaskOutcomeUnknownException(message, innerException);
+        OperationDiagnostics.CorrelateFailure(innerException, error);
+        return error;
     }
 
     internal static GitHubAgentTask ParseCreatedTask(JsonElement root, GitHubHost host)
@@ -239,14 +243,6 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
             throw new GitHubApiException("Enter a prompt for the agent.");
         }
 
-    }
-
-    private static void AddOptional(Dictionary<string, object?> body, string name, string? value)
-    {
-        if (!string.IsNullOrWhiteSpace(value))
-        {
-            body[name] = value.Trim();
-        }
     }
 
     internal static List<GitHubAgentTask> ParseTasks(JsonElement root, GitHubHost host) =>
