@@ -20,12 +20,19 @@ internal sealed partial class WorkflowRunItem : ListItem
         var state = WorkflowRunFormatting.State(run);
         SearchText = $"{run.Name} {run.DisplayTitle} {run.Actor} {run.Status} {run.Conclusion} {state}";
         Command = new OpenInBrowserCommand(browser, run.WebUrl, "Open", Icons.Actions);
-        MoreCommands =
-        [
+        var commands = new List<IContextItem>
+        {
             new CommandContextItem(new NoOpCommand()) { Title = $"Status: {state}", Icon = Icon },
             new CommandContextItem(new CopyTextCommand(run.WebUrl.AbsoluteUri) { Name = "Copy run URL", Icon = Icons.Copy }),
             new CommandContextItem(new RefreshActionsCommand(page)),
-        ];
+        };
+        if (run.Status is "in_progress" or "queued" or "requested" or "waiting" or "pending")
+        {
+            commands.Add(new CommandContextItem(new CancelWorkflowRunCommand(page, this)));
+            commands.Add(new CommandContextItem(new ForceCancelWorkflowRunPage(page, this)));
+        }
+
+        MoreCommands = [.. commands];
     }
 
     public GitHubWorkflowRun Run { get; }
