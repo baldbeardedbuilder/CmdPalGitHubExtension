@@ -4,6 +4,8 @@
 
 using System.Runtime.InteropServices;
 
+#pragma warning disable CA2201 // Fault injection deliberately simulates COM failures from Windows Credential Locker.
+
 namespace BaldBeardedBuilder.CmdPal.GitHub.Tests.Auth;
 
 [TestClass]
