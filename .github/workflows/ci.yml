@@ -89,6 +89,46 @@ jobs:
         shell: pwsh
         run: |
           [xml] $manifest = Get-Content GitHubExtension/Package.appxmanifest
-          $version = $manifest.SelectSingleNode('//*[local-name()="Identity"]').Version
-          $publisher = $manifest.SelectSingleNode('//*[local-name()="Identity"]').Publisher
-          ./.github/scripts/Validate-Msix.ps1 -RuntimeIdentifier '${{ matrix.runtime }}' -Version $version -Publisher $publisher
+          $manifestIdentity = $manifest.SelectSingleNode('//*[local-name()="Identity"]')
+          $version = $manifestIdentity.Version
+          $architecture = if ('${{ matrix.runtime }}' -eq 'win-x64') { 'x64' } else { 'arm64' }
+          $packages = @(Get-ChildItem "GitHubExtension/AppPackages/${{ matrix.runtime }}" -Filter '*.msix' -File -Recurse |
+            Where-Object { $_.Name -match "_$([regex]::Escape($version))_$architecture\.msix$" })
+          if ($packages.Count -ne 1) {
+            throw "Expected one ${{ matrix.runtime }} MSIX package, found $($packages.Count)."
+          }
+          $makeappx = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\makeappx.exe' -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $makeappx) {
+            throw 'makeappx.exe was not found in the Windows SDK.'
+          }
+          $unpackPath = Join-Path $env:TEMP ([guid]::NewGuid().ToString())
+          New-Item -ItemType Directory -Path $unpackPath | Out-Null
+          try {
+            & $makeappx.FullName unpack /p $packages[0].FullName /d $unpackPath /o
+            if ($LASTEXITCODE -ne 0) {
+              throw "makeappx unpack failed with exit code $LASTEXITCODE."
+            }
+            [xml] $packageManifest = Get-Content (Join-Path $unpackPath 'AppxManifest.xml') -Raw
+            $identity = $packageManifest.SelectSingleNode('//*[local-name()="Identity"]')
+            if ($identity.Name -ne 'BaldBeardedBuilder.GitHubforCommandPalette' -or
+                $identity.Publisher -ne $manifestIdentity.Publisher -or
+                $identity.Version -ne $version -or
+                $identity.ProcessorArchitecture -ne $architecture) {
+              throw 'Package manifest identity, publisher, version, or architecture does not match.'
+            }
+            $executable = Join-Path $unpackPath 'BaldBeardedBuilder.GitHubExtension.exe'
+            if (-not (Test-Path $executable) -or
+                [System.Diagnostics.FileVersionInfo]::GetVersionInfo($executable).FileVersion -ne $version) {
+              throw 'Packaged executable is missing or its version does not match the manifest.'
+            }
+            $assembly = Get-ChildItem GitHubExtension/bin -Filter 'BaldBeardedBuilder.GitHubExtension.dll' -File -Recurse |
+              Where-Object { $_.FullName.Contains("\Release\") -and $_.FullName.Contains("\${{ matrix.runtime }}\") -and $_.FullName -notmatch '\\(publish|ref)\\' } |
+              Select-Object -First 1
+            if (-not $assembly -or [System.Reflection.AssemblyName]::GetAssemblyName($assembly.FullName).Version.ToString() -ne $version) {
+              throw 'Release assembly version does not match the package manifest.'
+            }
+          }
+          finally {
+            Remove-Item $unpackPath -Recurse -Force -ErrorAction SilentlyContinue
+          }

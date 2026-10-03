@@ -24,7 +24,24 @@ jobs:
       - name: Stamp manifest from stable tag
         id: version
         shell: pwsh
-        run: ./.github/scripts/Set-ReleaseVersion.ps1 -Tag $env:GITHUB_REF_NAME -ManifestPath GitHubExtension/Package.appxmanifest
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $match = [regex]::Match($env:TAG, '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$')
+          if (-not $match.Success) {
+            throw "Release tag '$env:TAG' is invalid. Stable releases must use vMAJOR.MINOR.PATCH."
+          }
+          foreach ($component in $match.Groups[1..3]) {
+            if ([uint32]$component.Value -gt 65535) {
+              throw "Release tag '$env:TAG' exceeds the maximum MSIX version component of 65535."
+            }
+          }
+          $version = "$($match.Groups[1].Value).$($match.Groups[2].Value).$($match.Groups[3].Value).0"
+          [xml] $manifest = Get-Content GitHubExtension/Package.appxmanifest
+          $identity = $manifest.SelectSingleNode('//*[local-name()="Identity"]')
+          $identity.SetAttribute('Version', $version)
+          $manifest.Save((Resolve-Path GitHubExtension/Package.appxmanifest))
+          "version=$version" >> $env:GITHUB_OUTPUT
 
   release-tests:
     needs: validate-tag
@@ -40,7 +57,16 @@ jobs:
 
       - name: Stamp manifest
         shell: pwsh
-        run: ./.github/scripts/Set-ReleaseVersion.ps1 -Tag $env:GITHUB_REF_NAME -ManifestPath GitHubExtension/Package.appxmanifest
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $version = '${{ needs.validate-tag.outputs.version }}'
+          if ($env:TAG -notmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$' -or $version -ne "$($Matches[1]).$($Matches[2]).$($Matches[3]).0") {
+            throw 'The release tag and normalized package version do not match.'
+          }
+          [xml] $manifest = Get-Content GitHubExtension/Package.appxmanifest
+          $manifest.SelectSingleNode('//*[local-name()="Identity"]').SetAttribute('Version', $version)
+          $manifest.Save((Resolve-Path GitHubExtension/Package.appxmanifest))
 
       - name: Restore
         shell: pwsh
@@ -87,7 +113,16 @@ jobs:
 
       - name: Stamp manifest
         shell: pwsh
-        run: ./.github/scripts/Set-ReleaseVersion.ps1 -Tag $env:GITHUB_REF_NAME -ManifestPath GitHubExtension/Package.appxmanifest
+        env:
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.validate-tag.outputs.version }}
+        run: |
+          if ($env:TAG -notmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$' -or $env:VERSION -ne "$($Matches[1]).$($Matches[2]).$($Matches[3]).0") {
+            throw 'The release tag and normalized package version do not match.'
+          }
+          [xml] $manifest = Get-Content GitHubExtension/Package.appxmanifest
+          $manifest.SelectSingleNode('//*[local-name()="Identity"]').SetAttribute('Version', $env:VERSION)
+          $manifest.Save((Resolve-Path GitHubExtension/Package.appxmanifest))
 
       - name: Restore and publish MSIX
         shell: pwsh
@@ -100,9 +135,43 @@ jobs:
         shell: pwsh
         run: |
           [xml] $manifest = Get-Content GitHubExtension/Package.appxmanifest
-          $publisher = $manifest.SelectSingleNode('//*[local-name()="Identity"]').Publisher
-          ./.github/scripts/Validate-Msix.ps1 -RuntimeIdentifier '${{ matrix.runtime }}' -Version '${{ needs.validate-tag.outputs.version }}' -Publisher $publisher
-          $file = Get-ChildItem "GitHubExtension/AppPackages/${{ matrix.runtime }}" -Filter '*.msix' -File -Recurse | Select-Object -First 1
+          $identity = $manifest.SelectSingleNode('//*[local-name()="Identity"]')
+          $architecture = if ('${{ matrix.runtime }}' -eq 'win-x64') { 'x64' } else { 'arm64' }
+          $files = @(Get-ChildItem "GitHubExtension/AppPackages/${{ matrix.runtime }}" -Filter '*.msix' -File -Recurse |
+            Where-Object { $_.Name -match "_${{ needs.validate-tag.outputs.version }}_$architecture\.msix$" })
+          if ($files.Count -ne 1) {
+            throw "Expected one ${{ matrix.runtime }} MSIX package, found $($files.Count)."
+          }
+          $makeappx = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\makeappx.exe' |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          $unpackPath = Join-Path $env:TEMP ([guid]::NewGuid().ToString())
+          New-Item -ItemType Directory -Path $unpackPath | Out-Null
+          try {
+            & $makeappx.FullName unpack /p $files[0].FullName /d $unpackPath /o
+            if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the MSIX package.' }
+            [xml] $packageManifest = Get-Content (Join-Path $unpackPath 'AppxManifest.xml') -Raw
+            $packageIdentity = $packageManifest.SelectSingleNode('//*[local-name()="Identity"]')
+            if ($packageIdentity.Name -ne 'BaldBeardedBuilder.GitHubforCommandPalette' -or
+                $packageIdentity.Publisher -ne $identity.Publisher -or
+                $packageIdentity.Version -ne '${{ needs.validate-tag.outputs.version }}' -or
+                $packageIdentity.ProcessorArchitecture -ne $architecture) {
+              throw "MSIX package identity, publisher, version, or architecture does not match."
+            }
+            $exe = Join-Path $unpackPath 'BaldBeardedBuilder.GitHubExtension.exe'
+            if ([System.Diagnostics.FileVersionInfo]::GetVersionInfo($exe).FileVersion -ne '${{ needs.validate-tag.outputs.version }}') {
+              throw 'Packaged executable version does not match the tag.'
+            }
+            $assembly = Get-ChildItem GitHubExtension/bin -Filter 'BaldBeardedBuilder.GitHubExtension.dll' -File -Recurse |
+              Where-Object { $_.FullName.Contains("\Release\") -and $_.FullName.Contains("\${{ matrix.runtime }}\") -and $_.FullName -notmatch '\\(publish|ref)\\' } |
+              Select-Object -First 1
+            if (-not $assembly -or [System.Reflection.AssemblyName]::GetAssemblyName($assembly.FullName).Version.ToString() -ne '${{ needs.validate-tag.outputs.version }}') {
+              throw 'Release assembly version does not match the tag.'
+            }
+          }
+          finally {
+            Remove-Item $unpackPath -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          $file = $files[0]
           New-Item -ItemType Directory -Path release-assets -Force | Out-Null
           $destination = Join-Path release-assets '${{ matrix.package }}'
           Copy-Item $file.FullName $destination
@@ -163,7 +232,11 @@ jobs:
         run: |
           [xml] $manifest = Get-Content GitHubExtension/Package.appxmanifest
           $publisher = $manifest.SelectSingleNode('//*[local-name()="Identity"]').Publisher
-          ./.github/scripts/Validate-Msix.ps1 -RuntimeIdentifier '${{ matrix.runtime }}' -Version '${{ needs.validate-tag.outputs.version }}' -Publisher $publisher -RequireSignature
+          $file = Get-ChildItem release-assets -Filter '*.msix' -File | Select-Object -First 1
+          $signature = Get-AuthenticodeSignature $file.FullName
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -ne $publisher) {
+            throw "MSIX signature is invalid or does not match the configured publisher."
+          }
 
       - name: Upload signed package artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -308,9 +381,14 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:STORE_PUBLISHER_NAME)) {
             throw 'STORE_PUBLISHER_NAME is missing from the microsoft-store environment.'
           }
-          ./.github/scripts/Set-ReleaseVersion.ps1 -Tag $env:GITHUB_REF_NAME -ManifestPath GitHubExtension/Package.appxmanifest
+          $tag = $env:GITHUB_REF_NAME
+          if ($tag -notmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$' -or
+              '${{ needs.validate-tag.outputs.version }}' -ne "$($Matches[1]).$($Matches[2]).$($Matches[3]).0") {
+            throw 'The release tag and normalized package version do not match.'
+          }
           [xml] $manifest = Get-Content GitHubExtension/Package.appxmanifest
           $identity = $manifest.SelectSingleNode('//*[local-name()="Identity"]')
+          $identity.SetAttribute('Version', '${{ needs.validate-tag.outputs.version }}')
           $identity.SetAttribute('Publisher', $env:STORE_PUBLISHER_NAME)
           $manifest.Save((Resolve-Path GitHubExtension/Package.appxmanifest))
 
@@ -324,7 +402,41 @@ jobs:
         shell: pwsh
         env:
           STORE_PUBLISHER_NAME: ${{ secrets.STORE_PUBLISHER_NAME }}
-        run: ./.github/scripts/Validate-Msix.ps1 -RuntimeIdentifier '${{ matrix.runtime }}' -Version '${{ needs.validate-tag.outputs.version }}' -Publisher $env:STORE_PUBLISHER_NAME
+        run: |
+          $architecture = if ('${{ matrix.runtime }}' -eq 'win-x64') { 'x64' } else { 'arm64' }
+          $files = @(Get-ChildItem "GitHubExtension/AppPackages/${{ matrix.runtime }}" -Filter '*.msix' -File -Recurse |
+            Where-Object { $_.Name -match "_${{ needs.validate-tag.outputs.version }}_$architecture\.msix$" })
+          if ($files.Count -ne 1) {
+            throw "Expected one ${{ matrix.runtime }} Store MSIX package, found $($files.Count)."
+          }
+          $makeappx = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\makeappx.exe' |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          $unpackPath = Join-Path $env:TEMP ([guid]::NewGuid().ToString())
+          New-Item -ItemType Directory -Path $unpackPath | Out-Null
+          try {
+            & $makeappx.FullName unpack /p $files[0].FullName /d $unpackPath /o
+            if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the Store MSIX package.' }
+            [xml] $packageManifest = Get-Content (Join-Path $unpackPath 'AppxManifest.xml') -Raw
+            $identity = $packageManifest.SelectSingleNode('//*[local-name()="Identity"]')
+            if ($identity.Name -ne 'BaldBeardedBuilder.GitHubforCommandPalette' -or
+                $identity.Publisher -ne $env:STORE_PUBLISHER_NAME -or
+                $identity.Version -ne '${{ needs.validate-tag.outputs.version }}' -or
+                $identity.ProcessorArchitecture -ne $architecture) {
+              throw 'Store MSIX package identity, publisher, version, or architecture does not match.'
+            }
+            if ([System.Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $unpackPath 'BaldBeardedBuilder.GitHubExtension.exe')).FileVersion -ne '${{ needs.validate-tag.outputs.version }}') {
+              throw 'Store package executable version does not match the tag.'
+            }
+            $assembly = Get-ChildItem GitHubExtension/bin -Filter 'BaldBeardedBuilder.GitHubExtension.dll' -File -Recurse |
+              Where-Object { $_.FullName.Contains("\Release\") -and $_.FullName.Contains("\${{ matrix.runtime }}\") -and $_.FullName -notmatch '\\(publish|ref)\\' } |
+              Select-Object -First 1
+            if (-not $assembly -or [System.Reflection.AssemblyName]::GetAssemblyName($assembly.FullName).Version.ToString() -ne '${{ needs.validate-tag.outputs.version }}') {
+              throw 'Store Release assembly version does not match the tag.'
+            }
+          }
+          finally {
+            Remove-Item $unpackPath -Recurse -Force -ErrorAction SilentlyContinue
+          }
 
       - name: Stage Store package
         shell: pwsh
@@ -370,8 +482,10 @@ jobs:
           VERSION: ${{ needs.validate-tag.outputs.version }}
         run: |
           $packages = @(Get-ChildItem store-packages -Filter '*.msix' -File)
-          if ($packages.Count -ne 2) {
-            throw "Expected exactly two Store packages, found $($packages.Count)."
+          if ($packages.Count -ne 2 -or
+              @($packages | Where-Object Name -Match '_x64\.msix$').Count -ne 1 -or
+              @($packages | Where-Object Name -Match '_arm64\.msix$').Count -ne 1) {
+            throw "Expected exactly one x64 and one ARM64 Store package, found $($packages.Count)."
           }
           $bundleInput = Join-Path $env:GITHUB_WORKSPACE 'bundle-input'
           New-Item -ItemType Directory -Path $bundleInput -Force | Out-Null
@@ -386,7 +500,25 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "makeappx bundle failed with exit code $LASTEXITCODE."
           }
-          ./.github/scripts/Validate-MsixBundle.ps1 -BundlePath $bundlePath -Version $env:VERSION -Publisher $env:STORE_PUBLISHER_NAME
+          $unpackPath = Join-Path $env:TEMP ([guid]::NewGuid().ToString())
+          New-Item -ItemType Directory -Path $unpackPath | Out-Null
+          try {
+            & $makeappx.FullName unpack /p $bundlePath /d $unpackPath /o
+            if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the Store MSIX bundle.' }
+            [xml] $bundleManifest = Get-Content (Join-Path $unpackPath 'AppxMetadata\AppxBundleManifest.xml') -Raw
+            $identity = $bundleManifest.SelectSingleNode('//*[local-name()="Identity"]')
+            $architectures = @($bundleManifest.SelectNodes('//*[local-name()="Package" and @Type="application"]') |
+              ForEach-Object { $_.Architecture } | Sort-Object -Unique)
+            if ($identity.Name -ne 'BaldBeardedBuilder.GitHubforCommandPalette' -or
+                $identity.Publisher -ne $env:STORE_PUBLISHER_NAME -or
+                $identity.Version -ne $env:VERSION -or
+                $architectures.Count -ne 2 -or $architectures[0] -ne 'arm64' -or $architectures[1] -ne 'x64') {
+              throw 'Store bundle identity, publisher, version, or architecture set does not match.'
+            }
+          }
+          finally {
+            Remove-Item $unpackPath -Recurse -Force -ErrorAction SilentlyContinue
+          }
           "path=$bundlePath" >> $env:GITHUB_OUTPUT
 
       - name: Check Partner Center configuration
@@ -430,10 +562,153 @@ jobs:
       - name: Submit or resume Store release
         shell: pwsh
         env:
+          BUNDLE_PATH: ${{ steps.bundle.outputs.path }}
+          VERSION: ${{ needs.validate-tag.outputs.version }}
           STORE_PRODUCT_ID: ${{ secrets.STORE_PRODUCT_ID }}
           STORE_PUBLISHER_NAME: ${{ secrets.STORE_PUBLISHER_NAME }}
           PARTNER_CENTER_TENANT_ID: ${{ secrets.PARTNER_CENTER_TENANT_ID }}
           PARTNER_CENTER_SELLER_ID: ${{ secrets.PARTNER_CENTER_SELLER_ID }}
           PARTNER_CENTER_CLIENT_ID: ${{ secrets.PARTNER_CENTER_CLIENT_ID }}
           PARTNER_CENTER_CLIENT_SECRET: ${{ secrets.PARTNER_CENTER_CLIENT_SECRET }}
-        run: ./.github/scripts/Submit-StoreRelease.ps1 -BundlePath '${{ steps.bundle.outputs.path }}' -Version '${{ needs.validate-tag.outputs.version }}'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($name in @('STORE_PRODUCT_ID', 'STORE_PUBLISHER_NAME', 'PARTNER_CENTER_TENANT_ID', 'PARTNER_CENTER_SELLER_ID', 'PARTNER_CENTER_CLIENT_ID', 'PARTNER_CENTER_CLIENT_SECRET')) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Required Microsoft Store setting '$name' is missing."
+            }
+          }
+
+          $productId = $env:STORE_PRODUCT_ID
+          $packageIdentity = 'BaldBeardedBuilder.GitHubforCommandPalette'
+          $bundleName = [System.IO.Path]::GetFileName($env:BUNDLE_PATH)
+          $baseUri = "https://manage.devcenter.microsoft.com/v1.0/my/applications/$productId"
+          $draftStates = @('InDraft', 'Draft')
+          $failureStates = @('CommitFailed', 'PreProcessingFailed', 'CertificationFailed', 'ReleaseFailed', 'PublishFailed', 'Canceled')
+
+          $tokenBody = @{
+            grant_type    = 'client_credentials'
+            client_id     = $env:PARTNER_CENTER_CLIENT_ID
+            client_secret = $env:PARTNER_CENTER_CLIENT_SECRET
+            resource      = 'https://manage.devcenter.microsoft.com'
+          }
+          try {
+            $token = (Invoke-RestMethod -Method Post -Uri "https://login.microsoftonline.com/$env:PARTNER_CENTER_TENANT_ID/oauth2/token" `
+              -ContentType 'application/x-www-form-urlencoded' -Body $tokenBody).access_token
+          }
+          catch {
+            throw 'Microsoft Store authentication failed. Check the Partner Center app permissions and tenant configuration.'
+          }
+          if ([string]::IsNullOrWhiteSpace($token)) {
+            throw 'Microsoft Store authentication did not return an access token.'
+          }
+          $headers = @{ Authorization = ('Bearer ' + [string]$token) }
+          $application = Invoke-RestMethod -Method Get -Uri $baseUri -Headers $headers
+          if ($application.id -ne $productId -or
+              $application.packageIdentityName -ne $packageIdentity -or
+              $application.publisherName -ne $env:STORE_PUBLISHER_NAME) {
+            throw 'Partner Center product ID, package identity, or publisher does not match this extension. No Store draft was changed.'
+          }
+
+          $submissionId = $application.pendingApplicationSubmission.id
+          $submission = $null
+          if ($submissionId) {
+            $submission = Invoke-RestMethod -Method Get -Uri "$baseUri/submissions/$submissionId" -Headers $headers
+            $matchingPackage = @($submission.applicationPackages | Where-Object { $_.fileName -eq $bundleName -and $_.fileStatus -ne 'PendingDelete' })
+            if ($matchingPackage.Count -ne 1) {
+              throw 'An unrelated or duplicate Microsoft Store draft exists. It was left unchanged; resolve it before retrying.'
+            }
+          }
+          else {
+            $submissions = Invoke-RestMethod -Method Get -Uri "$baseUri/submissions" -Headers $headers
+            foreach ($entry in @($submissions.value)) {
+              if (-not $entry.id) { continue }
+              $prior = Invoke-RestMethod -Method Get -Uri "$baseUri/submissions/$($entry.id)" -Headers $headers
+              if (@($prior.applicationPackages | Where-Object { $_.fileName -eq $bundleName -and $_.fileStatus -ne 'PendingDelete' }).Count -gt 0) {
+                $status = Invoke-RestMethod -Method Get -Uri "$baseUri/submissions/$($entry.id)/status" -Headers $headers
+                if ($status.status -notin $failureStates) {
+                  Write-Host "This bundle is already submitted with status '$($status.status)'; no duplicate submission was created."
+                  $submissionId = $entry.id
+                  $submission = $prior
+                  break
+                }
+              }
+            }
+
+            if (-not $submissionId) {
+              msstore publish $env:BUNDLE_PATH -id $productId --noCommit
+              if ($LASTEXITCODE -ne 0) {
+                throw "msstore publish --noCommit failed with exit code $LASTEXITCODE."
+              }
+              $application = Invoke-RestMethod -Method Get -Uri $baseUri -Headers $headers
+              if ($application.id -ne $productId -or
+                  $application.packageIdentityName -ne $packageIdentity -or
+                  $application.publisherName -ne $env:STORE_PUBLISHER_NAME) {
+                throw 'Partner Center product identity changed or does not match this extension. The draft was not changed.'
+              }
+              $submissionId = $application.pendingApplicationSubmission.id
+              if (-not $submissionId) {
+                throw 'Microsoft Store CLI returned success but no pending draft could be found.'
+              }
+              $submission = Invoke-RestMethod -Method Get -Uri "$baseUri/submissions/$submissionId" -Headers $headers
+              if (@($submission.applicationPackages | Where-Object { $_.fileName -eq $bundleName -and $_.fileStatus -ne 'PendingDelete' }).Count -ne 1) {
+                throw 'The Microsoft Store draft does not contain exactly one copy of this release bundle.'
+              }
+            }
+          }
+
+          $submissionStatus = Invoke-RestMethod -Method Get -Uri "$baseUri/submissions/$submissionId/status" -Headers $headers
+          if ($submissionStatus.status -notin $draftStates -and $submissionStatus.status -notin $failureStates) {
+            Write-Host "This release was already committed with status '$($submissionStatus.status)'; continuing to poll."
+          }
+          else {
+            $pendingUploads = @($submission.applicationPackages | Where-Object { $_.fileStatus -eq 'PendingUpload' })
+            if (@($pendingUploads | Where-Object { $_.fileName -ne $bundleName }).Count -gt 0) {
+              throw 'The Microsoft Store draft contains another pending upload. It was left unchanged.'
+            }
+
+            $changed = $false
+            foreach ($package in $submission.applicationPackages) {
+              Write-Host "Store draft package: $($package.fileName), version '$($package.version)', status '$($package.fileStatus)'."
+              if ($package.fileName -eq $bundleName) {
+                if ($package.fileStatus -notin @('PendingUpload', 'Uploaded')) {
+                  throw "The release bundle has unsupported draft status '$($package.fileStatus)'."
+                }
+              }
+              elseif ($package.fileStatus -eq 'Uploaded') {
+                $package.fileStatus = 'PendingDelete'
+                $changed = $true
+              }
+            }
+
+            if (@($submission.applicationPackages | Where-Object { $_.fileName -eq $bundleName -and $_.fileStatus -ne 'PendingDelete' }).Count -ne 1 -or
+                @($submission.applicationPackages | Where-Object { $_.fileStatus -ne 'PendingDelete' }).Count -eq 0) {
+              throw 'Refusing to commit: the exact release bundle must survive and at least one package must remain.'
+            }
+            if ($changed) {
+              $body = $submission | ConvertTo-Json -Depth 100
+              Invoke-RestMethod -Method Put -Uri "$baseUri/submissions/$submissionId" -Headers $headers `
+                -ContentType 'application/json' -Body $body | Out-Null
+            }
+            $submissionStatus = Invoke-RestMethod -Method Get -Uri "$baseUri/submissions/$submissionId/status" -Headers $headers
+            if ($submissionStatus.status -in $draftStates -or $submissionStatus.status -in $failureStates) {
+              Invoke-RestMethod -Method Post -Uri "$baseUri/submissions/$submissionId/commit" -Headers $headers `
+                -ContentType 'application/json' | Out-Null
+            }
+          }
+
+          $deadline = [DateTime]::UtcNow.AddMinutes(10)
+          do {
+            Start-Sleep -Seconds 30
+            $submissionStatus = Invoke-RestMethod -Method Get -Uri "$baseUri/submissions/$submissionId/status" -Headers $headers
+            Write-Host "Microsoft Store submission status: $($submissionStatus.status)"
+            if ($submissionStatus.status -in $failureStates) {
+              throw "Microsoft Store submission entered failure state '$($submissionStatus.status)'."
+            }
+            if ($submissionStatus.status -in @('Published', 'InStore')) {
+              Write-Host "Microsoft Store reports this submission as $($submissionStatus.status)."
+              break
+            }
+          } while ([DateTime]::UtcNow -lt $deadline)
+          if ($submissionStatus.status -notin @('Published', 'InStore')) {
+            "Microsoft Store submission is pending in state **$($submissionStatus.status)**. It is submitted, not confirmed as published. Re-run this tag after processing advances." >> $env:GITHUB_STEP_SUMMARY
+          }

@@ -67,16 +67,14 @@ Open `GitHubExtension.slnx` in Visual Studio, set **GitHubExtension** as the sta
 
 Stable `vMAJOR.MINOR.PATCH` tags trigger the release workflow. It stamps a four-part package version in the workflow checkout, runs Release tests, validates x64 and ARM64 packages, signs GitHub downloads, and submits WinGet and Microsoft Store updates. It does not commit version changes to `main`.
 
-See [RELEASING.md](RELEASING.md) for the required protected environments and channel configuration. A packaging-only dry run can be performed without distribution credentials on matching Windows x64 and ARM64 machines:
+See [RELEASING.md](RELEASING.md) for the required protected environments and channel configuration. To dry-run packaging without distribution credentials, use a disposable checkout on a matching Windows x64 or ARM64 machine. Set the manifest identity version to a test version such as `1.2.3.0`, then run:
 
 ```powershell
-./.github/scripts/Set-ReleaseVersion.ps1 -Tag v1.2.3 -ManifestPath GitHubExtension/Package.appxmanifest
 dotnet restore GitHubExtension/GitHubExtension.csproj -r win-x64 -p:Platform=x64
 dotnet publish GitHubExtension/GitHubExtension.csproj -c Release -r win-x64 --no-restore -p:Platform=x64 -p:PublishProfile=win-x64
-./.github/scripts/Validate-Msix.ps1 -RuntimeIdentifier win-x64 -Version 1.2.3.0 -Publisher 'CN=Bald Bearded Builder LLC, O=Bald Bearded Builder LLC, L=Odenville, S=Alabama, C=US'
 ```
 
-Repeat on a Windows ARM64 machine using `win-arm64`, `Platform=ARM64`, and `PublishProfile=win-arm64`. Restore the manifest version afterward if this is a working checkout; release automation stamps fresh job checkouts instead.
+Repeat on a Windows ARM64 machine using `win-arm64`, `Platform=ARM64`, and `PublishProfile=win-arm64`. Unpack the resulting MSIX with the Windows SDK's `makeappx.exe` and confirm its manifest identity, publisher, version, and architecture, plus the packaged executable and Release assembly versions. Restore the manifest afterward if this is not a disposable checkout. Release automation performs these checks in its workflow jobs.
 
 ## How to contribute
 
