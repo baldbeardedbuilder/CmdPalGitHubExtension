@@ -35,16 +35,15 @@ internal sealed class NotificationsClient(HttpClient httpClient) : INotification
         using var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken).ConfigureAwait(false);
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
 
-        var notifications = new List<GitHubNotification>();
-        if (json.RootElement.ValueKind == JsonValueKind.Array)
+        if (json.RootElement.ValueKind != JsonValueKind.Array)
         {
-            foreach (var element in json.RootElement.EnumerateArray())
-            {
-                if (ParseNotification(element) is { } notification)
-                {
-                    notifications.Add(notification);
-                }
-            }
+            throw new GitHubApiException("GitHub sent back a notification list we couldn't read. Try refreshing.");
+        }
+
+        var notifications = new List<GitHubNotification>();
+        foreach (var element in json.RootElement.EnumerateArray())
+        {
+            notifications.Add(ParseNotification(element));
         }
 
         return new NotificationsPageResult(notifications, NextPage(response));
@@ -76,24 +75,49 @@ internal sealed class NotificationsClient(HttpClient httpClient) : INotification
         using var response = await SendAsync(httpClient, account, HttpMethod.Delete, uri, cancellationToken).ConfigureAwait(false);
     }
 
-    internal static GitHubNotification? ParseNotification(JsonElement element)
+    internal static GitHubNotification ParseNotification(JsonElement element)
     {
-        if (GetString(element, "id") is not { Length: > 0 } id
+        if (element.ValueKind != JsonValueKind.Object
+            || GetString(element, "id") is not { Length: > 0 } id
+            || string.IsNullOrWhiteSpace(id)
             || !element.TryGetProperty("subject", out var subject)
-            || !element.TryGetProperty("repository", out var repository))
+            || subject.ValueKind != JsonValueKind.Object
+            || GetString(subject, "title") is not { Length: > 0 } title
+            || string.IsNullOrWhiteSpace(title)
+            || GetString(subject, "type") is not { Length: > 0 } type
+            || string.IsNullOrWhiteSpace(type)
+            || !element.TryGetProperty("repository", out var repository)
+            || repository.ValueKind != JsonValueKind.Object
+            || GetString(repository, "full_name") is not { Length: > 0 } fullName
+            || string.IsNullOrWhiteSpace(fullName)
+            || GetUri(repository, "html_url") is not { } webUrl
+            || webUrl.Scheme != Uri.UriSchemeHttps
+            || !string.IsNullOrEmpty(webUrl.UserInfo)
+            || GetString(element, "reason") is not { Length: > 0 } reason
+            || string.IsNullOrWhiteSpace(reason)
+            || !element.TryGetProperty("unread", out var unread)
+            || unread.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+            || GetDate(element, "updated_at") == DateTimeOffset.MinValue)
         {
-            return null;
+            throw new GitHubApiException("GitHub sent back a notification we couldn't read. Try refreshing.");
+        }
+
+        var subjectApiUrl = GetUri(subject, "url");
+        if (subject.TryGetProperty("url", out var url) && url.ValueKind != JsonValueKind.Null
+            && (subjectApiUrl is null || subjectApiUrl.Scheme != Uri.UriSchemeHttps || !string.IsNullOrEmpty(subjectApiUrl.UserInfo)))
+        {
+            throw new GitHubApiException("GitHub sent back a notification we couldn't read. Try refreshing.");
         }
 
         return new GitHubNotification(
             id,
-            GetString(subject, "title") ?? string.Empty,
-            GetString(subject, "type") ?? string.Empty,
-            GetUri(subject, "url"),
-            GetString(repository, "full_name") ?? string.Empty,
-            GetUri(repository, "html_url"),
-            GetString(element, "reason") ?? string.Empty,
-            GetBool(element, "unread"),
+            title,
+            type,
+            subjectApiUrl,
+            fullName,
+            webUrl,
+            reason,
+            unread.ValueKind == JsonValueKind.True,
             GetDate(element, "updated_at"));
     }
 

@@ -46,35 +46,55 @@ internal sealed class RepositoriesClient(HttpClient httpClient) : IRepositoriesC
         using var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken).ConfigureAwait(false);
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
 
-        return json.RootElement.ValueKind == JsonValueKind.Object && json.RootElement.TryGetProperty("items", out var items)
-            ? ParseRepositories(items)
-            : [];
+        if (json.RootElement.ValueKind != JsonValueKind.Object
+            || !json.RootElement.TryGetProperty("items", out var items)
+            || items.ValueKind != JsonValueKind.Array)
+        {
+            throw new GitHubApiException("GitHub sent back a repository search we couldn't read. Try refreshing.");
+        }
+
+        if (json.RootElement.TryGetProperty("incomplete_results", out var incomplete))
+        {
+            if (incomplete.ValueKind == JsonValueKind.True)
+            {
+                throw new GitHubApiException("GitHub returned incomplete repository search results. Try a more specific search.");
+            }
+
+            if (incomplete.ValueKind != JsonValueKind.False)
+            {
+                throw new GitHubApiException("GitHub sent back a repository search we couldn't read. Try refreshing.");
+            }
+        }
+
+        return ParseRepositories(items);
     }
 
     internal static List<GitHubRepository> ParseRepositories(JsonElement array)
     {
-        var repositories = new List<GitHubRepository>();
-        if (array.ValueKind == JsonValueKind.Array)
+        if (array.ValueKind != JsonValueKind.Array)
         {
-            foreach (var element in array.EnumerateArray())
-            {
-                if (ParseRepository(element) is { } repository)
-                {
-                    repositories.Add(repository);
-                }
-            }
+            throw new GitHubApiException("GitHub sent back a repository list we couldn't read. Try refreshing.");
+        }
+
+        var repositories = new List<GitHubRepository>();
+        foreach (var element in array.EnumerateArray())
+        {
+            repositories.Add(ParseRepository(element));
         }
 
         return repositories;
     }
 
-    internal static GitHubRepository? ParseRepository(JsonElement element)
+    internal static GitHubRepository ParseRepository(JsonElement element)
     {
         if (element.ValueKind != JsonValueKind.Object
             || GetString(element, "full_name") is not { Length: > 0 } fullName
-            || GetUri(element, "html_url") is not { } webUrl)
+            || string.IsNullOrWhiteSpace(fullName)
+            || GetUri(element, "html_url") is not { } webUrl
+            || webUrl.Scheme != Uri.UriSchemeHttps
+            || !string.IsNullOrEmpty(webUrl.UserInfo))
         {
-            return null;
+            throw new GitHubApiException("GitHub sent back a repository we couldn't read. Try refreshing.");
         }
 
         return new GitHubRepository(
