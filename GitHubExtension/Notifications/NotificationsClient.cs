@@ -99,20 +99,7 @@ internal sealed class NotificationsClient(HttpClient httpClient) : INotification
 
     internal static SubjectDetails ParseSubject(JsonElement element)
     {
-        var state = GetString(element, "state");
-        var merged = (element.TryGetProperty("merged", out var m) && m.ValueKind == JsonValueKind.True)
-            || GetString(element, "merged_at") is not null;
-        var draft = element.TryGetProperty("draft", out var d) && d.ValueKind == JsonValueKind.True;
-
-        var subjectState = state switch
-        {
-            _ when merged => SubjectState.Merged,
-            "open" when draft => SubjectState.Draft,
-            "open" => SubjectState.Open,
-            "closed" when GetString(element, "state_reason") == "not_planned" => SubjectState.NotPlanned,
-            "closed" => SubjectState.Closed,
-            _ => SubjectState.Unknown,
-        };
+        var subjectState = SubjectStateParser.Parse(element);
 
         var hasPullRequestData = element.TryGetProperty("head", out _) && element.TryGetProperty("base", out _);
         var isPullRequest = hasPullRequestData || element.TryGetProperty("pull_request", out _);
