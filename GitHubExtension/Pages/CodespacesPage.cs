@@ -310,13 +310,15 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
             item,
             "Shutdown",
             "Couldn't start codespace",
-            (account, name, token) => _client.StartCodespaceAsync(account, name, token));
+            (account, name, token) => _client.StartCodespaceAsync(account, name, token),
+            refreshUntilAvailable: true);
 
     private Task RunCodespaceActionAsync(
         CodespaceItem item,
         string requiredState,
         string errorTitle,
-        Func<GitHubAccount, string, CancellationToken, Task<GitHubCodespace>> action)
+        Func<GitHubAccount, string, CancellationToken, Task<GitHubCodespace>> action,
+        bool refreshUntilAvailable = false)
     {
         GitHubAccount account;
         CancellationToken token;
@@ -346,7 +348,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
                 return _currentLoad;
             }
 
-            _currentLoad = Task.Run(() => RunCodespaceActionCoreAsync(account, item, generation, errorTitle, action, token));
+            _currentLoad = Task.Run(() => RunCodespaceActionCoreAsync(account, item, generation, errorTitle, action, refreshUntilAvailable, token));
             return _currentLoad;
         }
     }
@@ -497,23 +499,50 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         int generation,
         string errorTitle,
         Func<GitHubAccount, string, CancellationToken, Task<GitHubCodespace>> action,
+        bool refreshUntilAvailable,
         CancellationToken token)
     {
         try
         {
-            var codespace = await action(account, item.Codespace.Name, token).ConfigureAwait(false);
-            lock (_lock)
+            var name = item.Codespace.Name;
+            var codespace = await action(account, name, token).ConfigureAwait(false);
+            for (var attempt = 0; ; attempt++)
             {
-                if (generation != _generation)
+                token.ThrowIfCancellationRequested();
+                lock (_lock)
                 {
-                    return;
+                    if (generation != _generation)
+                    {
+                        return;
+                    }
+
+                    var index = _items.IndexOf(item);
+                    if (index >= 0)
+                    {
+                        item = new CodespaceItem(this, codespace, _browser, _time.GetUtcNow());
+                        _items[index] = item;
+                    }
                 }
 
-                var index = _items.IndexOf(item);
-                if (index >= 0)
+                if (!refreshUntilAvailable || codespace.State == "Available")
                 {
-                    _items[index] = new CodespaceItem(this, codespace, _browser, _time.GetUtcNow());
+                    break;
                 }
+
+                RaiseItemsChanged();
+                if (codespace.State is not ("Shutdown" or "Created" or "Queued" or "Provisioning" or "Starting" or "Updating" or "Awaiting" or "Rebuilding"))
+                {
+                    throw new GitHubApiException("This codespace couldn't become available. Refresh to check its state.");
+                }
+
+                if (attempt >= 60)
+                {
+                    throw new GitHubApiException("This codespace is still starting. Refresh to check its state.");
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(2), _time, token).ConfigureAwait(false);
+                token.ThrowIfCancellationRequested();
+                codespace = await _client.GetCodespaceAsync(account, name, token).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)

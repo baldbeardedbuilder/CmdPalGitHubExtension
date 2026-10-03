@@ -13,9 +13,9 @@ Your notifications, repos, agents, codespaces, and saved queries, one keystroke 
 - Browse your notifications with issue and PR state, open issue details in Command Palette, filter as you type, and mark them read or done.
 - Preview a pull request's description, branches, labels, and change counts beside its notification. Enter still opens it on GitHub.
 - Find repos fast. Yours filter instantly, and pausing on a search checks all of GitHub too. Qualifiers like `user:` and `language:` work.
-- Select a repo to open its menu with Issues, Pull Requests, Actions, and Discussions. Issues and pull requests open in Command Palette; discussions open on GitHub. Use **More > Open on GitHub** to skip the menu.
+- Select a repo to open its menu with Issues, Pull Requests, Actions, Copilot task creation, and Discussions. Issues and pull requests open in Command Palette; discussions open on GitHub. Use **More > Open on GitHub** to skip the menu.
 - Filter repository issue and pull request lists as you type, see issue labels and pull request status, and page through results.
-- Check your Copilot cloud agent tasks, newest activity first, with repository names, models, and status badges. Filter by title, repo, model, or status, press Enter to open a task, or use More to copy its URL and refresh.
+- Check your Copilot cloud agent tasks, newest activity first, with repository names, models, and status badges. Filter by title, repo, model, or status, press Enter to open a task, or use More to copy its URL and refresh. From a repository menu, start a task with a prompt and optional model, custom agent, branches, and pull request. Review its compute impact before confirming.
 - Pick **Actions** from the repository menu or a repo's **More** menu to browse workflow runs. Filter by workflow, run title, actor, or status, refresh the list, and open a run on GitHub.
 - Browse your codespaces with repository names, branches, last-used times, and status badges. Filter as you type, open one in your browser, or use **More** to copy its URL or name and refresh the list. Use **More > Create Codespace** from the Codespaces section or inside the Codespaces view to create one from a repository and optional branch, even when the list is empty.
 
@@ -23,9 +23,17 @@ Repository issue lists start with **Open** selected. Switch to **Closed** to see
 
 Repository pull request lists start with **Open** selected, including drafts. Switch to **Closed** to see closed and merged pull requests. Text search narrows the selected state, and more results load as you scroll.
 
+Use **More > Merge pull request** on an open, non-draft PR to load a confirmation with the account, repository, current target branch, expected head SHA, stack metadata, and enabled direct-merge methods. Confirming uses GitHub's async merge API, with repository rules enforced and bypass disabled. If the branch has a merge queue, GitHub enqueues the PR instead and the queue controls the merge method. The head SHA, branch, methods, and stack membership are checked again before submission.
+
+The async API automatically includes **all open downstack PRs** for stacked PRs, with no opt-out. It pins the selected PR's head SHA, but cannot pin its base branch or exact downstack set. The confirmation requires explicitly accepting that scope, including concurrent changes after the final check. If you require an immutable target branch or exact downstack set, do not confirm; review the operation on GitHub instead.
+
+**Pending** means processing, not merged. Use **Check status** to retrieve the async request's result without submitting another merge. **Enqueued** is not **Merged**: follow the queue on GitHub for the final outcome. **Failed** shows the failure returned by GitHub. After a timeout or unknown result, check GitHub before trying another merge. Cancelling or switching accounts only stops local work; it does not undo a submitted merge or remove a queue entry. **Load fresh confirmation** reloads current data after cancellation or failure, without submitting a merge. Refresh the PR list to see its latest state.
+
+Merging currently requires github.com and repository write access; fine-grained tokens need **Contents: write**. Other hosts are deliberately disabled until their API support is verified. Unverified hosts and unavailable APIs never fall back to the legacy `/merge` operation.
+
 Actions lists start with **Running** selected, including queued runs; switch to **Succeeded** for successful runs or **Failed** for every other completed outcome, including cancelled and skipped runs. Each filter has a status icon, text search narrows the selected group, and more results load as you scroll.
 
-Codespaces requires a github.com account and the `codespace` token scope. It isn't available on GitHub Enterprise Server. Use **More > Close Codespace** on an active codespace to stop it without deleting its files, or **More > Start Codespace** on a stopped one to start it. The list shows the state GitHub returns, and **Refresh** checks on a start or shutdown. Starting a codespace doesn't open it in your browser. Opening a stopped codespace still takes you to GitHub's browser editor, where it can start the environment.
+Codespaces requires a github.com account and the `codespace` token scope. It isn't available on GitHub Enterprise Server. Use **More > Close Codespace** on an active codespace to stop it without deleting its files, or **More > Start Codespace** on a stopped one to start it. Start asks you to confirm compute use and possible charges, then checks the codespace's state at two-second intervals until it is available, for up to 60 checks. **Refresh** cancels the pending checks and reloads the list; signing out or switching accounts also cancels them. Cancellation doesn't undo a start GitHub has already accepted. If starting takes longer or fails, use **Refresh** to check its state. Starting a codespace doesn't open it in your browser. Opening a stopped codespace still takes you to GitHub's browser editor, where it can start the environment.
 
 Use **More > Delete Codespace** to review its exact name, repository, and current Git status before confirming permanent deletion. The confirmation warns about uncommitted changes, unpushed commits, and unknown safety when GitHub cannot provide that information. Even a reported clean status is not a guarantee; push or back up any work you need first. **Cancel** leaves the codespace untouched. A codespace stays in the list until GitHub confirms it is absent, not just that deletion was accepted. If deletion is pending or a request times out, use **Refresh** to check before trying again.
 
@@ -36,6 +44,8 @@ Agents uses GitHub's [Agent Tasks API](https://docs.github.com/en/rest/agent-tas
 Only non-archived tasks are listed. More tasks load as you scroll, and **Refresh** checks for new activity. GitHub Enterprise Server hosts without this API show an availability error instead of an empty list. Repository or model lookup failures stay visible in the task's subtitle, and you can still open the task.
 
 Tasks still appear when the preview API leaves out their web links. The extension builds those links from the task IDs so you can open them on GitHub.
+
+Starting tasks is available only with Copilot Business or Enterprise and requires **Agent tasks: read and write** for the repository when using a fine-grained token. Organization policies can also prevent task creation. Model names are entered as text because available models depend on your plan and organization. Each request shows a review step before submission, including a notice that it uses Copilot cloud agent compute and may use premium requests or AI credits. If GitHub's response is lost, the extension checks for newly listed repository tasks and asks you to verify the result before trying again.
 
 ## Install
 
