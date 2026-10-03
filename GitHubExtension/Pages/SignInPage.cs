@@ -99,9 +99,16 @@ internal sealed partial class SignInPage : ContentPage
 
         _ = Task.Run(async () =>
         {
+            using var operation = OperationDiagnostics.Begin(DiagnosticEvent.Mutation, DiagnosticArea.Auth);
+            Exception? failure = null;
             try
             {
                 var account = await signIn(cancellation.Token).ConfigureAwait(false);
+                if (cancellation.IsCancellationRequested)
+                {
+                    return;
+                }
+
                 Show(SignInView.SignedIn, account: account);
                 new ToastStatusMessage($"Signed in as @{account.Login}").Show();
             }
@@ -111,15 +118,29 @@ internal sealed partial class SignInPage : ContentPage
             }
             catch (GitHubAuthException ex)
             {
-                Show(returnView, ex.Message, serverUrl);
+                failure = ex;
+                if (!cancellation.IsCancellationRequested)
+                {
+                    Show(returnView, ex.Message, serverUrl);
+                }
             }
-            catch (Exception ex) when (ex is HttpRequestException or IOException or System.Net.Sockets.SocketException)
+            catch (Exception ex)
             {
-                Show(returnView, $"Something went wrong signing in. {ex.Message}", serverUrl);
+                failure = ex;
+                if (!cancellation.IsCancellationRequested)
+                {
+                    Show(returnView, $"Something went wrong signing in. {ex.Message}", serverUrl);
+                }
             }
             finally
             {
-                IsLoading = false;
+                var current = ReferenceEquals(_signInCancellation, cancellation);
+                if (current)
+                {
+                    IsLoading = false;
+                }
+
+                PageDiagnostics.Finish(operation, failure, current, cancellationToken: cancellation.Token);
             }
         });
     }

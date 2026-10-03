@@ -301,6 +301,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
     internal Task CloseAsync(CodespaceItem item)
         => RunCodespaceActionAsync(
             item,
+            DiagnosticEvent.CodespaceStop,
             "Available",
             "Couldn't close codespace",
             (account, name, token) => _client.StopCodespaceAsync(account, name, token));
@@ -308,6 +309,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
     internal Task StartAsync(CodespaceItem item)
         => RunCodespaceActionAsync(
             item,
+            DiagnosticEvent.CodespaceStart,
             "Shutdown",
             "Couldn't start codespace",
             (account, name, token) => _client.StartCodespaceAsync(account, name, token),
@@ -315,6 +317,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
 
     private Task RunCodespaceActionAsync(
         CodespaceItem item,
+        DiagnosticEvent diagnosticEvent,
         string requiredState,
         string errorTitle,
         Func<GitHubAccount, string, CancellationToken, Task<GitHubCodespace>> action,
@@ -348,7 +351,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
                 return _currentLoad;
             }
 
-            _currentLoad = Task.Run(() => RunCodespaceActionCoreAsync(account, item, generation, errorTitle, action, refreshUntilAvailable, token));
+            _currentLoad = Task.Run(() => RunCodespaceActionCoreAsync(account, item, generation, diagnosticEvent, errorTitle, action, refreshUntilAvailable, token));
             return _currentLoad;
         }
     }
@@ -416,6 +419,8 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
 
     private async Task LoadAsync(GitHubAccount account, Uri? page, bool reset, int generation, CancellationToken token)
     {
+        using var operation = OperationDiagnostics.Begin(DiagnosticEvent.PageLoad, DiagnosticArea.Codespaces, verbose: true);
+        Exception? failure = null;
         try
         {
             bool reconcile;
@@ -474,8 +479,9 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
         }
-        catch (GitHubApiException ex)
+        catch (Exception ex)
         {
+            failure = ex;
             lock (_lock)
             {
                 if (generation != _generation)
@@ -489,7 +495,8 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         }
         finally
         {
-            CompleteOperation(generation);
+            var current = CompleteOperation(generation);
+            PageDiagnostics.Finish(operation, failure, current, cancellationToken: token);
         }
     }
 
@@ -497,11 +504,14 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         GitHubAccount account,
         CodespaceItem item,
         int generation,
+        DiagnosticEvent diagnosticEvent,
         string errorTitle,
         Func<GitHubAccount, string, CancellationToken, Task<GitHubCodespace>> action,
         bool refreshUntilAvailable,
         CancellationToken token)
     {
+        using var operation = OperationDiagnostics.Begin(diagnosticEvent, DiagnosticArea.Codespaces);
+        Exception? failure = null;
         try
         {
             var name = item.Codespace.Name;
@@ -548,8 +558,9 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
         }
-        catch (GitHubApiException ex)
+        catch (Exception ex)
         {
+            failure = ex;
             lock (_lock)
             {
                 if (generation != _generation)
@@ -563,11 +574,23 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         }
         finally
         {
-            CompleteOperation(generation);
+            var current = CompleteOperation(generation);
+            if (current && !token.IsCancellationRequested && operation.ChildOutcome == DiagnosticOutcome.Failed)
+            {
+                operation.Complete();
+            }
+            else if (current && !token.IsCancellationRequested && failure is null && refreshUntilAvailable)
+            {
+                operation.Complete(DiagnosticOutcome.Completed);
+            }
+            else
+            {
+                PageDiagnostics.Finish(operation, failure, current, DiagnosticOutcome.Accepted, mutation: true, cancellationToken: token);
+            }
         }
     }
 
-    private void CompleteOperation(int generation)
+    private bool CompleteOperation(int generation)
     {
         bool publish;
         lock (_lock)
@@ -583,6 +606,11 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         {
             IsLoading = false;
             RaiseItemsChanged();
+        }
+
+        lock (_lock)
+        {
+            return generation == _generation && !_disposed;
         }
     }
 

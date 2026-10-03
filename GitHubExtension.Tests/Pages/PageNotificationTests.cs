@@ -24,6 +24,41 @@ public sealed class PageNotificationTests
     private static readonly DateTimeOffset Now = new(2026, 10, 2, 12, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
+    [DoNotParallelize]
+    [DataRow("agents")]
+    [DataRow("codespaces")]
+    [DataRow("actions")]
+    [DataRow("repos")]
+    [DataRow("notifications")]
+    [DataRow("issues")]
+    [DataRow("pull-requests")]
+    public async Task PageDiagnostics_LoadFailureAndRecoveryShareCallerCorrelation(string name)
+    {
+        var entries = new ConcurrentQueue<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Enqueue, verboseReads: true);
+        using var caller = OperationDiagnostics.Begin(DiagnosticEvent.Mutation);
+        var fail = true;
+        var (page, load, refresh) = CreateListPage(name, CreateAuth(), () => fail);
+        try
+        {
+            page.GetItems();
+            await load();
+            fail = false;
+            await refresh();
+            var outcomes = entries.Where(e => e.Event == DiagnosticEvent.PageLoad).ToArray();
+            Assert.HasCount(1, outcomes.Where(e => e.Outcome == DiagnosticOutcome.Failed));
+            Assert.HasCount(1, outcomes.Where(e => e.Outcome == DiagnosticOutcome.Completed));
+            Assert.IsTrue(outcomes.All(e => e.OperationId == caller.Id));
+            Assert.IsFalse(entries.Any(e => e.ToString().Contains("rate limited", StringComparison.Ordinal)));
+        }
+        finally
+        {
+            (page as IDisposable)?.Dispose();
+            caller.Complete();
+        }
+    }
+
+    [TestMethod]
     public async Task ErrorNotifications_CanReturnHomeAndOpenAnotherPage()
     {
         var auth = CreateAuth();

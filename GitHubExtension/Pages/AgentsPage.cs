@@ -165,6 +165,8 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
 
     private async Task LoadAsync(GitHubAccount account, Uri? page, bool reset, int generation, CancellationToken token)
     {
+        using var operation = OperationDiagnostics.Begin(DiagnosticEvent.PageLoad, DiagnosticArea.Agents, verbose: true);
+        Exception? failure = null;
         try
         {
             var result = await _client.GetTasksAsync(account, page, token).ConfigureAwait(false);
@@ -195,8 +197,9 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
         }
-        catch (Exception ex) when (ex is GitHubApiException or HttpRequestException or IOException or OperationCanceledException)
+        catch (Exception ex)
         {
+            failure = ex;
             lock (_lock)
             {
                 if (generation != _generation || token.IsCancellationRequested)
@@ -225,6 +228,13 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
                 IsLoading = false;
                 RaiseItemsChanged();
             }
+
+            lock (_lock)
+            {
+                publish = generation == _generation && !_disposed;
+            }
+
+            PageDiagnostics.Finish(operation, failure, publish, cancellationToken: token);
         }
     }
 

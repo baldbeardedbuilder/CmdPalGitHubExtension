@@ -7,6 +7,7 @@ using System.Globalization;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using BaldBeardedBuilder.CmdPal.GitHub.Api;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using static BaldBeardedBuilder.CmdPal.GitHub.Api.GitHubRest;
 
@@ -33,7 +34,8 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
     private const string ApiVersion = "2026-03-10";
     private const int MaxConcurrentRequests = 6;
 
-    public async Task<AgentTasksPageResult> GetTasksAsync(GitHubAccount account, Uri? page, CancellationToken cancellationToken)
+    public Task<AgentTasksPageResult> GetTasksAsync(GitHubAccount account, Uri? page, CancellationToken cancellationToken) =>
+        DomainDiagnostics.RunAsync(DiagnosticArea.Agents, async () =>
     {
         var uri = page ?? new Uri(account.Host.ApiUrl, "agents/tasks?per_page=30&sort=updated_at&direction=desc&is_archived=false");
         using var response = await SendAgentsAsync(account, uri, cancellationToken).ConfigureAwait(false);
@@ -92,7 +94,8 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
                 throttle.Release();
             }
         }
-    }
+    }, outcome: result => result.Tasks.Any(task => task.DetailsError is not null)
+        ? DiagnosticOutcome.Partial : DiagnosticOutcome.Completed, cancellationToken: cancellationToken);
 
     public async Task<IReadOnlyList<GitHubAgentTask>> GetRepositoryTasksAsync(
         GitHubAccount account,
@@ -246,7 +249,8 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
         }
     }
 
-    internal static List<GitHubAgentTask> ParseTasks(JsonElement root, GitHubHost host)
+    internal static List<GitHubAgentTask> ParseTasks(JsonElement root, GitHubHost host) =>
+        DomainDiagnostics.Read(DiagnosticArea.Agents, () =>
     {
         if (root.ValueKind != JsonValueKind.Object
             || !root.TryGetProperty("tasks", out var tasks)
@@ -295,6 +299,7 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
                     || !repository.TryGetProperty("id", out var value) || value.ValueKind != JsonValueKind.Number
                     || !value.TryGetInt64(out var number) || number <= 0)
                 {
+                    DomainDiagnostics.InvalidEntry(DiagnosticArea.Agents);
                     repositoryError = "GitHub sent back an agent task with an invalid repository.";
                 }
                 else
@@ -308,9 +313,10 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
         }
 
         return result;
-    }
+    });
 
-    internal static string? ParseModel(JsonElement root)
+    internal static string? ParseModel(JsonElement root) =>
+        DomainDiagnostics.Read(DiagnosticArea.Agents, () =>
     {
         if (root.ValueKind != JsonValueKind.Object
             || !root.TryGetProperty("sessions", out var sessions)
@@ -328,16 +334,17 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
             .OrderByDescending(s => GetDate(s, "created_at"))
             .FirstOrDefault();
         return latest.ValueKind == JsonValueKind.Object ? GetString(latest, "model") : null;
-    }
+    });
 
     private async Task<string> GetRepositoryNameAsync(GitHubAccount account, long id, CancellationToken cancellationToken)
     {
         var uri = new Uri(account.Host.ApiUrl, $"repositories/{id.ToString(CultureInfo.InvariantCulture)}");
         using var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken).ConfigureAwait(false);
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
-        return json.RootElement.ValueKind == JsonValueKind.Object && GetString(json.RootElement, "full_name") is { Length: > 0 } name
+        return DomainDiagnostics.Read(DiagnosticArea.Agents, () =>
+            json.RootElement.ValueKind == JsonValueKind.Object && GetString(json.RootElement, "full_name") is { Length: > 0 } name
             ? name
-            : throw new GitHubApiException("GitHub sent back a repository we couldn't read.");
+            : throw new GitHubApiException("GitHub sent back a repository we couldn't read."));
     }
 
     private async Task<HttpResponseMessage> SendAgentsAsync(GitHubAccount account, Uri uri, CancellationToken cancellationToken)
@@ -351,14 +358,14 @@ internal sealed class AgentsClient(HttpClient httpClient) : IAgentsClient
 
         using (response)
         {
-            throw response.StatusCode switch
+            throw CorrelateFailure(response, response.StatusCode switch
             {
                 HttpStatusCode.Unauthorized => new GitHubApiException("GitHub didn't accept your token. Sign out and back in to fix it."),
                 HttpStatusCode.Forbidden => new GitHubApiException("GitHub denied access to agents. Check your Copilot access, token permissions (Agent tasks: read for fine-grained tokens), and API rate limit."),
                 HttpStatusCode.NotFound => new GitHubApiException("The Agent Tasks API isn't available for this account or GitHub host."),
                 HttpStatusCode.TooManyRequests => new GitHubApiException("GitHub's rate limit was reached. Try refreshing agents later."),
                 _ => new GitHubApiException($"{account.Host.Name} returned {(int)response.StatusCode} {response.ReasonPhrase}."),
-            };
+            });
         }
     }
 }

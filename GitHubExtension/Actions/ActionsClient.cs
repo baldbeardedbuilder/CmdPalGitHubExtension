@@ -4,6 +4,7 @@
 
 using System.Text;
 using System.Text.Json;
+using BaldBeardedBuilder.CmdPal.GitHub.Api;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using static BaldBeardedBuilder.CmdPal.GitHub.Api.GitHubRest;
 
@@ -20,7 +21,8 @@ internal sealed class ActionsClient(HttpClient httpClient) : IActionsClient
 {
     private const string TimeoutMessage = "GitHub took too long to return workflow runs. Try refreshing.";
 
-    public async Task<WorkflowRunsPageResult> GetRunsAsync(GitHubAccount account, string repository, Uri? page, CancellationToken cancellationToken)
+    public Task<WorkflowRunsPageResult> GetRunsAsync(GitHubAccount account, string repository, Uri? page, CancellationToken cancellationToken) =>
+        DomainDiagnostics.RunAsync(DiagnosticArea.Actions, async () =>
     {
         var path = string.Join('/', repository.Split('/').Select(Uri.EscapeDataString));
         var uri = page ?? new Uri(account.Host.ApiUrl, $"repos/{path}/actions/runs?per_page=50");
@@ -38,7 +40,7 @@ internal sealed class ActionsClient(HttpClient httpClient) : IActionsClient
         {
             throw new GitHubApiException("The connection closed while loading workflow runs. Try refreshing.", ex);
         }
-    }
+    }, cancellationToken: cancellationToken);
 
     public async Task<GitHubWorkflowRun> GetRunAsync(GitHubAccount account, string repository, long runId, CancellationToken cancellationToken)
     {
@@ -69,7 +71,8 @@ internal sealed class ActionsClient(HttpClient httpClient) : IActionsClient
         return new Uri(account.Host.ApiUrl, $"repos/{path}/actions/runs/{runId.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
     }
 
-    internal static List<GitHubWorkflowRun> ParseRuns(JsonElement root)
+    internal static List<GitHubWorkflowRun> ParseRuns(JsonElement root) =>
+        DomainDiagnostics.Read(DiagnosticArea.Actions, () =>
     {
         if (root.ValueKind != JsonValueKind.Object
             || !root.TryGetProperty("workflow_runs", out var runs)
@@ -79,7 +82,7 @@ internal sealed class ActionsClient(HttpClient httpClient) : IActionsClient
         }
 
         return runs.EnumerateArray().Select(ParseRun).ToList();
-    }
+    });
 
     private static GitHubWorkflowRun ParseRun(JsonElement run)
     {

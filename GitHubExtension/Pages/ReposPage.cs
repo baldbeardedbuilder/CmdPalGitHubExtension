@@ -264,56 +264,65 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
 
     private async Task SearchAsync(GitHubAccount account, string query, CancellationToken cancellationToken)
     {
+        using var operation = OperationDiagnostics.Begin(DiagnosticEvent.PageSearch, DiagnosticArea.Repositories, verbose: true);
+        Exception? failure = null;
         try
         {
-            await Task.Delay(_searchDelay, cancellationToken).ConfigureAwait(false);
-            var results = await _client.SearchAsync(account, query, cancellationToken).ConfigureAwait(false);
-            var now = _time.GetUtcNow();
-
-            lock (_lock)
+            try
             {
-                if (cancellationToken.IsCancellationRequested)
+                await Task.Delay(_searchDelay, cancellationToken).ConfigureAwait(false);
+                var results = await _client.SearchAsync(account, query, cancellationToken).ConfigureAwait(false);
+                var now = _time.GetUtcNow();
+                lock (_lock)
                 {
-                    return;
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
+                    _searchQuery = query;
+                    _searchResults = [.. results.Select(r => new RepoItem(this, r, _browser, now))];
                 }
-
-                _searchQuery = query;
-                _searchResults = [.. results.Select(r => new RepoItem(this, r, _browser, now))];
             }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            return;
-        }
-        catch (Exception ex) when (ex is GitHubApiException or OperationCanceledException)
-        {
-            lock (_lock)
-            {
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    return;
-                }
-
-                _searchQuery = query;
-                _searchResults = [];
-                _searchError = ex is OperationCanceledException ? "GitHub took too long to respond. Try searching again." : ex.Message;
-            }
-        }
-
-        bool fetching;
-        lock (_lock)
-        {
-            if (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 return;
             }
+            catch (Exception ex)
+            {
+                failure = ex;
+                lock (_lock)
+                {
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
 
-            _searching = false;
-            fetching = _fetching;
+                    _searchQuery = query;
+                    _searchResults = [];
+                    _searchError = ex is OperationCanceledException ? "GitHub took too long to respond. Try searching again." : ex.Message;
+                }
+            }
+
+            bool fetching;
+            lock (_lock)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                _searching = false;
+                fetching = _fetching;
+            }
+
+            IsLoading = fetching;
+            RaiseItemsChanged();
         }
-
-        IsLoading = fetching;
-        RaiseItemsChanged();
+        finally
+        {
+            PageDiagnostics.Finish(operation, failure, true, cancellationToken: cancellationToken);
+        }
     }
 
     private Task StartLoad(bool reset)
@@ -349,6 +358,8 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
 
     private async Task LoadAsync(GitHubAccount account, Uri? page, bool reset, int generation)
     {
+        using var operation = OperationDiagnostics.Begin(DiagnosticEvent.PageLoad, DiagnosticArea.Repositories, verbose: true);
+        Exception? failure = null;
         try
         {
             var result = await _client.GetMyRepositoriesAsync(account, page, CancellationToken.None).ConfigureAwait(false);
@@ -378,8 +389,9 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
 
             HasMoreItems = result.NextPage is not null && SearchText.Trim().Length == 0;
         }
-        catch (GitHubApiException ex)
+        catch (Exception ex)
         {
+            failure = ex;
             lock (_lock)
             {
                 if (generation != _generation)
@@ -411,6 +423,13 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
                 IsLoading = searching;
                 RaiseItemsChanged();
             }
+
+            lock (_lock)
+            {
+                publish = generation == _generation;
+            }
+
+            PageDiagnostics.Finish(operation, failure, publish);
         }
     }
 

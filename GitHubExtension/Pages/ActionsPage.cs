@@ -222,6 +222,8 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
     private async Task LoadAsync(GitHubAccount account, string repository, Uri? page, bool reset, int generation)
     {
+        using var operation = OperationDiagnostics.Begin(DiagnosticEvent.PageLoad, DiagnosticArea.Actions, verbose: true);
+        Exception? failure = null;
         try
         {
             var result = await _client.GetRunsAsync(account, repository, page, CancellationToken.None).ConfigureAwait(false);
@@ -248,8 +250,9 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
             HasMoreItems = hasMore;
         }
-        catch (GitHubApiException ex)
+        catch (Exception ex)
         {
+            failure = ex;
             lock (_lock)
             {
                 if (generation != _generation)
@@ -280,6 +283,13 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
                 IsLoading = false;
                 RaiseItemsChanged();
             }
+
+            lock (_lock)
+            {
+                publish = generation == _generation;
+            }
+
+            PageDiagnostics.Finish(operation, failure, publish);
         }
     }
 

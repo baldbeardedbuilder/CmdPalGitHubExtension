@@ -67,9 +67,13 @@ To sign out, open the extension and pick **Sign out**.
 
 ## Troubleshooting
 
-Failed GitHub REST calls write diagnostic messages to Command Palette's logs. Type **logs** in Command Palette to view them. Refresh notifications to retry a failed PR lookup; the preview now shows the API error instead of hiding it behind a generic message.
+Extension operations write diagnostics to Command Palette's existing logs. Type **logs** in Command Palette to view them. Match `operation-id` to follow a page load, sign-in, or command through its REST requests and parsing stages. Entries have stable event names, severity, duration in milliseconds, and outcomes. User-facing errors remain in the page or command feedback, not in diagnostic payloads.
 
-Log entries include the API host and path, HTTP status, GitHub request ID, rate-limit metadata, and whether GitHub sent an SSO header. Network failures and invalid JSON are logged too. Tokens, authorization headers, URL queries, and response bodies aren't logged. API paths can contain private repository names, so review logs before sharing them.
+Diagnostics cover auth stages, Credential Locker failures, HTTP and schema failures, page loads, and mutations. `Requested` means an operation started; `Accepted` means GitHub accepted a mutation, not that asynchronous work finished; `Completed` means the operation confirmed completion. `Failed` indicates a known failure; `Unknown` means a mutation might have reached GitHub, so refresh before retrying. `Partial` identifies a read with unavailable enrichment. Normal cancellation is informational, not an error.
+
+Successful reads are quiet by default. To diagnose loads and searches, set the environment variable `CMDPAL_GITHUB_VERBOSE_DIAGNOSTICS=1` before starting the extension, then restart it. Unset it and restart to return to normal logging. Verbose mode uses the same privacy rules.
+
+Only allowlisted categories, HTTP status, safe method names, generated correlation IDs, timing, and route templates are logged. For example, a private pull request is `/repos/{owner}/{repo}/pulls/{number}`, never its actual path. Unknown routes are logged as `unknown`. Tokens, OAuth values, prompts, bodies, search text, account names, server names, raw exception messages, and arbitrary response headers are never logged. No separate file logger or telemetry service is used.
 
 If an organization uses SAML single sign-on and hasn't authorized the extension yet, the pull request preview says so and links to GitHub's authorization page. You can also use **More > Authorize single sign-on**. Approve it, then refresh notifications. If your org restricts OAuth apps, an org owner may need to approve the app first.
 
