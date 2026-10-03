@@ -336,11 +336,11 @@ public sealed class PageDiagnosticsTests
         var entries = new ConcurrentQueue<DiagnosticEntry>();
         using var sink = OperationDiagnostics.UseSink(entries.Enqueue, verboseReads: true);
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var pending = new TaskCompletionSource<IReadOnlyList<GitHubRepository>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pending = new TaskCompletionSource<RepositorySearchPageResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         var client = new Mock<IRepositoriesClient>();
-        client.Setup(c => c.SearchAsync(Account, "private-query", It.IsAny<CancellationToken>()))
+        client.Setup(c => c.SearchAsync(Account, "private-query", null, It.IsAny<CancellationToken>()))
             .Returns(() => { started.SetResult(); return pending.Task; });
-        client.Setup(c => c.SearchAsync(Account, "timeout", It.IsAny<CancellationToken>()))
+        client.Setup(c => c.SearchAsync(Account, "timeout", null, It.IsAny<CancellationToken>()))
             .ThrowsAsync(new TaskCanceledException("private timeout"));
         var auth = CreateAuth();
         var browser = new FakeBrowser(_ => null);
@@ -352,7 +352,7 @@ public sealed class PageDiagnosticsTests
         await started.Task;
         page.SearchText = "timeout";
         await page.CurrentSearch;
-        pending.SetResult([]);
+        pending.SetResult(new RepositorySearchPageResult([], null, 0));
         await oldSearch;
 
         var outcomes = entries.Where(e => e.Event == DiagnosticEvent.PageSearch && e.Outcome != DiagnosticOutcome.Requested).ToArray();

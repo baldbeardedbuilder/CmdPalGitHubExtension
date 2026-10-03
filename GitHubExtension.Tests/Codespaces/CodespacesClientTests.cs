@@ -503,14 +503,19 @@ public class CodespacesClientTests
     [DataRow(" feature/\"branch\\\n\t\u263a ")]
     public async Task CreateCodespaceAsync_PreservesLongIdAndOptionalEscapedBranch(string? branch)
     {
+        var authoritative = System.Text.Json.Nodes.JsonNode.Parse(CodespaceJson)!;
+        authoritative["git_status"]!["ref"] = string.IsNullOrWhiteSpace(branch) ? "feature/codespaces" : branch.Trim();
         using var handler = new CreateCodespaceHandler(
             (HttpStatusCode.OK, """{"id":9223372036854775807}"""),
-            (HttpStatusCode.Created, CodespaceJson));
+            (HttpStatusCode.Created, CodespaceJson),
+            (HttpStatusCode.OK, authoritative.ToJsonString()));
         using var http = new HttpClient(handler);
 
         await new CodespacesClient(http).CreateCodespaceAsync(Account, "octocat/hello", branch, TestContext.CancellationToken);
 
-        Assert.HasCount(2, handler.Requests);
+        Assert.HasCount(3, handler.Requests);
+        Assert.AreEqual(HttpMethod.Get, handler.Requests[2].Method);
+        Assert.AreEqual(new Uri("https://api.github.com/user/codespaces/octocat-hello-abc"), handler.Requests[2].Url);
         using var body = JsonDocument.Parse(handler.Requests[1].Body!);
         var root = body.RootElement;
         Assert.AreEqual(JsonValueKind.Number, root.GetProperty("repository_id").ValueKind);

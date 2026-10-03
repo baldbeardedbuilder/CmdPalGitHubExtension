@@ -14,10 +14,10 @@ internal static class MutationConfirmation
           "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
           "type": "AdaptiveCard", "version": "1.6",
           "body": [
-            { "type": "TextBlock", "text": {{JsonSerializer.Serialize(message)}}, "wrap": true }
+            { "type": "TextBlock", "text": {{GitHubJson.String(message)}}, "wrap": true }
             {{(authorizeUrl is null ? string.Empty : $$"""
             , { "type": "ActionSet", "actions": [
-              { "type": "Action.OpenUrl", "title": "Authorize organization access", "url": {{JsonSerializer.Serialize(authorizeUrl.AbsoluteUri)}} }
+              { "type": "Action.OpenUrl", "title": "Authorize organization access", "url": {{GitHubJson.String(authorizeUrl.AbsoluteUri)}} }
             ] }
             """)}}
           ]
@@ -30,11 +30,11 @@ internal static class MutationConfirmation
           "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
           "type": "AdaptiveCard", "version": "1.6",
           "body": [
-            { "type": "TextBlock", "text": {{JsonSerializer.Serialize(action)}}, "size": "Large", "weight": "Bolder", "wrap": true },
-            { "type": "TextBlock", "text": {{JsonSerializer.Serialize($"Account: {account.Login}\nHost: {account.Host.WebUrl}\nTarget: {target}")}}, "wrap": true },
-            { "type": "TextBlock", "text": {{JsonSerializer.Serialize(consequences)}}, "wrap": true },
+            { "type": "TextBlock", "text": {{GitHubJson.String(action)}}, "size": "Large", "weight": "Bolder", "wrap": true },
+            { "type": "TextBlock", "text": {{GitHubJson.String($"Account: {account.Login}\nHost: {account.Host.WebUrl}\nTarget: {target}")}}, "wrap": true },
+            { "type": "TextBlock", "text": {{GitHubJson.String(consequences)}}, "wrap": true },
             { "type": "ActionSet", "actions": [
-              { "type": "Action.Submit", "title": "Confirm", "data": { "action": {{JsonSerializer.Serialize(submitAction)}} } },
+              { "type": "Action.Submit", "title": "Confirm", "data": { "action": {{GitHubJson.String(submitAction)}} } },
               { "type": "Action.Submit", "title": "Cancel", "data": { "action": "cancel" } }
             ] }
           ]
