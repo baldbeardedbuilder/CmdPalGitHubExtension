@@ -5,52 +5,6 @@ Your notifications, repos, agents, codespaces, and saved queries, one keystroke 
 > [!NOTE]
 > This is early. Sign in, then check notifications, browse repo issues and pull requests, explore agent tasks and codespaces, and open Actions from a repo. Saved queries land next.
 
-## What works today
-
-- Sign in to github.com through your browser. No tokens to copy and paste.
-- Sign in to GitHub Enterprise Server with your server URL and a personal access token.
-- Your token lives in Windows Credential Locker, not in a file on disk.
-- Browse your notifications with issue and PR state, open issue details in Command Palette, filter as you type, and mark them read or done.
-- Preview a pull request's description, branches, labels, and change counts beside its notification. Enter still opens it on GitHub.
-- Find repos fast. Yours filter instantly, and pausing on a search checks all of GitHub too. Qualifiers like `user:` and `language:` work.
-- Select a repo to open its menu with Issues, Pull Requests, Actions, Copilot task creation, and Discussions. Issues and pull requests open in Command Palette; discussions open on GitHub. Use **More > Open on GitHub** to skip the menu.
-- Filter repository issue and pull request lists as you type, see issue labels and pull request status, and page through results.
-- Check your Copilot cloud agent tasks, newest activity first, with repository names, models, and status badges. Filter by title, repo, model, or status, press Enter to open a task, or use More to copy its URL and refresh. From a repository menu, start a task with a prompt and optional model, custom agent, branches, and pull request. Review its compute impact before confirming.
-- Pick **Actions** from the repository menu or a repo's **More** menu to browse workflow runs. Filter by workflow, run title, actor, or status, refresh the list, and open a run on GitHub.
-- Browse your codespaces with repository names, branches, last-used times, and status badges. Filter as you type, open one in your browser, or use **More** to copy its URL or name and refresh the list. Use **More > Create Codespace** from the Codespaces section or inside the Codespaces view to create one from a repository and optional branch, even when the list is empty.
-
-Repository issue lists start with **Open** selected. Switch to **Closed** to see completed and not-planned issues. Text search narrows the selected state, and more results load as you scroll.
-
-Repository pull request lists start with **Open** selected, including drafts. Switch to **Closed** to see closed and merged pull requests. Text search narrows the selected state, and more results load as you scroll.
-
-Use **More > Merge pull request** on an open, non-draft PR to load a confirmation with the account, repository, current target branch, expected head SHA, stack metadata, and enabled direct-merge methods. Confirming uses GitHub's async merge API, with repository rules enforced and bypass disabled. If the branch has a merge queue, GitHub enqueues the PR instead and the queue controls the merge method. The head SHA, branch, methods, and stack membership are checked again before submission.
-
-The async API automatically includes **all open downstack PRs** for stacked PRs, with no opt-out. It pins the selected PR's head SHA, but cannot pin its base branch or exact downstack set. The confirmation requires explicitly accepting that scope, including concurrent changes after the final check. If you require an immutable target branch or exact downstack set, do not confirm; review the operation on GitHub instead.
-
-**Pending** means processing, not merged. Use **Check status** to retrieve the async request's result without submitting another merge. **Enqueued** is not **Merged**: follow the queue on GitHub for the final outcome. **Failed** shows the failure returned by GitHub. After a timeout or unknown result, check GitHub before trying another merge. Cancelling or switching accounts only stops local work; it does not undo a submitted merge or remove a queue entry. **Load fresh confirmation** reloads current data after cancellation or failure, without submitting a merge. Refresh the PR list to see its latest state.
-
-Merging currently requires github.com and repository write access; fine-grained tokens need **Contents: write**. Other hosts are deliberately disabled until their API support is verified. Unverified hosts and unavailable APIs never fall back to the legacy `/merge` operation.
-
-Actions lists start with **Running** selected, including queued runs; switch to **Succeeded** for successful runs or **Failed** for every other completed outcome, including cancelled and skipped runs. Each filter has a status icon, text search narrows the selected group, and more results load as you scroll.
-
-On a completed run, use **More > Rerun workflow...** to rerun all jobs. Runs that failed or timed out also offer failed jobs and their dependents. The confirmation warns that reruns use Actions compute and may incur charges; you can optionally enable debug logging. You need repository write access and a classic PAT/OAuth token with `repo` scope, or a fine-grained token with **Actions: write**. GitHub enforces rerun limits, including the 30-day window.
-
-Rerunning keeps the same run ID. The extension rechecks its state before requesting a rerun, refreshes the Actions list, and shows the attempt and status reported by GitHub. **Rerun requested** means the request was accepted, not that the jobs succeeded or finished. Use **Refresh status** to follow the new attempt, including when GitHub hasn't updated it yet or a request timed out. Repeated confirmation won't submit another request; account changes invalidate the confirmation.
-
-Codespaces requires a github.com account and the `codespace` token scope. It isn't available on GitHub Enterprise Server. Use **More > Close Codespace** on an active codespace to stop it without deleting its files, or **More > Start Codespace** on a stopped one to start it. Start asks you to confirm compute use and possible charges, then checks the codespace's state at two-second intervals until it is available, for up to 60 checks. **Refresh** cancels the pending checks and reloads the list; signing out or switching accounts also cancels them. Cancellation doesn't undo a start GitHub has already accepted. If starting takes longer or fails, use **Refresh** to check its state. Starting a codespace doesn't open it in your browser. Opening a stopped codespace still takes you to GitHub's browser editor, where it can start the environment.
-
-Use **More > Delete Codespace** to review its exact name, repository, and current Git status before confirming permanent deletion. The confirmation warns about uncommitted changes, unpushed commits, and unknown safety when GitHub cannot provide that information. Even a reported clean status is not a guarantee; push or back up any work you need first. **Cancel** leaves the codespace untouched. A codespace stays in the list until GitHub confirms it is absent, not just that deletion was accepted. If deletion is pending or a request times out, use **Refresh** to check before trying again.
-
-### Agents access
-
-Agents uses GitHub's [Agent Tasks API](https://docs.github.com/en/rest/agent-tasks/agent-tasks), which is in public preview. You need Copilot cloud agent access. Fine-grained tokens need **Agent tasks: read** on the repositories you want to see. OAuth user tokens are supported too.
-
-Only non-archived tasks are listed. More tasks load as you scroll, and **Refresh** checks for new activity. GitHub Enterprise Server hosts without this API show an availability error instead of an empty list. Repository or model lookup failures stay visible in the task's subtitle, and you can still open the task.
-
-Tasks still appear when the preview API leaves out their web links. The extension builds those links from the task IDs so you can open them on GitHub.
-
-Starting tasks is available only with Copilot Business or Enterprise and requires **Agent tasks: read and write** for the repository when using a fine-grained token. Organization policies can also prevent task creation. Model names are entered as text because available models depend on your plan and organization. Each request shows a review step before submission, including a notice that it uses Copilot cloud agent compute and may use premium requests or AI credits. If GitHub's response is lost, the extension checks for newly listed repository tasks and asks you to verify the result before trying again.
-
 ## Install
 
 Releases aren't published yet. Until they are, build it yourself using the steps in [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -65,74 +19,9 @@ Open Command Palette, type **GitHub**, and pick it.
 
 To sign out, open the extension and pick **Sign out**.
 
-## Troubleshooting
-
-Extension operations write diagnostics to Command Palette's existing logs. Type **logs** in Command Palette to view them. Match `operation-id` to follow a page load, sign-in, or command through its REST requests and parsing stages. Entries have stable event names, severity, duration in milliseconds, and outcomes. User-facing errors remain in the page or command feedback, not in diagnostic payloads.
-
-Diagnostics cover auth stages, Credential Locker failures, HTTP and schema failures, page loads, and mutations. `Requested` means an operation started; `Accepted` means GitHub accepted a mutation, not that asynchronous work finished; `Completed` means the operation confirmed completion. `Failed` indicates a known failure; `Unknown` means a mutation might have reached GitHub, so refresh before retrying. `Partial` identifies a read with unavailable enrichment. Normal cancellation is informational, not an error.
-
-Successful reads are quiet by default. To diagnose loads and searches, set the environment variable `CMDPAL_GITHUB_VERBOSE_DIAGNOSTICS=1` before starting the extension, then restart it. Unset it and restart to return to normal logging. Verbose mode uses the same privacy rules.
-
-Only allowlisted categories, HTTP status, safe method names, generated correlation IDs, timing, and route templates are logged. For example, a private pull request is `/repos/{owner}/{repo}/pulls/{number}`, never its actual path. Unknown routes are logged as `unknown`. Tokens, OAuth values, prompts, bodies, search text, account names, server names, raw exception messages, and arbitrary response headers are never logged. No separate file logger or telemetry service is used.
-
-If an organization uses SAML single sign-on and hasn't authorized the extension yet, the pull request preview says so and links to GitHub's authorization page. You can also use **More > Authorize single sign-on**. Approve it, then refresh notifications. If your org restricts OAuth apps, an org owner may need to approve the app first.
-
-## Building with your own OAuth app
-
-The github.com sign in needs an OAuth app. Official builds have one baked in. Local builds need yours.
-
-1. Go to [Settings > Developer settings > OAuth Apps](https://github.com/settings/developers) and click **New OAuth App**.
-2. Set **Authorization callback URL** to `http://127.0.0.1/callback`. GitHub lets loopback redirects use any port, so you don't need to pick one.
-3. Create a client secret.
-4. Hand the values to the build in one of two ways:
-
-   - Environment variables `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET`.
-   - A `GitHubExtension/oauth.local.props` file (it's gitignored):
-
-     ```xml
-     <Project>
-       <PropertyGroup>
-         <GitHubOAuthClientId>your client id</GitHubOAuthClientId>
-         <GitHubOAuthClientSecret>your client secret</GitHubOAuthClientSecret>
-       </PropertyGroup>
-     </Project>
-     ```
-
-If you skip this, everything still builds. The github.com button just tells you OAuth isn't configured, and Enterprise sign in keeps working.
-
-Yes, the client secret ships inside the app. That's normal for desktop OAuth apps since there's nowhere safe to hide it, and it's why the flow also uses PKCE.
-
 ## Contributing
 
-### GraphQL transport
-
-`GitHubGraphQLClient` sits beside the REST transport and uses the account supplied on each call. It routes github.com and GHE.com tenants to `/graphql`, and GitHub Enterprise Server to `/api/graphql`, with the same authentication, host validation, and HTTP error handling as REST.
-
-`ExecuteAsync` accepts queries or mutations with JSON variables and an optional operation name. Its result owns its JSON data and exposes `Errors`, `IsSuccess`, and `HasPartialData`. HTTP 200 does not imply GraphQL success. Callers must check errors before treating a mutation as successful, and may use partial data while reporting the errors. GraphQL messages, queries, variables, and response bodies are not logged.
-
-Schema errors with `extensions.code = undefinedField` expose `UnsupportedField` with the exact type and field name. Limit any fallback to the affected feature; do not disable GraphQL or unrelated features for that host. The transport does not cache capability or account data.
-
-Pull request models preserve REST `node_id`. `GetNodeIdAsync` resolves a pull request or discussion number to its opaque GraphQL `id` and retains the complete response, including errors. Use IDs only with the account and host that supplied them. This is transport infrastructure; existing REST features and browser-only discussion navigation are unchanged.
-
 Bugs, ideas, and pull requests are all welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Contributors
-
-<!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
-<!-- prettier-ignore-start -->
-<!-- markdownlint-disable -->
-<table>
-  <tbody>
-    <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://baldbeardedbuilder.com/"><img src="https://avatars.githubusercontent.com/u/1228996?v=4?s=100" width="100px;" alt="Michael Jolley"/><br /><sub><b>Michael Jolley</b></sub></a><br /><a href="https://github.com/baldbeardedbuilder/CmdPalGitHubExtension/commits?author=michaeljolley" title="Code">💻</a> <a href="https://github.com/baldbeardedbuilder/CmdPalGitHubExtension/commits?author=michaeljolley" title="Tests">⚠️</a> <a href="#design-michaeljolley" title="Design">🎨</a></td>
-    </tr>
-  </tbody>
-</table>
-
-<!-- markdownlint-restore -->
-<!-- prettier-ignore-end -->
-
-<!-- ALL-CONTRIBUTORS-LIST:END -->
 
 ## License
 
