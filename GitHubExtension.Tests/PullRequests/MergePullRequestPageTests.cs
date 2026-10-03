@@ -73,7 +73,7 @@ public sealed class MergePullRequestPageTests
         page.GetContent();
         await page.CurrentWork;
         var confirmation = ActionData(page, "confirm");
-        Submit(page, """{"action":"cancel"}""");
+        Submit(page, ActionData(page, "cancel"));
         Submit(page, confirmation);
         await page.CurrentWork;
         Assert.Contains("not cancelled", Template(page));
@@ -188,7 +188,7 @@ public sealed class MergePullRequestPageTests
         page.GetContent();
         await page.CurrentWork;
         var staleConfirmation = ActionData(page, "confirm");
-        Submit(page, """{"action":"cancel"}""");
+        Submit(page, ActionData(page, "cancel"));
         Submit(page, ActionData(page, "prepare"));
         await page.CurrentWork;
         Submit(page, staleConfirmation);
@@ -215,11 +215,38 @@ public sealed class MergePullRequestPageTests
         using var page = Page(client.Object, out _);
         page.GetContent();
         var token = await started.Task;
-        Submit(page, """{"action":"cancel"}""");
+        Submit(page, ActionData(page, "cancel"));
         await page.CurrentWork;
         Assert.IsTrue(token.IsCancellationRequested);
         Assert.DoesNotContain("Confirm merge", Template(page));
         VerifyNoMerge(client);
+    }
+
+    [TestMethod]
+    public async Task StaleCancel_CannotEraseNewPendingRequest()
+    {
+        var client = Client();
+        client.Setup(c => c.MergeAsync(Account, Target, "squash", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PullRequestMergeResult("pending", Uuid, "Pending"));
+        client.Setup(c => c.GetStatusAsync(Account, Target, Uuid, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PullRequestMergeResult("enqueued", null, "Enqueued, not merged"));
+        using var page = Page(client.Object, out _);
+        page.GetContent();
+        await page.CurrentWork;
+        var staleCancel = ActionData(page, "cancel");
+        Submit(page, staleCancel);
+        Submit(page, ActionData(page, "prepare"));
+        await page.CurrentWork;
+        Submit(page, ActionData(page, "confirm"));
+        await page.CurrentWork;
+
+        Submit(page, staleCancel);
+        Submit(page, """{"action":"cancel"}""");
+        Submit(page, ActionData(page, "status"));
+        await page.CurrentWork;
+
+        Assert.Contains("Enqueued", Template(page));
+        client.Verify(c => c.GetStatusAsync(Account, Target, Uuid, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     private static Mock<IPullRequestMergeClient> Client()

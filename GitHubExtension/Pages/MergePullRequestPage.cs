@@ -64,9 +64,10 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
     {
         var action = ReadString(data, "action");
         var confirmation = ReadString(data, "confirmation");
-        if (action == "cancel")
+        if (action == "cancel" && confirmation is not null)
         {
-            Invalidate("Stopped locally. An already submitted merge or queue entry is not cancelled. Check GitHub for its outcome.", allowFresh: true);
+            Invalidate("Stopped locally. An already submitted merge or queue entry is not cancelled. Check GitHub for its outcome.",
+                allowFresh: true, expectedConfirmation: confirmation);
         }
         else if (confirmation is not null)
         {
@@ -206,11 +207,11 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
     private void OnAccountChanged(object? sender, EventArgs e) =>
         Invalidate("The account changed. Reopen the PR using the current account. Any submitted merge continues on GitHub.");
 
-    private void Invalidate(string message, bool allowFresh = false)
+    private void Invalidate(string message, bool allowFresh = false, string? expectedConfirmation = null)
     {
         lock (_lock)
         {
-            if (_invalidated) return;
+            if (_invalidated || (expectedConfirmation is not null && expectedConfirmation != _confirmationId)) return;
             _invalidated = true;
             _target = null;
             _result = null;
@@ -256,7 +257,7 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
 
         if (cancel)
         {
-            actions.Add("""{"type":"Action.Submit","title":"Cancel / stop checking","associatedInputs":"none","data":{"action":"cancel"}}""");
+            actions.Add($$$"""{"type":"Action.Submit","title":"Cancel / stop checking","associatedInputs":"none","data":{"action":"cancel","confirmation":"{{{_confirmationId}}}"}}""");
         }
 
         if (includeLink)
