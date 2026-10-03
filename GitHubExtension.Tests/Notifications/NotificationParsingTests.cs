@@ -50,6 +50,7 @@ public class NotificationParsingTests
     [DataRow("""{ "state": "open", "draft": true }""", "Draft")]
     [DataRow("""{ "state": "closed", "merged": true }""", "Merged")]
     [DataRow("""{ "state": "closed", "merged_at": "2025-01-01T00:00:00Z" }""", "Merged")]
+    [DataRow("""{ "state": "closed", "draft": true }""", "Closed")]
     [DataRow("""{ "state": "closed" }""", "Closed")]
     [DataRow("""{ "state": "closed", "state_reason": "not_planned" }""", "NotPlanned")]
     [DataRow("""{ }""", "Unknown")]

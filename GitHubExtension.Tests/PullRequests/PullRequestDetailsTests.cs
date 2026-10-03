@@ -72,6 +72,7 @@ public sealed class PullRequestDetailsTests
     [DataRow("open", false, false, "Open")]
     [DataRow("open", true, false, "Draft")]
     [DataRow("closed", false, false, "Closed")]
+    [DataRow("closed", true, false, "Closed")]
     [DataRow("closed", true, true, "Merged")]
     public void Details_StateIncludesTextAndIcon(string state, bool draft, bool merged, string expected)
     {
@@ -87,6 +88,21 @@ public sealed class PullRequestDetailsTests
         var tag = stateTags.Tags.Single();
         Assert.AreEqual(expected, tag.Text);
         Assert.IsNotNull(tag.Icon);
+    }
+
+    [TestMethod]
+    public void Details_StateUsesMergedAtFromPullRequestResponse()
+    {
+        using var json = JsonDocument.Parse("""
+            {
+              "number": 7, "title": "PR", "html_url": "https://github.com/o/r/pull/7",
+              "head": {}, "base": {}, "state": "closed", "merged_at": "2025-01-01T00:00:00Z"
+            }
+            """);
+        var details = new PullRequestDetails(NotificationsClient.ParseSubject(json.RootElement).PullRequest!);
+        var stateTags = Assert.IsInstanceOfType<IDetailsTags>(details.Metadata.Single(m => m.Key == "State").Data);
+
+        Assert.AreEqual("Merged", stateTags.Tags.Single().Text);
     }
 
     [TestMethod]

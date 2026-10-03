@@ -19,7 +19,7 @@ public sealed class RepositoryPullRequestsPageTests
     private static readonly string[] ExpectedPagedTitles = ["#1 First", "#2 Second"];
     private static readonly string[] ExpectedPullRequestFilters = ["Open", "Closed"];
     private static readonly string[] ExpectedOpenPullRequestTitles = ["#1 Open", "#2 Draft"];
-    private static readonly string[] ExpectedClosedPullRequestTitles = ["#3 Closed"];
+    private static readonly string[] ExpectedClosedPullRequestTitles = ["#3 Closed", "#4 Merged", "#5 Closed draft"];
 
     [TestMethod]
     public async Task Open_ShowsBranchSubtitleAuthorAndOpenBadge()
@@ -86,13 +86,17 @@ public sealed class RepositoryPullRequestsPageTests
         var client = new Mock<IPullRequestsClient>();
         client.Setup(c => c.GetPullRequestsAsync(Account, "octo/tool", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new PullRequestsPageResult(
-            [
-                CreatePullRequest(1, "Open", SubjectState.Open, null, "open", "main", []),
-                CreatePullRequest(2, "Draft", SubjectState.Draft, null, "draft", "main", []),
-                CreatePullRequest(3, "Closed", SubjectState.Closed, null, "closed", "main", []),
-                CreatePullRequest(4, "Merged", SubjectState.Merged, null, "merged", "main", []),
-            ],
-            null));
+                ParsePullRequests(
+                    """
+                    [
+                      {"number":1,"title":"Open","state":"open","draft":false,"html_url":"https://github.com/octo/tool/pull/1","head":{},"base":{}},
+                      {"number":2,"title":"Draft","state":"open","draft":true,"html_url":"https://github.com/octo/tool/pull/2","head":{},"base":{}},
+                      {"number":3,"title":"Closed","state":"closed","html_url":"https://github.com/octo/tool/pull/3","head":{},"base":{}},
+                      {"number":4,"title":"Merged","state":"closed","merged_at":"2025-01-01T00:00:00Z","html_url":"https://github.com/octo/tool/pull/4","head":{},"base":{}},
+                      {"number":5,"title":"Closed draft","state":"closed","draft":true,"html_url":"https://github.com/octo/tool/pull/5","head":{},"base":{}}
+                    ]
+                    """),
+                null));
         using var page = CreatePage(client.Object);
         page.Open("octo/tool");
         await page.CurrentLoad;
@@ -227,6 +231,12 @@ public sealed class RepositoryPullRequestsPageTests
             Labels = labels,
             CreatedAt = Now.AddMinutes(-45),
         };
+
+    private static List<GitHubPullRequest> ParsePullRequests(string payload)
+    {
+        using var json = System.Text.Json.JsonDocument.Parse(payload);
+        return PullRequestsClient.ParsePullRequests(json.RootElement);
+    }
 
     private static RepositoryPullRequestsPage CreatePage(IPullRequestsClient client) =>
         CreatePage(client, out _);

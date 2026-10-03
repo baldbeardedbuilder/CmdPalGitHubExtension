@@ -198,7 +198,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         filter switch
         {
             PullRequestFilters.Open => state is SubjectState.Open or SubjectState.Draft,
-            PullRequestFilters.Closed => state is SubjectState.Closed,
+            PullRequestFilters.Closed => state is SubjectState.Closed or SubjectState.Merged,
             _ => true,
         };
 

@@ -16,7 +16,7 @@ public sealed class RepositoryItemsClientTests
 {
     private static readonly GitHubAccount Account = new(GitHubHost.GitHubDotCom, "octocat", "test-token");
     private static readonly SubjectState[] ExpectedPullRequestStates =
-        [SubjectState.Open, SubjectState.Draft, SubjectState.Merged, SubjectState.Closed, SubjectState.Unknown];
+        [SubjectState.Open, SubjectState.Draft, SubjectState.Merged, SubjectState.Closed, SubjectState.Closed, SubjectState.Unknown];
 
     [TestMethod]
     public async Task IssuesClient_FiltersPullRequestsAndFollowsNextPage()
@@ -72,9 +72,10 @@ public sealed class RepositoryItemsClientTests
                   [
                     {"number":1,"title":"Open PR","state":"open","html_url":"https://github.com/octo/tool/pull/1","draft":false,"head":{"label":"contributor:feature","ref":"feature"},"base":{"label":"octo:main","ref":"main"}},
                     {"number":2,"title":"Draft PR","state":"open","html_url":"https://github.com/octo/tool/pull/2","draft":true,"head":{"ref":"draft"},"base":{"ref":"main"}},
-                    {"number":3,"title":"Merged PR","state":"closed","merged":true,"html_url":"https://github.com/octo/tool/pull/3","head":{},"base":{}},
+                    {"number":3,"title":"Merged PR","state":"closed","merged_at":"2025-01-01T00:00:00Z","html_url":"https://github.com/octo/tool/pull/3","head":{},"base":{}},
                     {"number":4,"title":"Closed PR","state":"closed","merged":false,"html_url":"https://github.com/octo/tool/pull/4","head":{},"base":{}},
-                    {"number":5,"title":"Unknown PR","state":"custom","html_url":"https://github.com/octo/tool/pull/5","head":{},"base":{}}
+                    {"number":5,"title":"Closed draft PR","state":"closed","draft":true,"html_url":"https://github.com/octo/tool/pull/5","head":{},"base":{}},
+                    {"number":6,"title":"Unknown PR","state":"custom","html_url":"https://github.com/octo/tool/pull/6","head":{},"base":{}}
                   ]
                   """
                 : """[{"number":5,"title":"Next page","state":"open","html_url":"https://github.com/octo/tool/pull/5","head":{},"base":{}}]""";
