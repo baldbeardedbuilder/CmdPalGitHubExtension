@@ -14,6 +14,7 @@ internal interface IActionsClient
 {
     Task<WorkflowRunsPageResult> GetRunsAsync(GitHubAccount account, string repository, Uri? page, CancellationToken cancellationToken);
     Task<GitHubWorkflowRun> GetRunAsync(GitHubAccount account, string repository, long runId, CancellationToken cancellationToken);
+    Task CancelRunAsync(GitHubAccount account, string repository, long runId, bool force, CancellationToken cancellationToken);
     Task RerunAsync(GitHubAccount account, string repository, long runId, bool failedOnly, bool debugLogging, CancellationToken cancellationToken);
 }
 
@@ -53,6 +54,22 @@ internal sealed class ActionsClient(HttpClient httpClient) : IActionsClient
         }
 
         return run;
+    }
+
+    public async Task CancelRunAsync(GitHubAccount account, string repository, long runId, bool force, CancellationToken cancellationToken)
+    {
+        var endpoint = force ? "force-cancel" : "cancel";
+        var sent = false;
+        await DomainDiagnostics.RunAsync(DiagnosticArea.Actions, async () =>
+        {
+            sent = true;
+            using var response = await SendAsync(httpClient, account, HttpMethod.Post,
+                new Uri(RunUri(account, repository, runId).AbsoluteUri + $"/{endpoint}"), cancellationToken,
+                timeoutMessage: "The cancellation request timed out. It may have been accepted. Refresh the run before trying again.")
+                .ConfigureAwait(false);
+            return true;
+        }, name: DiagnosticEvent.Mutation, outcome: _ => DiagnosticOutcome.Requested, mutationSent: () => sent,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     public async Task RerunAsync(GitHubAccount account, string repository, long runId, bool failedOnly, bool debugLogging, CancellationToken cancellationToken)

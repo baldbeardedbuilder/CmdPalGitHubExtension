@@ -23,6 +23,10 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     private readonly List<WorkflowRunItem> _items = [];
     private readonly Dictionary<(long Id, int? Attempt), RerunWorkflowPage> _rerunPages = [];
     private string? _repository;
+    private CancellationTokenSource? _cancellationCts;
+    private Task _currentCancellation = Task.CompletedTask;
+    private string? _cancellationError;
+    private int _accountGeneration;
 
     public ActionsPage(AuthService auth, IActionsClient client, IBrowserLauncher browser, TimeProvider? time = null)
     {
@@ -49,6 +53,17 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
             lock (_lock)
             {
                 return _load.CurrentLoad;
+            }
+        }
+    }
+
+    internal Task CurrentCancellation
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _currentCancellation;
             }
         }
     }
@@ -96,10 +111,11 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         {
             var terms = SearchText.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             var filter = _filters.CurrentFilterId;
+            var error = _cancellationError ?? _load.Error;
             empty = _auth.CurrentAccount is null
                 ? Empty("Sign in to view workflow runs", "Open GitHub to sign in")
-                : _load.Error is not null
-                    ? Empty("Couldn't load workflow runs", _load.Error, refresh: true)
+                : error is not null
+                    ? Empty("Couldn't load workflow runs", error, refresh: true)
                     : _load.Fetching && _items.Count == 0
                         ? Empty("Loading workflow runs...", _repository ?? string.Empty)
                         : terms.Length > 0
@@ -109,12 +125,12 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
                 .Where(i => ActionFilters.Matches(i.Run, filter))
                 .Where(i => terms.All(t => i.SearchText.Contains(t, StringComparison.OrdinalIgnoreCase)))
                 .Cast<IListItem>().ToList();
-            if (_load.Error is not null && _items.Count > 0)
+            if (error is not null && _items.Count > 0)
             {
                 matches.Add(new ListItem(new RefreshActionsCommand(this))
                 {
                     Title = "Couldn't load workflow runs",
-                    Subtitle = _load.Error,
+                    Subtitle = error,
                     Icon = Icons.Actions,
                 });
             }
@@ -132,13 +148,23 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
     public Task RefreshAsync()
     {
+        CancelCancellation();
         lock (_lock)
         {
+            _cancellationError = null;
             _load.Invalidate();
         }
 
         return StartLoad(reset: true);
     }
+
+    internal GitHubAccount? CurrentAccount => _auth.CurrentAccount;
+
+    internal int AccountGeneration => _accountGeneration;
+
+    internal Task CancelAsync(WorkflowRunItem item) => StartCancellation(item, force: false);
+
+    internal Task ForceCancelAsync(WorkflowRunItem item) => StartCancellation(item, force: true);
 
     internal RerunWorkflowPage RerunPage(string repository, GitHubWorkflowRun run)
     {
@@ -158,8 +184,13 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     public void Dispose()
     {
         _auth.AccountChanged -= OnAccountChanged;
+        CancelCancellation();
         ClearRerunPages();
-        _load.Dispose();
+        lock (_lock)
+        {
+            _load.Dispose();
+        }
+
         IsLoading = false;
     }
 
@@ -238,11 +269,191 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         _load.Publish(operation, () => RaiseItemsChanged());
     }
 
+    private Task StartCancellation(WorkflowRunItem item, bool force)
+    {
+        GitHubAccount account;
+        string repository;
+        CancellationTokenSource cancellation;
+        lock (_lock)
+        {
+            if (_load.Disposed || item.Account is null || _auth.CurrentAccount is not { } currentAccount
+                || currentAccount != item.Account || _accountGeneration != item.AccountGeneration
+                || _repository is not { } currentRepository || !string.Equals(currentRepository, item.Repository, StringComparison.Ordinal)
+                || !_items.Any(i => i.Run.Id == item.Run.Id && IsActive(i.Run)))
+            {
+                return Task.CompletedTask;
+            }
+
+            if (_cancellationCts is not null)
+            {
+                if (!force)
+                {
+                    return _currentCancellation;
+                }
+
+                CancelCancellationLocked();
+            }
+
+            cancellation = new CancellationTokenSource();
+            _cancellationCts = cancellation;
+            _cancellationError = null;
+            account = currentAccount;
+            repository = currentRepository;
+            var token = cancellation.Token;
+            _currentCancellation = Task.Run(() => CancelRunAsync(account, repository, item, force, cancellation, token));
+            return _currentCancellation;
+        }
+    }
+
+    private async Task CancelRunAsync(
+        GitHubAccount account,
+        string repository,
+        WorkflowRunItem item,
+        bool force,
+        CancellationTokenSource cancellation,
+        CancellationToken token)
+    {
+        try
+        {
+            var current = await _client.GetRunAsync(account, repository, item.Run.Id, token).ConfigureAwait(false);
+            if (!CanContinue(account, repository, cancellation, token))
+            {
+                return;
+            }
+
+            UpdateRun(item, current, account, repository, cancellation, token);
+            if (!IsActive(current))
+            {
+                return;
+            }
+
+            await _client.CancelRunAsync(account, repository, current.Id, force, token).ConfigureAwait(false);
+            while (CanContinue(account, repository, cancellation, token))
+            {
+                current = await _client.GetRunAsync(account, repository, item.Run.Id, token).ConfigureAwait(false);
+                if (!CanContinue(account, repository, cancellation, token))
+                {
+                    return;
+                }
+
+                UpdateRun(item, current, account, repository, cancellation, token);
+                if (!IsActive(current))
+                {
+                    return;
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(2), token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+        }
+        catch (GitHubApiException ex)
+        {
+            bool publish;
+            lock (_lock)
+            {
+                publish = CanContinueLocked(account, repository, cancellation, token);
+                if (publish)
+                {
+                    _cancellationError = ex.Message;
+                }
+            }
+
+            if (publish)
+            {
+                RaiseItemsChanged();
+            }
+        }
+        finally
+        {
+            bool publish;
+            lock (_lock)
+            {
+                publish = ReferenceEquals(_cancellationCts, cancellation);
+                if (publish)
+                {
+                    _cancellationCts = null;
+                }
+            }
+
+            cancellation.Dispose();
+            if (publish)
+            {
+                RaiseItemsChanged();
+            }
+        }
+    }
+
+    private void UpdateRun(
+        WorkflowRunItem item,
+        GitHubWorkflowRun run,
+        GitHubAccount account,
+        string repository,
+        CancellationTokenSource cancellation,
+        CancellationToken token)
+    {
+        bool publish;
+        lock (_lock)
+        {
+            var index = _items.FindIndex(i => i.Run.Id == item.Run.Id);
+            publish = CanContinueLocked(account, repository, cancellation, token) && index >= 0;
+            if (publish)
+            {
+                _items[index] = new WorkflowRunItem(this, repository, run, _browser, _time.GetUtcNow());
+            }
+        }
+
+        if (publish)
+        {
+            RaiseItemsChanged();
+        }
+    }
+
+    private bool CanContinue(GitHubAccount account, string repository, CancellationTokenSource cancellation, CancellationToken token)
+    {
+        lock (_lock)
+        {
+            return CanContinueLocked(account, repository, cancellation, token);
+        }
+    }
+
+    private bool CanContinueLocked(GitHubAccount account, string repository, CancellationTokenSource cancellation, CancellationToken token) =>
+        !token.IsCancellationRequested
+        && ReferenceEquals(_cancellationCts, cancellation)
+        && string.Equals(_repository, repository, StringComparison.Ordinal)
+        && !_load.Disposed
+        && _auth.CurrentAccount == account;
+
+    private static bool IsActive(GitHubWorkflowRun run) =>
+        run.Status is "in_progress" or "queued" or "requested" or "waiting" or "pending";
+
+    private void CancelCancellation()
+    {
+        lock (_lock)
+        {
+            _accountGeneration++;
+            CancelCancellationLocked();
+        }
+    }
+
+    private void CancelCancellationLocked()
+    {
+        if (_cancellationCts is { } cancellation)
+        {
+            _ = cancellation.CancelAsync();
+        }
+
+        _cancellationCts = null;
+    }
+
     private void OnAccountChanged(object? sender, EventArgs e)
     {
         ClearRerunPages();
         lock (_lock)
         {
+            CancelCancellationLocked();
+            _cancellationError = null;
             Reset();
             _repository = null;
         }
@@ -254,6 +465,9 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
     private void Reset()
     {
+        _accountGeneration++;
+        CancelCancellationLocked();
+        _cancellationError = null;
         _load.Invalidate(reset: true);
         _items.Clear();
     }

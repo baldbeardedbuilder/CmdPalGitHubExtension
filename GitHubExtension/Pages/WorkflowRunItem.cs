@@ -13,6 +13,9 @@ internal sealed partial class WorkflowRunItem : ListItem
     public WorkflowRunItem(ActionsPage page, string repository, GitHubWorkflowRun run, IBrowserLauncher browser, DateTimeOffset now)
     {
         Run = run;
+        Account = page.CurrentAccount;
+        AccountGeneration = page.AccountGeneration;
+        Repository = repository;
         Title = run.Name;
         Subtitle = WorkflowRunFormatting.Subtitle(run, now);
         Icon = WorkflowRunFormatting.Icon(run);
@@ -20,19 +23,33 @@ internal sealed partial class WorkflowRunItem : ListItem
         var state = WorkflowRunFormatting.State(run);
         SearchText = $"{run.Name} {run.DisplayTitle} {run.Actor} {run.Status} {run.Conclusion} {state}";
         Command = new OpenInBrowserCommand(browser, run.WebUrl, "Open", Icons.Actions);
-        MoreCommands =
-        [
+        var commands = new List<IContextItem>
+        {
             new CommandContextItem(new NoOpCommand()) { Title = $"Status: {state}", Icon = Icon },
             new CommandContextItem(new CopyTextCommand(run.WebUrl.AbsoluteUri) { Name = "Copy run URL", Icon = Icons.Copy }),
             new CommandContextItem(new RefreshActionsCommand(page)),
-        ];
+        };
+        if (run.Status is "in_progress" or "queued" or "requested" or "waiting" or "pending")
+        {
+            commands.Add(new CommandContextItem(new CancelWorkflowRunCommand(page, this)));
+            commands.Add(new CommandContextItem(new ForceCancelWorkflowRunPage(page, this)));
+        }
+
         if (run.CanRerun)
         {
-            MoreCommands = [.. MoreCommands, new CommandContextItem(page.RerunPage(repository, run))];
+            commands.Add(new CommandContextItem(page.RerunPage(repository, run)));
         }
+
+        MoreCommands = [.. commands];
     }
 
     public GitHubWorkflowRun Run { get; }
+
+    public GitHubAccount? Account { get; }
+
+    public int AccountGeneration { get; }
+
+    public string Repository { get; }
 
     public string SearchText { get; }
 }
