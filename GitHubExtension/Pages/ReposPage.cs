@@ -27,12 +27,14 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     private readonly TimeSpan _searchDelay;
     private readonly Lock _lock = new();
     private readonly List<RepoItem> _mine = [];
-    private readonly List<RepositoryPage> _repositoryPages = [];
+    private readonly Dictionary<string, RepositoryPage> _repositoryPages = new(StringComparer.OrdinalIgnoreCase);
     private Uri? _nextPage;
     private bool _loaded;
     private bool _fetching;
+    private volatile bool _disposed;
     private string? _error;
     private int _generation;
+    private CancellationTokenSource? _loadCts;
     private Task _currentLoad = Task.CompletedTask;
 
     private CancellationTokenSource? _searchCts;
@@ -165,6 +167,11 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         bool fetching;
         lock (_lock)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             _searchCts?.Cancel();
             _searchCts?.Dispose();
             _searchCts = null;
@@ -216,8 +223,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
     {
         lock (_lock)
         {
-            _generation++;
-            _fetching = false;
+            CancelLoad();
         }
 
         var query = SearchText;
@@ -231,10 +237,12 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         RepositoryPage[] repositoryPages;
         lock (_lock)
         {
+            _disposed = true;
+            CancelLoad();
             _searchCts?.Cancel();
             _searchCts?.Dispose();
             _searchCts = null;
-            repositoryPages = [.. _repositoryPages];
+            repositoryPages = [.. _repositoryPages.Values];
             _repositoryPages.Clear();
         }
 
@@ -242,6 +250,9 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         {
             page.Dispose();
         }
+
+        IsLoading = false;
+        HasMoreItems = false;
     }
 
     private CommandItem Empty(string title, string subtitle, bool refresh = false) =>
@@ -249,13 +260,38 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
 
     internal RepositoryPage CreateRepositoryPage(GitHubRepository repository)
     {
-        var page = new RepositoryPage(_browser, Actions, repository, _repositoryIssuesPage, _repositoryPullRequestsPage);
         lock (_lock)
         {
-            _repositoryPages.Add(page);
+            if (_repositoryPages.TryGetValue(repository.FullName, out var existing))
+            {
+                return existing;
+            }
         }
 
-        return page;
+        var page = new RepositoryPage(_browser, Actions, repository, _repositoryIssuesPage, _repositoryPullRequestsPage);
+        RepositoryPage result = page;
+        lock (_lock)
+        {
+            if (_disposed)
+            {
+                result = page;
+            }
+            else if (_repositoryPages.TryGetValue(repository.FullName, out var existing))
+            {
+                result = existing;
+            }
+            else
+            {
+                _repositoryPages.Add(repository.FullName, page);
+            }
+        }
+
+        if (!ReferenceEquals(page, result) || _disposed)
+        {
+            page.Dispose();
+        }
+
+        return result;
     }
 
     private async Task SearchAsync(GitHubAccount account, string query, CancellationToken cancellationToken)
@@ -317,14 +353,18 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         GitHubAccount? account;
         Uri? page;
         int generation;
+        CancellationToken token;
         lock (_lock)
         {
             account = _auth.CurrentAccount;
-            if (account is null || _fetching || (!reset && _nextPage is null))
+            if (_disposed || account is null || _fetching || (!reset && _nextPage is null))
             {
                 return _currentLoad;
             }
 
+            _loadCts?.Dispose();
+            _loadCts = new CancellationTokenSource();
+            token = _loadCts.Token;
             _fetching = true;
             page = reset ? null : _nextPage;
             generation = _generation;
@@ -333,26 +373,26 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         IsLoading = true;
         lock (_lock)
         {
-            if (generation != _generation)
+            if (generation != _generation || _disposed)
             {
                 return _currentLoad;
             }
 
-            _currentLoad = Task.Run(() => LoadAsync(account, page, reset, generation));
+            _currentLoad = Task.Run(() => LoadAsync(account, page, reset, generation, token));
             return _currentLoad;
         }
     }
 
-    private async Task LoadAsync(GitHubAccount account, Uri? page, bool reset, int generation)
+    private async Task LoadAsync(GitHubAccount account, Uri? page, bool reset, int generation, CancellationToken token)
     {
         try
         {
-            var result = await _client.GetMyRepositoriesAsync(account, page, CancellationToken.None).ConfigureAwait(false);
+            var result = await _client.GetMyRepositoriesAsync(account, page, token).ConfigureAwait(false);
             var now = _time.GetUtcNow();
 
             lock (_lock)
             {
-                if (generation != _generation)
+                if (generation != _generation || token.IsCancellationRequested || _disposed)
                 {
                     return;
                 }
@@ -374,11 +414,14 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
 
             HasMoreItems = result.NextPage is not null && SearchText.Trim().Length == 0;
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+        }
         catch (GitHubApiException ex)
         {
             lock (_lock)
             {
-                if (generation != _generation)
+                if (generation != _generation || _disposed)
                 {
                     return;
                 }
@@ -393,7 +436,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
             bool publish;
             lock (_lock)
             {
-                publish = generation == _generation;
+                publish = generation == _generation && !_disposed;
                 if (publish)
                 {
                     _fetching = false;
@@ -417,9 +460,14 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         RepositoryPage[] repositoryPages;
         lock (_lock)
         {
-            repositoryPages = [.. _repositoryPages];
+            if (_disposed)
+            {
+                return;
+            }
+
+            repositoryPages = [.. _repositoryPages.Values];
             _repositoryPages.Clear();
-            _generation++;
+            CancelLoad();
             _mine.Clear();
             _nextPage = null;
             _loaded = false;
@@ -442,5 +490,14 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         HasMoreItems = false;
         IsLoading = false;
         RaiseItemsChanged();
+    }
+
+    private void CancelLoad()
+    {
+        _generation++;
+        _loadCts?.Cancel();
+        _loadCts?.Dispose();
+        _loadCts = null;
+        _fetching = false;
     }
 }

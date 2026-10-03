@@ -65,6 +65,34 @@ public class IssueDetailsPageTests
     }
 
     [TestMethod]
+    public async Task Dispose_CancelsPendingIssueRequest()
+    {
+        var issueApiUrl = new Uri("https://api.github.com/repos/octo/tool/issues/42");
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new Mock<IIssuesClient>();
+        CancellationToken requestToken = default;
+        client.Setup(c => c.GetIssueAsync(Account, issueApiUrl, It.IsAny<CancellationToken>()))
+            .Returns(async (GitHubAccount _, Uri _, CancellationToken token) =>
+            {
+                requestToken = token;
+                started.SetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                return null!;
+            });
+        var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(), new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
+        var page = new IssueDetailsPage(auth, client.Object, new FakeBrowser(_ => null));
+
+        page.Open(Account, issueApiUrl, "octo/tool");
+        var load = page.CurrentLoad;
+        await started.Task;
+        page.Dispose();
+        await load;
+
+        Assert.IsTrue(requestToken.IsCancellationRequested);
+        Assert.IsFalse(page.IsLoading);
+    }
+
+    [TestMethod]
     public async Task OpeningIssueNotification_NavigatesToDetailsInsteadOfBrowser()
     {
         var issueApiUrl = new Uri("https://api.github.com/repos/octo/tool/issues/42");

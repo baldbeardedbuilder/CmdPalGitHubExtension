@@ -11,7 +11,7 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
 /// <summary>
 /// A shared detail view for issues opened from anywhere in the extension.
 /// </summary>
-internal sealed partial class IssueDetailsPage : ContentPage
+internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
 {
     public const string PageId = "com.baldbeardedbuilder.cmdpal.github.issue-details";
 
@@ -23,6 +23,8 @@ internal sealed partial class IssueDetailsPage : ContentPage
     private GitHubIssue? _issue;
     private string? _repository;
     private int _generation;
+    private CancellationTokenSource? _loadCts;
+    private volatile bool _disposed;
     private IssueDetailsForm _form;
     private Task _currentLoad = Task.CompletedTask;
 
@@ -61,19 +63,33 @@ internal sealed partial class IssueDetailsPage : ContentPage
     internal ICommandResult Open(GitHubAccount account, Uri issueApiUrl, string repository)
     {
         int generation;
+        CancellationToken token;
         lock (_lock)
         {
+            if (_disposed)
+            {
+                return CommandResult.KeepOpen();
+            }
+
+            CancelLoad();
             generation = ++_generation;
             _issueApiUrl = issueApiUrl;
             _repository = repository;
             _issue = null;
             _form = new IssueDetailsForm(this, IssueDetailsCards.Loading());
+            _loadCts = new CancellationTokenSource();
+            token = _loadCts.Token;
         }
 
         IsLoading = true;
         lock (_lock)
         {
-            _currentLoad = Task.Run(() => LoadAsync(account, issueApiUrl, repository, generation));
+            if (_disposed || generation != _generation)
+            {
+                return CommandResult.KeepOpen();
+            }
+
+            _currentLoad = Task.Run(() => LoadAsync(account, issueApiUrl, repository, generation, token));
         }
 
         return CommandResult.GoToPage(new GoToPageArgs { PageId = PageId });
@@ -114,14 +130,14 @@ internal sealed partial class IssueDetailsPage : ContentPage
         return CommandResult.KeepOpen();
     }
 
-    private async Task LoadAsync(GitHubAccount account, Uri issueApiUrl, string repository, int generation)
+    private async Task LoadAsync(GitHubAccount account, Uri issueApiUrl, string repository, int generation, CancellationToken token)
     {
         try
         {
-            var issue = await _client.GetIssueAsync(account, issueApiUrl, CancellationToken.None).ConfigureAwait(false);
+            var issue = await _client.GetIssueAsync(account, issueApiUrl, token).ConfigureAwait(false);
             lock (_lock)
             {
-                if (generation != _generation)
+                if (generation != _generation || token.IsCancellationRequested || _disposed)
                 {
                     return;
                 }
@@ -130,11 +146,14 @@ internal sealed partial class IssueDetailsPage : ContentPage
                 _form = new IssueDetailsForm(this, IssueDetailsCards.Details(repository, issue));
             }
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+        }
         catch (GitHubApiException ex)
         {
             lock (_lock)
             {
-                if (generation != _generation)
+                if (generation != _generation || _disposed)
                 {
                     return;
                 }
@@ -147,7 +166,7 @@ internal sealed partial class IssueDetailsPage : ContentPage
             bool publish;
             lock (_lock)
             {
-                publish = generation == _generation;
+                publish = generation == _generation && !_disposed;
             }
 
             if (publish)
@@ -162,7 +181,12 @@ internal sealed partial class IssueDetailsPage : ContentPage
     {
         lock (_lock)
         {
-            _generation++;
+            if (_disposed)
+            {
+                return;
+            }
+
+            CancelLoad();
             _issueApiUrl = null;
             _issue = null;
             _repository = null;
@@ -171,6 +195,31 @@ internal sealed partial class IssueDetailsPage : ContentPage
 
         IsLoading = false;
         RaiseItemsChanged();
+    }
+
+    public void Dispose()
+    {
+        _auth.AccountChanged -= OnAccountChanged;
+        lock (_lock)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            CancelLoad();
+        }
+
+        IsLoading = false;
+    }
+
+    private void CancelLoad()
+    {
+        _generation++;
+        _loadCts?.Cancel();
+        _loadCts?.Dispose();
+        _loadCts = null;
     }
 
     private sealed partial class IssueDetailsForm : FormContent

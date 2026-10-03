@@ -25,8 +25,10 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     private Uri? _nextPage;
     private bool _loaded;
     private bool _fetching;
+    private volatile bool _disposed;
     private string? _error;
     private int _generation;
+    private CancellationTokenSource? _loadCts;
     private Task _currentLoad = Task.CompletedTask;
 
     public RepositoryPullRequestsPage(
@@ -74,7 +76,12 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     {
         lock (_lock)
         {
-            _generation++;
+            if (_disposed)
+            {
+                return CommandResult.KeepOpen();
+            }
+
+            CancelLoad();
             _repository = repository;
             _nextPage = null;
             _loaded = false;
@@ -174,8 +181,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
                 return _currentLoad;
             }
 
-            _generation++;
-            _fetching = false;
+            CancelLoad();
             _loaded = false;
             _nextPage = null;
             _error = null;
@@ -189,6 +195,14 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     public void Dispose()
     {
         _auth.AccountChanged -= OnAccountChanged;
+        lock (_lock)
+        {
+            _disposed = true;
+            CancelLoad();
+        }
+
+        IsLoading = false;
+        HasMoreItems = false;
     }
 
     private CommandItem Empty(string title, string subtitle, bool refresh = false) =>
@@ -208,15 +222,19 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         string? repository;
         Uri? page;
         int generation;
+        CancellationToken token;
         lock (_lock)
         {
             account = _auth.CurrentAccount;
             repository = _repository;
-            if (account is null || repository is null || _fetching || (!reset && _nextPage is null))
+            if (_disposed || account is null || repository is null || _fetching || (!reset && _nextPage is null))
             {
                 return _currentLoad;
             }
 
+            _loadCts?.Dispose();
+            _loadCts = new CancellationTokenSource();
+            token = _loadCts.Token;
             _fetching = true;
             page = reset ? null : _nextPage;
             generation = _generation;
@@ -225,27 +243,27 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         IsLoading = true;
         lock (_lock)
         {
-            if (generation != _generation)
+            if (generation != _generation || _disposed)
             {
                 return _currentLoad;
             }
 
-            _currentLoad = Task.Run(() => LoadAsync(account, repository, page, reset, generation));
+            _currentLoad = Task.Run(() => LoadAsync(account, repository, page, reset, generation, token));
             return _currentLoad;
         }
     }
 
-    private async Task LoadAsync(GitHubAccount account, string repository, Uri? page, bool reset, int generation)
+    private async Task LoadAsync(GitHubAccount account, string repository, Uri? page, bool reset, int generation, CancellationToken token)
     {
         try
         {
-            var result = await _client.GetPullRequestsAsync(account, repository, page, CancellationToken.None).ConfigureAwait(false);
+            var result = await _client.GetPullRequestsAsync(account, repository, page, token).ConfigureAwait(false);
             var now = _time.GetUtcNow();
             bool hasMore;
 
             lock (_lock)
             {
-                if (generation != _generation)
+                if (generation != _generation || token.IsCancellationRequested || _disposed)
                 {
                     return;
                 }
@@ -267,11 +285,14 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
 
             HasMoreItems = hasMore;
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+        }
         catch (GitHubApiException ex)
         {
             lock (_lock)
             {
-                if (generation != _generation)
+                if (generation != _generation || _disposed)
                 {
                     return;
                 }
@@ -285,7 +306,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
             bool current;
             lock (_lock)
             {
-                current = generation == _generation;
+                current = generation == _generation && !_disposed;
                 if (current)
                 {
                     _fetching = false;
@@ -304,7 +325,12 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     {
         lock (_lock)
         {
-            _generation++;
+            if (_disposed)
+            {
+                return;
+            }
+
+            CancelLoad();
             _repository = null;
             _items.Clear();
             _nextPage = null;
@@ -319,6 +345,15 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     }
 
     private void OnAccountChanged(object? sender, EventArgs e) => Reset();
+
+    private void CancelLoad()
+    {
+        _generation++;
+        _loadCts?.Cancel();
+        _loadCts?.Dispose();
+        _loadCts = null;
+        _fetching = false;
+    }
 }
 
 internal sealed partial class PullRequestFilters : Filters

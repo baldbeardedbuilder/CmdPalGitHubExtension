@@ -4,7 +4,7 @@
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Auth;
 
-internal sealed class AuthService
+internal sealed partial class AuthService : IDisposable
 {
     public static readonly TimeSpan BrowserSignInTimeout = TimeSpan.FromMinutes(5);
 
@@ -13,6 +13,7 @@ internal sealed class AuthService
     private readonly IBrowserLauncher _browser;
     private readonly OAuthOptions _options;
     private readonly Func<LoopbackCallbackListener> _listenerFactory;
+    private readonly HttpClient? _ownedHttpClient;
     private readonly Lock _lock = new();
     private GitHubAccount? _currentAccount;
 
@@ -23,13 +24,15 @@ internal sealed class AuthService
         IGitHubAuthClient client,
         IBrowserLauncher browser,
         OAuthOptions options,
-        Func<LoopbackCallbackListener>? listenerFactory = null)
+        Func<LoopbackCallbackListener>? listenerFactory = null,
+        HttpClient? ownedHttpClient = null)
     {
         _store = store;
         _client = client;
         _browser = browser;
         _options = options;
         _listenerFactory = listenerFactory ?? (() => new LoopbackCallbackListener());
+        _ownedHttpClient = ownedHttpClient;
         _currentAccount = store.Load();
     }
 
@@ -50,11 +53,18 @@ internal sealed class AuthService
 
     public bool IsOAuthConfigured => _options.IsConfigured;
 
-    public static AuthService CreateDefault() => new(
-        new PasswordVaultAccountStore(),
-        new GitHubAuthClient(new HttpClient()),
-        new ShellBrowserLauncher(),
-        OAuthOptions.FromAssembly());
+    public static AuthService CreateDefault()
+    {
+        var httpClient = new HttpClient();
+        return new AuthService(
+            new PasswordVaultAccountStore(),
+            new GitHubAuthClient(httpClient),
+            new ShellBrowserLauncher(),
+            OAuthOptions.FromAssembly(),
+            ownedHttpClient: httpClient);
+    }
+
+    public void Dispose() => _ownedHttpClient?.Dispose();
 
     internal static Uri BuildAuthorizeUri(GitHubHost host, string clientId, Uri redirectUri, string state, string codeChallenge)
     {

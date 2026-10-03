@@ -324,6 +324,60 @@ public class NotificationsPageTests
     }
 
     [TestMethod]
+    public async Task Dispose_CancelsPendingNotificationRequest()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new Mock<INotificationsClient>();
+        CancellationToken requestToken = default;
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .Returns(async (GitHubAccount _, Uri? _, CancellationToken token) =>
+            {
+                requestToken = token;
+                started.SetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                return new NotificationsPageResult([], null);
+            });
+        var page = CreatePage(client.Object, out _);
+
+        page.GetItems();
+        var load = page.CurrentLoad;
+        await started.Task;
+        page.Dispose();
+        await load;
+
+        Assert.IsTrue(requestToken.IsCancellationRequested);
+        Assert.IsFalse(page.IsLoading);
+        Assert.IsEmpty(page.GetItems());
+    }
+
+    [TestMethod]
+    public async Task AccountChange_CancelsPendingNotificationRequest()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new Mock<INotificationsClient>();
+        CancellationToken requestToken = default;
+        client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
+            .Returns(async (GitHubAccount _, Uri? _, CancellationToken token) =>
+            {
+                requestToken = token;
+                started.SetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                return new NotificationsPageResult([], null);
+            });
+        var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(), new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
+        using var page = new NotificationsPage(auth, client.Object, new FakeBrowser(_ => null));
+
+        page.GetItems();
+        var load = page.CurrentLoad;
+        await started.Task;
+        auth.SignOut();
+        await load;
+
+        Assert.IsTrue(requestToken.IsCancellationRequested);
+        Assert.IsEmpty(page.GetItems());
+    }
+
+    [TestMethod]
     public async Task PullRequest_RefreshRetriesMissingDetails()
     {
         var api = new Uri("https://api.github.com/repos/o/r/pulls/7");

@@ -24,8 +24,10 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     private Uri? _nextPage;
     private bool _loaded;
     private bool _fetching;
+    private volatile bool _disposed;
     private string? _error;
     private int _generation;
+    private CancellationTokenSource? _loadCts;
     private Task _currentLoad = Task.CompletedTask;
 
     public ActionsPage(AuthService auth, IActionsClient client, IBrowserLauncher browser, TimeProvider? time = null)
@@ -69,6 +71,11 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     {
         lock (_lock)
         {
+            if (_disposed)
+            {
+                return CommandResult.KeepOpen();
+            }
+
             Reset();
             _repository = repository;
         }
@@ -137,14 +144,24 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     {
         lock (_lock)
         {
-            _generation++;
-            _fetching = false;
+            CancelLoad();
         }
 
         return StartLoad(reset: true);
     }
 
-    public void Dispose() => _auth.AccountChanged -= OnAccountChanged;
+    public void Dispose()
+    {
+        _auth.AccountChanged -= OnAccountChanged;
+        lock (_lock)
+        {
+            _disposed = true;
+            CancelLoad();
+        }
+
+        IsLoading = false;
+        HasMoreItems = false;
+    }
 
     private CommandItem Empty(string title, string subtitle, bool refresh = false) =>
         _emptyContent.Get(title, subtitle, refresh);
@@ -154,15 +171,19 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         GitHubAccount account;
         string repository;
         int generation;
+        CancellationToken token;
         Uri? nextPage;
         lock (_lock)
         {
-            if (_auth.CurrentAccount is not { } currentAccount || _repository is not { } currentRepository
+            if (_disposed || _auth.CurrentAccount is not { } currentAccount || _repository is not { } currentRepository
                 || _fetching || (!reset && _nextPage is null))
             {
                 return _currentLoad;
             }
 
+            _loadCts?.Dispose();
+            _loadCts = new CancellationTokenSource();
+            token = _loadCts.Token;
             _fetching = true;
             _error = null;
             account = currentAccount;
@@ -174,26 +195,26 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         IsLoading = true;
         lock (_lock)
         {
-            if (generation != _generation)
+            if (generation != _generation || _disposed)
             {
                 return _currentLoad;
             }
 
-            _currentLoad = Task.Run(() => LoadAsync(account, repository, nextPage, reset, generation));
+            _currentLoad = Task.Run(() => LoadAsync(account, repository, nextPage, reset, generation, token));
             return _currentLoad;
         }
     }
 
-    private async Task LoadAsync(GitHubAccount account, string repository, Uri? page, bool reset, int generation)
+    private async Task LoadAsync(GitHubAccount account, string repository, Uri? page, bool reset, int generation, CancellationToken token)
     {
         try
         {
-            var result = await _client.GetRunsAsync(account, repository, page, CancellationToken.None).ConfigureAwait(false);
+            var result = await _client.GetRunsAsync(account, repository, page, token).ConfigureAwait(false);
             var now = _time.GetUtcNow();
             bool hasMore;
             lock (_lock)
             {
-                if (generation != _generation)
+                if (generation != _generation || token.IsCancellationRequested || _disposed)
                 {
                     return;
                 }
@@ -212,11 +233,14 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
             HasMoreItems = hasMore;
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+        }
         catch (GitHubApiException ex)
         {
             lock (_lock)
             {
-                if (generation != _generation)
+                if (generation != _generation || _disposed)
                 {
                     return;
                 }
@@ -232,7 +256,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
             bool publish;
             lock (_lock)
             {
-                publish = generation == _generation;
+                publish = generation == _generation && !_disposed;
                 if (publish)
                 {
                     _fetching = false;
@@ -251,7 +275,16 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     {
         lock (_lock)
         {
-            Reset();
+            if (_disposed)
+            {
+                return;
+            }
+
+            CancelLoad();
+            _items.Clear();
+            _nextPage = null;
+            _loaded = false;
+            _error = null;
             _repository = null;
         }
 
@@ -262,12 +295,21 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
     private void Reset()
     {
-        _generation++;
+        CancelLoad();
         _items.Clear();
         _nextPage = null;
         _loaded = false;
         _fetching = false;
         _error = null;
+    }
+
+    private void CancelLoad()
+    {
+        _generation++;
+        _loadCts?.Cancel();
+        _loadCts?.Dispose();
+        _loadCts = null;
+        _fetching = false;
     }
 }
 
