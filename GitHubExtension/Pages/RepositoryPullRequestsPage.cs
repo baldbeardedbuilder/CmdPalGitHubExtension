@@ -17,6 +17,8 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     private readonly IPullRequestsClient _client;
     private readonly IBrowserLauncher _browser;
     private readonly TimeProvider _time;
+    private readonly IPullRequestMergeClient? _mergeClient;
+    private readonly List<MergePullRequestPage> _mergePages = [];
     private readonly PageEmptyContent _emptyContent;
     private readonly PullRequestFilters _filters = new();
     private readonly Lock _lock = new();
@@ -33,12 +35,14 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         AuthService auth,
         IPullRequestsClient client,
         IBrowserLauncher browser,
-        TimeProvider? time = null)
+        TimeProvider? time = null,
+        IPullRequestMergeClient? mergeClient = null)
     {
         _auth = auth;
         _client = client;
         _browser = browser;
         _time = time ?? TimeProvider.System;
+        _mergeClient = mergeClient;
         _emptyContent = new PageEmptyContent(Icons.PullRequests, new RefreshRepositoryItemsCommand(RefreshAsync, Icons.PullRequests));
         Id = PageId;
         Name = "Pull requests";
@@ -63,7 +67,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     }
 
     internal RepositoryPullRequestsPage ForRepository(string repository) =>
-        new(_auth, _client, _browser, _time)
+        new(_auth, _client, _browser, _time, _mergeClient)
         {
             Id = $"{PageId}.{Uri.EscapeDataString(repository)}",
             Title = $"{repository} pull requests",
@@ -72,9 +76,11 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
 
     internal ICommandResult Open(string repository)
     {
+        MergePullRequestPage[] mergePages;
         lock (_lock)
         {
             _generation++;
+            mergePages = TakeMergePages();
             _repository = repository;
             _nextPage = null;
             _loaded = false;
@@ -83,6 +89,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
             _items.Clear();
         }
 
+        DisposeMergePages(mergePages);
         Title = $"{repository} pull requests";
         SearchText = string.Empty;
         HasMoreItems = false;
@@ -167,6 +174,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
 
     internal Task RefreshAsync()
     {
+        MergePullRequestPage[] mergePages;
         lock (_lock)
         {
             if (_repository is null)
@@ -175,6 +183,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
             }
 
             _generation++;
+            mergePages = TakeMergePages();
             _fetching = false;
             _loaded = false;
             _nextPage = null;
@@ -182,6 +191,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
             _items.Clear();
         }
 
+        DisposeMergePages(mergePages);
         HasMoreItems = false;
         return StartLoad(reset: true);
     }
@@ -189,6 +199,14 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     public void Dispose()
     {
         _auth.AccountChanged -= OnAccountChanged;
+        MergePullRequestPage[] mergePages;
+        lock (_lock)
+        {
+            _generation++;
+            mergePages = TakeMergePages();
+        }
+
+        DisposeMergePages(mergePages);
     }
 
     private CommandItem Empty(string title, string subtitle, bool refresh = false) =>
@@ -258,7 +276,17 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
                 var known = _items.Select(item => item.PullRequest.Number).ToHashSet();
                 _items.AddRange(result.PullRequests
                     .Where(pullRequest => known.Add(pullRequest.Number))
-                    .Select(pullRequest => new RepositoryPullRequestItem(pullRequest, _browser, now)));
+                    .Select(pullRequest =>
+                    {
+                        MergePullRequestPage? mergePage = null;
+                        if (_mergeClient is not null && pullRequest.State == SubjectState.Open)
+                        {
+                            mergePage = new MergePullRequestPage(_auth, _mergeClient, account, repository, pullRequest.Number, pullRequest.WebUrl);
+                            _mergePages.Add(mergePage);
+                        }
+
+                        return new RepositoryPullRequestItem(pullRequest, _browser, now, mergePage);
+                    }));
                 _nextPage = result.NextPage;
                 _loaded = true;
                 _error = null;
@@ -302,9 +330,11 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
 
     private void Reset()
     {
+        MergePullRequestPage[] mergePages;
         lock (_lock)
         {
             _generation++;
+            mergePages = TakeMergePages();
             _repository = null;
             _items.Clear();
             _nextPage = null;
@@ -313,12 +343,25 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
             _error = null;
         }
 
+        DisposeMergePages(mergePages);
         HasMoreItems = false;
         IsLoading = false;
         RaiseItemsChanged();
     }
 
     private void OnAccountChanged(object? sender, EventArgs e) => Reset();
+
+    private MergePullRequestPage[] TakeMergePages()
+    {
+        var pages = _mergePages.ToArray();
+        _mergePages.Clear();
+        return pages;
+    }
+
+    private static void DisposeMergePages(MergePullRequestPage[] pages)
+    {
+        foreach (var page in pages) page.Dispose();
+    }
 }
 
 internal sealed partial class PullRequestFilters : Filters
@@ -335,7 +378,7 @@ internal sealed partial class PullRequestFilters : Filters
 
 internal sealed partial class RepositoryPullRequestItem : ListItem
 {
-    public RepositoryPullRequestItem(GitHubPullRequest pullRequest, IBrowserLauncher browser, DateTimeOffset now)
+    public RepositoryPullRequestItem(GitHubPullRequest pullRequest, IBrowserLauncher browser, DateTimeOffset now, MergePullRequestPage? mergePage = null)
     {
         PullRequest = pullRequest;
         Command = new OpenInBrowserCommand(browser, pullRequest.WebUrl, "Open in browser", Icons.PullRequests);
@@ -364,11 +407,13 @@ internal sealed partial class RepositoryPullRequestItem : ListItem
             _ => Icons.PullRequests,
         };
         Tags = NotificationFormatting.StateTag("PullRequest", pullRequest.State) is { } state ? [state] : [];
-        MoreCommands =
-        [
+        var commands = new List<IContextItem>
+        {
             new CommandContextItem(new OpenInBrowserCommand(browser, pullRequest.WebUrl, "Open in browser", Icons.PullRequests)),
             new CommandContextItem(new CopyTextCommand(pullRequest.WebUrl.AbsoluteUri) { Name = "Copy link", Icon = Icons.Copy }),
-        ];
+        };
+        if (mergePage is not null) commands.Add(new CommandContextItem(mergePage));
+        MoreCommands = [.. commands];
     }
 
     public GitHubPullRequest PullRequest { get; }
