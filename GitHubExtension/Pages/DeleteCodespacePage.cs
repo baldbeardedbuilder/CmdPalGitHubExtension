@@ -186,7 +186,7 @@ internal sealed partial class DeleteCodespacePage : ListPage
 
     private async Task DeleteAsync()
     {
-        var status = await _page.DeleteAsync(_item, _account!, _generation).ConfigureAwait(false);
+        var status = await _page.DeleteAsync(_item, _details!, _account!, _generation).ConfigureAwait(false);
         lock (_lock)
         {
             _status = status;

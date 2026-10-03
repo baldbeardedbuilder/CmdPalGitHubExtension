@@ -7,7 +7,17 @@ Your notifications, repos, agents, codespaces, and saved queries, one keystroke 
 
 ## Actions
 
-Browse workflow runs from a repository's **Actions** view. Use **More > Cancel** on a running workflow. If cancellation is stuck, **More > Force cancel** opens a separate confirmation. Cancelling requires Actions write permission. GitHub accepts the request before the run stops, so the extension refreshes status until GitHub reports a terminal state. Eligible completed runs also offer **More > Rerun workflow** with a review step before submission.
+Browse workflow runs from a repository's **Actions** view. Use **More > Cancel** on a running workflow. If cancellation is stuck, **More > Force cancel** opens a separate confirmation. Cancelling requires Actions write permission. A successful request does not mean the run has stopped, so the extension checks GitHub until it reports a terminal state. Eligible completed runs also offer **More > Rerun workflow** with a review step. If GitHub's response is unclear, check the run before submitting again.
+
+## Codespaces
+
+Starting a Codespace asks you to confirm because it uses compute time and may incur charges. Creating one has a review step that shows the repository, branch, and signed in account. GitHub may still be preparing a Codespace after accepting the request. If the result is unclear, the extension checks your Codespaces list. If it can't identify the new Codespace, another submission stays blocked.
+
+Deleting a Codespace requires a separate confirmation with fresh git status. The extension checks that status again before deleting. If the Codespace or its reported changes shifted, you'll need to review the updated details before confirming.
+
+## Copilot agent tasks
+
+Starting an agent task includes a review step. When GitHub may have accepted a request but the response is unclear, check the repository's task list before trying again.
 
 ## Filtering and search
 
