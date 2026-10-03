@@ -47,22 +47,26 @@ public class RepositoryParsingTests
     [TestMethod]
     [DataRow("""{ "html_url": "https://github.com/o/r" }""")]
     [DataRow("""{ "full_name": "o/r" }""")]
+    [DataRow("""{ "full_name": " ", "html_url": "https://github.com/o/r" }""")]
+    [DataRow("""{ "full_name": 42, "html_url": "https://github.com/o/r" }""")]
+    [DataRow("""{ "full_name": "o/r", "html_url": "not a URL" }""")]
+    [DataRow("""{ "full_name": "o/r", "html_url": "file:///tmp/repo" }""")]
+    [DataRow("""{ "full_name": "o/r", "html_url": "https://user@github.com/o/r" }""")]
+    [DataRow("null")]
     [DataRow("42")]
-    public void ParseRepository_SkipsIncompleteEntries(string json)
+    public void ParseRepository_RejectsIncompleteEntries(string json)
     {
         using var doc = JsonDocument.Parse(json);
 
-        Assert.IsNull(RepositoriesClient.ParseRepository(doc.RootElement));
+        Assert.ThrowsExactly<GitHubApiException>(() => RepositoriesClient.ParseRepository(doc.RootElement));
     }
 
     [TestMethod]
-    public void ParseRepositories_KeepsTheGoodOnes()
+    public void ParseRepositories_RejectsPartialResults()
     {
         using var doc = JsonDocument.Parse($"[{PowerToys}, {{ \"full_name\": \"broken\" }}]");
 
-        var repos = RepositoriesClient.ParseRepositories(doc.RootElement);
-
-        Assert.AreEqual("microsoft/PowerToys", repos.Single().FullName);
+        Assert.ThrowsExactly<GitHubApiException>(() => RepositoriesClient.ParseRepositories(doc.RootElement));
     }
 
     [TestMethod]
@@ -78,5 +82,19 @@ public class RepositoryParsingTests
         Assert.IsNull(repo.Language);
         Assert.IsTrue(repo.Private);
         Assert.AreEqual(DateTimeOffset.MinValue, repo.PushedAt);
+    }
+
+    [TestMethod]
+    public void ParseRepository_AllowsAbsentOptionalFields()
+    {
+        using var doc = JsonDocument.Parse("""{"full_name":"o/r","html_url":"https://github.com/o/r"}""");
+
+        var repo = RepositoriesClient.ParseRepository(doc.RootElement);
+
+        Assert.IsNull(repo.Description);
+        Assert.IsNull(repo.Language);
+        Assert.IsNull(repo.CloneUrl);
+        Assert.AreEqual(0, repo.Stars);
+        Assert.IsFalse(repo.Private);
     }
 }

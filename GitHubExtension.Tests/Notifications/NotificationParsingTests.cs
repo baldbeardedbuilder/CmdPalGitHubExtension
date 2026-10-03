@@ -36,10 +36,13 @@ public class NotificationParsingTests
     }
 
     [TestMethod]
-    public void ParseNotification_SkipsJunk()
+    [DataRow("""{ "id": "1" }""")]
+    [DataRow("null")]
+    [DataRow("42")]
+    public void ParseNotification_RejectsJunk(string body)
     {
-        using var json = JsonDocument.Parse("""{ "id": "1" }""");
-        Assert.IsNull(NotificationsClient.ParseNotification(json.RootElement));
+        using var json = JsonDocument.Parse(body);
+        Assert.ThrowsExactly<GitHubApiException>(() => NotificationsClient.ParseNotification(json.RootElement));
     }
 
     [TestMethod]
