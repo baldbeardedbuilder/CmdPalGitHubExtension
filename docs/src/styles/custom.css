@@ -1,0 +1,54 @@
+:root {
+  --sl-font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --sl-font-mono: "Cascadia Code", Consolas, monospace;
+  --sl-color-accent-low: #0d3020;
+  --sl-color-accent: #2da44e;
+  --sl-color-accent-high: #b4f1c3;
+  --sl-content-width: 48rem;
+}
+
+:root[data-theme="light"] {
+  --sl-color-accent-low: #dafbe1;
+  --sl-color-accent: #1a7f37;
+  --sl-color-accent-high: #0d4429;
+}
+
+.site-title {
+  font-weight: 650;
+  letter-spacing: -0.025em;
+}
+
+:root[data-theme="dark"] .site-title img,
+:root[data-theme="dark"] .hero img {
+  filter: invert(1);
+}
+
+.hero h1 {
+  letter-spacing: -0.045em;
+  text-wrap: balance;
+}
+
+.hero .tagline {
+  max-width: 38rem;
+  text-wrap: pretty;
+}
+
+.hero img {
+  max-width: 15rem;
+}
+
+.card {
+  border-radius: 0.75rem;
+}
+
+.sl-link-card {
+  border-radius: 0.5rem;
+}
+
+@media (forced-colors: active) {
+  .site-title img,
+  .hero img {
+    filter: none !important;
+    background: white;
+  }
+}

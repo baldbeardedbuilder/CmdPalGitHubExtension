@@ -5,9 +5,15 @@ Your notifications, repos, agents, codespaces, and saved queries, one keystroke 
 > [!NOTE]
 > This is early. Sign in, then check notifications, browse repo issues and pull requests, explore agent tasks and codespaces, and open Actions from a repo. Saved queries land next.
 
+## Documentation
+
+Start with the [documentation site](https://baldbeardedbuilder.github.io/CmdPalGitHubExtension/) for installation, sign-in, feature guides, and troubleshooting. The site publishes through GitHub Pages once Pages is enabled and the documentation workflow is on `main`.
+
+The documentation source lives in [`docs`](docs). See [Contributing](CONTRIBUTING.md#documentation-site) to preview or update it.
+
 ## Install
 
-Releases aren't published yet. Until they are, build it yourself using the steps in [CONTRIBUTING.md](CONTRIBUTING.md).
+Releases aren't published yet. Until they are, follow the [installation guide](docs/src/content/docs/getting-started/installation.md) to build, configure sign-in, and deploy it.
 
 ## Signing in
 

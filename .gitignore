@@ -433,3 +433,6 @@ FodyWeavers.xsd
 # Local GitHub OAuth app credentials. Never commit these.
 GitHubExtension/oauth.local.props
 
+# Documentation site build output
+docs/dist/
+docs/.astro/
