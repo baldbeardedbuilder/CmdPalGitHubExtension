@@ -69,7 +69,7 @@ internal sealed class PasswordVaultAccountStore : IAccountStore
         {
             return Load(Resource) ?? Load(RecoveryResource);
         }
-        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException or IOException)
         {
             throw new GitHubAuthException("Couldn't read the account from Windows Credential Locker. Try again.");
         }
@@ -112,7 +112,7 @@ internal sealed class PasswordVaultAccountStore : IAccountStore
 
             Clear(RecoveryResource);
         }
-        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException or IOException)
         {
             throw new GitHubAuthException("Couldn't save the account to Windows Credential Locker. Try again.");
         }
@@ -126,7 +126,7 @@ internal sealed class PasswordVaultAccountStore : IAccountStore
             Clear(RecoveryResource);
             Clear(Resource);
         }
-        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException or IOException)
         {
             throw new GitHubAuthException("Couldn't remove the account from Windows Credential Locker. Try again.");
         }

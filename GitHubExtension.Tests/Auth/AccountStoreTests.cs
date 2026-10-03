@@ -70,6 +70,44 @@ public class AccountStoreTests
     }
 
     [TestMethod]
+    [DataRow("load", false)]
+    [DataRow("load", true)]
+    [DataRow("save", false)]
+    [DataRow("save", true)]
+    [DataRow("clear", false)]
+    [DataRow("clear", true)]
+    public void Vault_ProjectedIoFailure_SurfacesSafeError(string operation, bool directoryNotFound)
+    {
+        IOException failure = directoryNotFound
+            ? new DirectoryNotFoundException("sensitive vault details")
+            : new FileNotFoundException("sensitive vault details");
+        var vault = new FakeCredentialVault(Saved);
+        var store = new PasswordVaultAccountStore(vault);
+        Action action;
+        switch (operation)
+        {
+            case "load":
+                vault.FindFailure = _ => failure;
+                action = () => store.Load();
+                break;
+            case "save":
+                vault.AddFailure = (_, _) => throw failure;
+                action = () => store.Save(Replacement);
+                break;
+            default:
+                vault.RemoveFailure = (_, _) => throw failure;
+                action = store.Clear;
+                break;
+        }
+
+        var error = Assert.Throws<GitHubAuthException>(action);
+
+        Assert.IsFalse(error.ToString().Contains("sensitive vault details", StringComparison.Ordinal));
+        vault.FindFailure = null;
+        Assert.AreEqual(Saved, store.Load());
+    }
+
+    [TestMethod]
     public void Load_RetrieveFailure_IsNotTreatedAsSignedOut()
     {
         var vault = new FakeCredentialVault(Saved)
