@@ -12,6 +12,8 @@ internal sealed record GitHubPullRequest
 {
     public required int Number { get; init; }
 
+    public string? NodeId { get; init; }
+
     public required string Title { get; init; }
 
     public required Uri WebUrl { get; init; }
@@ -64,6 +66,7 @@ internal sealed record GitHubPullRequest
         return new GitHubPullRequest
         {
             Number = GetInt(element, "number"),
+            NodeId = GetString(element, "node_id"),
             Title = title,
             WebUrl = webUrl,
             State = state,
