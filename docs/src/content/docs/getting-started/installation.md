@@ -41,12 +41,14 @@ If you'll sign in to **github.com**, configure your OAuth app before building th
 5. Set both values in the PowerShell session you'll build from:
 
 ```powershell
-$env:GITHUB_OAUTH_CLIENT_ID = "<your-client-id>"
-$env:GITHUB_OAUTH_CLIENT_SECRET = "<your-client-secret>"
+$env:GH_OAUTH_CLIENT_ID = "<your-client-id>"
+$env:GH_OAUTH_CLIENT_SECRET = "<your-client-secret>"
 dotnet build GitHubExtension\GitHubExtension.csproj -r win-x64
 ```
 
 The placeholders above aren't credentials. Replace them locally, and don't paste real values into issues or commit them.
+
+Use the `GH_` names above. GitHub reserves the `GITHUB_` prefix, and the build no longer reads the old OAuth variable names.
 
 If you build in Visual Studio, close it first and launch it from that configured PowerShell session so it inherits the variables. Alternatively, create `GitHubExtension\oauth.local.props` locally:
 

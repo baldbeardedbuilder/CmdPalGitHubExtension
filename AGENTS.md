@@ -52,7 +52,7 @@ These are not obvious and will bite you. Follow them.
 
 - Tokens live in Windows Credential Locker, never on disk.
 - github.com sign in needs an OAuth app. Local builds supply their own via the
-  `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` env vars or a gitignored
+  `GH_OAUTH_CLIENT_ID` / `GH_OAUTH_CLIENT_SECRET` env vars or a gitignored
   `GitHubExtension/oauth.local.props`. Enterprise sign in works without it.
 - Never commit tokens, client secrets, or Credential Locker contents.
 - Use typed operation diagnostics and route templates, never actual API hosts or paths.

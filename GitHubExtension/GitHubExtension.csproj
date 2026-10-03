@@ -36,14 +36,14 @@
   </ItemGroup>
 
   <!--
-    The github.com OAuth app credentials come from the GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET
+    The github.com OAuth app credentials come from the GH_OAUTH_CLIENT_ID and GH_OAUTH_CLIENT_SECRET
     environment variables (CI uses repo secrets) or a gitignored oauth.local.props next to this file.
   -->
   <Import Project="oauth.local.props" Condition="Exists('oauth.local.props')" />
 
   <PropertyGroup>
-    <GitHubOAuthClientId Condition="'$(GitHubOAuthClientId)' == ''">$(GITHUB_OAUTH_CLIENT_ID)</GitHubOAuthClientId>
-    <GitHubOAuthClientSecret Condition="'$(GitHubOAuthClientSecret)' == ''">$(GITHUB_OAUTH_CLIENT_SECRET)</GitHubOAuthClientSecret>
+    <GitHubOAuthClientId Condition="'$(GitHubOAuthClientId)' == ''">$(GH_OAUTH_CLIENT_ID)</GitHubOAuthClientId>
+    <GitHubOAuthClientSecret Condition="'$(GitHubOAuthClientSecret)' == ''">$(GH_OAUTH_CLIENT_SECRET)</GitHubOAuthClientSecret>
   </PropertyGroup>
 
   <ItemGroup>
