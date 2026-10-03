@@ -10,6 +10,7 @@ using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
 using BaldBeardedBuilder.CmdPal.GitHub.PullRequests;
 using Microsoft.CommandPalette.Extensions;
+using Microsoft.CommandPalette.Extensions.Toolkit;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Tests.PullRequests;
 
@@ -197,6 +198,58 @@ public sealed class PullRequestDetailsPageTests
         Assert.AreEqual("feature", factoryBranch);
     }
 
+    [TestMethod]
+    public async Task ContextualCodespaceCommand_IsDisposedWithPageAndRejectedWhenStale()
+    {
+        var current = true;
+        var client = new Mock<IPullRequestFeatureClient>();
+        client.Setup(c => c.GetDetailsAsync(Account, "octo/tool", 7, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Details());
+        var created = new List<DisposableCommand>();
+        using var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(),
+            new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
+        var page = new PullRequestDetailsPage(auth, client.Object, Account, "octo/tool", 7,
+            (_, _, _) =>
+            {
+                var command = new DisposableCommand();
+                created.Add(command);
+                return command;
+            },
+            () => current);
+
+        page.GetContent();
+        await page.CurrentWork;
+        var cached = page.ContextualCodespaceCommand;
+        Assert.AreSame(cached, page.ContextualCodespaceCommand);
+        Assert.HasCount(1, created);
+
+        page.Dispose();
+        Assert.IsTrue(created[0].Disposed);
+        Assert.IsNull(page.ContextualCodespaceCommand);
+
+        using var stale = new PullRequestDetailsPage(auth, client.Object, Account, "octo/tool", 7,
+            (_, _, _) =>
+            {
+                current = false;
+                var command = new DisposableCommand();
+                created.Add(command);
+                return command;
+            },
+            () => current);
+        stale.GetContent();
+        await stale.CurrentWork;
+
+        Assert.IsNull(stale.ContextualCodespaceCommand);
+        Assert.HasCount(2, created);
+        Assert.IsTrue(created[1].Disposed);
+    }
+
+    private sealed partial class DisposableCommand : InvokableCommand, IDisposable
+    {
+        public bool Disposed { get; private set; }
+
+        public void Dispose() => Disposed = true;
+    }
     [TestMethod]
     public async Task CancelDraftConfirmationDoesNotCallClient()
     {
