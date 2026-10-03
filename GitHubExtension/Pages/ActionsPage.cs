@@ -25,6 +25,9 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     private Lock _lock => _load.SyncRoot;
     private readonly List<WorkflowRunItem> _items = [];
     private readonly Dictionary<(long Id, int? Attempt), RerunWorkflowPage> _rerunPages = [];
+    private readonly Dictionary<long, WorkflowJobsPage> _jobsPages = [];
+    private readonly Dictionary<long, WorkflowArtifactsPage> _artifactPages = [];
+    private WorkflowDispatchPage? _dispatchPage;
     private string? _repository;
     private readonly ListLoadState _cancel;
     private ListLoadState.Operation? _cancellationOperation;
@@ -53,6 +56,42 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         _accountSubscription = auth.Subscribe(this, static page => page.OnAccountChanged(null, EventArgs.Empty));
     }
 
+    internal WorkflowJobsPage JobsPage(string repository, GitHubWorkflowRun run)
+    {
+        lock (_lock)
+        {
+            if (!_jobsPages.TryGetValue(run.Id, out var page))
+            {
+                page = new WorkflowJobsPage(_auth, _client, _browser, repository, run);
+                _jobsPages.Add(run.Id, page);
+            }
+
+            return page;
+        }
+    }
+
+    internal WorkflowArtifactsPage ArtifactsPage(string repository, GitHubWorkflowRun run)
+    {
+        lock (_lock)
+        {
+            if (!_artifactPages.TryGetValue(run.Id, out var page))
+            {
+                page = new WorkflowArtifactsPage(_auth, _client, _browser, repository, run);
+                _artifactPages.Add(run.Id, page);
+            }
+
+            return page;
+        }
+    }
+
+    internal WorkflowDispatchPage DispatchPage(string repository)
+    {
+        lock (_lock)
+        {
+            return _dispatchPage ??= new WorkflowDispatchPage(_auth, _client, repository, this);
+        }
+    }
+
     internal Task CurrentLoad
     {
         get
@@ -61,6 +100,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
             {
                 return _load.CurrentLoad;
             }
+
         }
     }
 
@@ -89,6 +129,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     internal ICommandResult OpenRepository(string repository)
     {
         ClearRerunPages();
+        ClearFeaturePages();
         lock (_lock)
         {
             Reset();
@@ -135,7 +176,10 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
                         ? Empty("Loading workflow runs...", _repository ?? string.Empty)
                         : terms.Length > 0
                             ? Empty("No workflow runs found", $"Nothing matches \"{SearchText.Trim()}\"", refresh: true)
-                            : Empty("No workflow runs found", $"No {filter} workflow runs. Refresh to check for new runs", refresh: true);
+                            : _repository is { } dispatchRepository && _auth.CurrentAccount is not null
+                                ? Empty("No workflow runs found", $"No {filter} workflow runs. Run a workflow manually or refresh to check for new runs.",
+                                    command: DispatchPage(dispatchRepository))
+                                : Empty("No workflow runs found", $"No {filter} workflow runs. Refresh to check for new runs", refresh: true);
             var matches = _items
                 .Where(i => ActionFilters.Matches(i.Run, filter))
                 .Where(i => terms.All(t => i.SearchText.Contains(t, StringComparison.OrdinalIgnoreCase)))
@@ -246,6 +290,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
         CancelCancellation();
         ClearRerunPages();
+        ClearFeaturePages();
         _cancelExecutor.Dispose();
         IsLoading = false;
         HasMoreItems = false;
@@ -266,8 +311,36 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         }
     }
 
-    private CommandItem Empty(string title, string subtitle, bool refresh = false) =>
-        _emptyContent.Get(title, subtitle, refresh);
+    private void ClearFeaturePages()
+    {
+        WorkflowJobsPage[] jobs;
+        WorkflowArtifactsPage[] artifacts;
+        WorkflowDispatchPage? dispatch;
+        lock (_lock)
+        {
+            jobs = [.. _jobsPages.Values];
+            artifacts = [.. _artifactPages.Values];
+            dispatch = _dispatchPage;
+            _jobsPages.Clear();
+            _artifactPages.Clear();
+            _dispatchPage = null;
+        }
+
+        foreach (var page in jobs)
+        {
+            page.Dispose();
+        }
+
+        foreach (var page in artifacts)
+        {
+            page.Dispose();
+        }
+
+        dispatch?.Dispose();
+    }
+
+    private CommandItem Empty(string title, string subtitle, bool refresh = false, ICommand? command = null) =>
+        _emptyContent.Get(title, subtitle, refresh, command);
 
     private Task StartLoad(bool reset)
     {
@@ -593,6 +666,7 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
     private void OnAccountChanged(object? sender, EventArgs e)
     {
         ClearRerunPages();
+        ClearFeaturePages();
         lock (_lock)
         {
             if (_load.Disposed)

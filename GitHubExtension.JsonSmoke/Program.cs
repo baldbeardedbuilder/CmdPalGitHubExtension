@@ -131,6 +131,18 @@ using (var confirm = Card(RerunWorkflowCards.Confirm(escaped, run, escaped)))
 using (var status = Card(RerunWorkflowCards.Status(escaped, 7, escaped)))
     Equal(escaped, status.RootElement.GetProperty("body")[1].GetProperty("text").GetString(), "Workflow status");
 
+var dispatchJson = "{\"ref\":" + GitHubJson.String(escaped)
+    + ",\"inputs\":{\"message\":" + GitHubJson.String(escaped) + "}}";
+var dispatch = JsonSerializer.Deserialize(dispatchJson, ActionsJsonContext.Default.WorkflowDispatchRequest);
+Check(dispatch is not null, "Workflow dispatch request deserialization");
+using (var json = JsonDocument.Parse(JsonSerializer.Serialize(
+    dispatch, ActionsJsonContext.Default.WorkflowDispatchRequest)))
+{
+    Equal(escaped, json.RootElement.GetProperty("ref").GetString(), "Workflow dispatch ref escaping");
+    Equal(escaped, json.RootElement.GetProperty("inputs").GetProperty("message").GetString(),
+        "Workflow dispatch input escaping");
+}
+
 Console.WriteLine("Native JSON smoke checks passed (reflection disabled, no network requests).");
 
 static JsonDocument Card(string json)

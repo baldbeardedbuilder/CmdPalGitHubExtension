@@ -4,6 +4,7 @@
 
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using BaldBeardedBuilder.CmdPal.GitHub.Api;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using static BaldBeardedBuilder.CmdPal.GitHub.Api.GitHubRest;
@@ -27,6 +28,15 @@ internal interface ICodespacesClient
         string repository,
         string? branch,
         CancellationToken cancellationToken);
+
+    Task<CodespacesPageResult> GetRepositoryCodespacesAsync(
+        GitHubAccount account, string repository, Uri? page, CancellationToken cancellationToken);
+
+    Task<GitHubCodespace> CreateRepositoryCodespaceAsync(
+        GitHubAccount account, string repository, string? branch, CancellationToken cancellationToken);
+
+    Task<GitHubCodespace> CreatePullRequestCodespaceAsync(
+        GitHubAccount account, string repository, int pullRequestNumber, string? expectedBranch, CancellationToken cancellationToken);
 }
 
 internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClient
@@ -230,6 +240,78 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
             () => sent, cancellationToken).ConfigureAwait(false);
     }
 
+    public Task<CodespacesPageResult> GetRepositoryCodespacesAsync(
+        GitHubAccount account, string repository, Uri? page, CancellationToken cancellationToken) =>
+        DomainDiagnostics.RunAsync(DiagnosticArea.Codespaces, async () =>
+        {
+            RequireGitHubDotCom(account);
+            var uri = page ?? new Uri(account.Host.ApiUrl, $"repos/{RepositoryPath(repository)}/codespaces?per_page={PageSize}");
+            using var response = await SendAsync(httpClient, account, HttpMethod.Get, uri, cancellationToken).ConfigureAwait(false);
+            using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
+            var spaces = ParseCodespaces(json.RootElement);
+            return new CodespacesPageResult(spaces, NextPage(response));
+        }, cancellationToken: cancellationToken);
+
+    public async Task<GitHubCodespace> CreateRepositoryCodespaceAsync(
+        GitHubAccount account, string repository, string? branch, CancellationToken cancellationToken)
+    {
+        var sent = false;
+        return await DomainDiagnostics.RunAsync(DiagnosticArea.Codespaces, async () =>
+        {
+            RequireGitHubDotCom(account);
+            ValidateRepository(repository);
+            var request = new CreateRepositoryCodespaceRequest(GitHubJson.Optional(branch));
+            using var content = new StringContent(
+                JsonSerializer.Serialize(request, CodespacesJsonContext.Default.CreateRepositoryCodespaceRequest),
+                Encoding.UTF8, "application/json");
+            var uri = new Uri(account.Host.ApiUrl, $"repos/{RepositoryPath(repository)}/codespaces");
+            cancellationToken.ThrowIfCancellationRequested();
+            sent = true;
+            using var response = await SendMutationAsync(httpClient, account, HttpMethod.Post, uri, cancellationToken,
+                content: content,
+                timeoutMessage: "GitHub took too long to create this Codespace. Check Codespaces before trying again.").ConfigureAwait(false);
+            var created = DomainDiagnostics.Read(DiagnosticArea.Codespaces, () =>
+                (response.Json is null ? null : ParseCodespaceCore(response.Json.RootElement, reportFailure: false))
+                ?? throw new GitHubApiException("GitHub received the create request but didn't identify a Codespace. Check Codespaces before creating another.",
+                    outcomeUnknown: true));
+            var authoritative = await ReadAfterMutationAsync(account, created.Name, cancellationToken).ConfigureAwait(false);
+            return VerifyContext(authoritative, repository, branch);
+        }, DiagnosticEvent.CodespaceCreate,
+            space => MutationOutcome(space, "Available"),
+            () => sent, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<GitHubCodespace> CreatePullRequestCodespaceAsync(
+        GitHubAccount account, string repository, int pullRequestNumber, string? expectedBranch, CancellationToken cancellationToken)
+    {
+        var sent = false;
+        return await DomainDiagnostics.RunAsync(DiagnosticArea.Codespaces, async () =>
+        {
+            RequireGitHubDotCom(account);
+            ValidateRepository(repository);
+            if (pullRequestNumber <= 0)
+            {
+                throw new GitHubApiException("Choose a valid pull request before creating a Codespace.");
+            }
+
+            var uri = new Uri(account.Host.ApiUrl,
+                $"repos/{RepositoryPath(repository)}/pulls/{pullRequestNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)}/codespaces");
+            cancellationToken.ThrowIfCancellationRequested();
+            sent = true;
+            using var response = await SendMutationAsync(httpClient, account, HttpMethod.Post, uri, cancellationToken,
+                content: new StringContent("{}", Encoding.UTF8, "application/json"),
+                timeoutMessage: "GitHub took too long to create this Codespace. Check Codespaces before trying again.").ConfigureAwait(false);
+            var created = DomainDiagnostics.Read(DiagnosticArea.Codespaces, () =>
+                (response.Json is null ? null : ParseCodespaceCore(response.Json.RootElement, reportFailure: false))
+                ?? throw new GitHubApiException("GitHub received the create request but didn't identify a Codespace. Check Codespaces before creating another.",
+                    outcomeUnknown: true));
+            var authoritative = await ReadAfterMutationAsync(account, created.Name, cancellationToken).ConfigureAwait(false);
+            return VerifyContext(authoritative, repository, expectedBranch);
+        }, DiagnosticEvent.CodespaceCreate,
+            space => MutationOutcome(space, "Available"),
+            () => sent, cancellationToken).ConfigureAwait(false);
+    }
+
     private async Task<GitHubCodespace> ReadAfterMutationAsync(GitHubAccount account, string name, CancellationToken cancellationToken)
     {
         try
@@ -258,6 +340,31 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
             throw error;
         }
     }
+
+    private static GitHubCodespace VerifyContext(GitHubCodespace codespace, string repository, string? expectedBranch)
+    {
+        if (!string.Equals(codespace.RepositoryFullName, repository, StringComparison.OrdinalIgnoreCase)
+            || (!string.IsNullOrWhiteSpace(expectedBranch) && !string.Equals(codespace.Branch, expectedBranch.Trim(), StringComparison.Ordinal)))
+        {
+            throw new GitHubApiException(
+                "GitHub created a Codespace, but its repository or branch doesn't match the request. Check Codespaces before creating another.",
+                outcomeUnknown: true);
+        }
+
+        return codespace;
+    }
+
+    private static void ValidateRepository(string repository)
+    {
+        var parts = repository.Split('/');
+        if (parts.Length != 2 || parts.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new GitHubApiException("Enter a repository as owner/name.");
+        }
+    }
+
+    private static string RepositoryPath(string repository) =>
+        string.Join('/', repository.Split('/').Select(Uri.EscapeDataString));
 
     private static GitHubCodespace ReadMutationCodespace(JsonElement root, string name) =>
         DomainDiagnostics.Read(DiagnosticArea.Codespaces, () =>
@@ -343,3 +450,9 @@ internal sealed class CodespacesClient(HttpClient httpClient) : ICodespacesClien
         status.ValueKind == JsonValueKind.Object && status.TryGetProperty(name, out var value)
             && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var count) && count >= 0 ? count : null;
 }
+
+internal sealed record CreateRepositoryCodespaceRequest(
+    [property: JsonPropertyName("ref"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Ref);
+
+[JsonSerializable(typeof(CreateRepositoryCodespaceRequest))]
+internal sealed partial class CodespacesJsonContext : JsonSerializerContext;

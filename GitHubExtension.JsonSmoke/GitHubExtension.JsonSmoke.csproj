@@ -15,6 +15,7 @@
     <Compile Include="..\GitHubExtension\Codespaces\GitHubCodespace.cs" Link="Codespaces\GitHubCodespace.cs" />
     <Compile Include="..\GitHubExtension\Agents\GitHubAgentTask.cs" Link="Agents\GitHubAgentTask.cs" />
     <Compile Include="..\GitHubExtension\Actions\GitHubWorkflowRun.cs" Link="Actions\GitHubWorkflowRun.cs" />
+    <Compile Include="..\GitHubExtension\Actions\ActionsJson.cs" Link="Actions\ActionsJson.cs" />
     <Compile Include="..\GitHubExtension\Pages\CreateCodespaceCards.cs" Link="Pages\CreateCodespaceCards.cs" />
     <Compile Include="..\GitHubExtension\Pages\CreateAgentTaskCards.cs" Link="Pages\CreateAgentTaskCards.cs" />
     <Compile Include="..\GitHubExtension\Pages\RerunWorkflowCards.cs" Link="Pages\RerunWorkflowCards.cs" />

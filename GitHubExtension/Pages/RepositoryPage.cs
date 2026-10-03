@@ -5,6 +5,7 @@
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using BaldBeardedBuilder.CmdPal.GitHub.Agents;
 using BaldBeardedBuilder.CmdPal.GitHub.Commands;
+using BaldBeardedBuilder.CmdPal.GitHub.Codespaces;
 using BaldBeardedBuilder.CmdPal.GitHub.Repositories;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Pages;
@@ -20,12 +21,16 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
     private readonly AuthService? _auth;
     private readonly IAgentsClient? _agentsClient;
     private readonly RepositoryStarPage? _starPage;
+    private readonly RepositoryWatchPage? _watchPage;
+    private readonly AgentsPage? _repositoryAgents;
+    private readonly ICodespacesClient? _codespacesClient;
     private GitHubRepository _repository;
     private readonly Lock _lock = new();
     private ActionsPage? _actions;
     private RepositoryIssuesPage? _issuesPage;
     private RepositoryPullRequestsPage? _pullRequestsPage;
     private CreateAgentTaskPage? _createAgentTaskPage;
+    private ContextualCodespacePage? _contextualCodespacePage;
     private bool _initialized;
     private bool _disposed;
     private IListItem[] _items = [];
@@ -38,7 +43,10 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
         RepositoryPullRequestsPage? pullRequestsPage = null,
         AuthService? auth = null,
         IAgentsClient? agentsClient = null,
-        RepositoryStarPage? starPage = null)
+        RepositoryStarPage? starPage = null,
+        RepositoryWatchPage? watchPage = null,
+        AgentsPage? repositoryAgents = null,
+        ICodespacesClient? codespacesClient = null)
     {
         _browser = browser;
         _actionsTemplate = actions;
@@ -47,6 +55,9 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
         _auth = auth;
         _agentsClient = agentsClient;
         _starPage = starPage;
+        _watchPage = watchPage;
+        _repositoryAgents = repositoryAgents;
+        _codespacesClient = codespacesClient;
         _repository = repository;
         Id = $"{PageId}.{Uri.EscapeDataString(repository.FullName)}";
         Name = "Open";
@@ -98,6 +109,38 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
             items.Add(new ListItem(_starPage) { Title = "Manage star", Subtitle = "Check and change your personal star", Icon = Icons.Repos });
         }
 
+        if (_watchPage is not null)
+        {
+            items.Add(new ListItem(_watchPage)
+            {
+                Title = "Manage watching",
+                Subtitle = "Watch, unwatch, or ignore this repository",
+                Icon = Icons.Notifications,
+            });
+        }
+
+        if (_repositoryAgents is not null)
+        {
+            items.Add(new ListItem(_repositoryAgents)
+            {
+                Title = "Copilot tasks",
+                Subtitle = "Browse current and archived repository tasks",
+                Icon = Icons.Agents,
+                MoreCommands = more,
+            });
+        }
+
+        if (_contextualCodespacePage is not null)
+        {
+            items.Add(new ListItem(_contextualCodespacePage)
+            {
+                Title = "Open Codespace",
+                Subtitle = "Find or create a development environment for this repository",
+                Icon = Icons.Codespaces,
+                MoreCommands = more,
+            });
+        }
+
         if (_createAgentTaskPage is not null)
         {
             items.Add(new ListItem(_createAgentTaskPage)
@@ -135,6 +178,10 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
                 _pullRequestsPage ??= _pullRequestsTemplate?.ForRepository(_repository.FullName, this);
                 _createAgentTaskPage ??= _auth is not null && _agentsClient is not null
                     ? new CreateAgentTaskPage(_auth, _agentsClient, _repository) { Owner = this }
+                    : null;
+                _contextualCodespacePage ??= _auth?.CurrentAccount?.Host.IsGitHubDotCom == true && _codespacesClient is not null
+                    ? ContextualCodespacePage.ForRepository(
+                        _auth, _codespacesClient, _browser, _repository.FullName, null)
                     : null;
                 SetRepository(_repository);
                 _initialized = true;
@@ -186,6 +233,7 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
         _issuesPage?.Dispose();
         _pullRequestsPage?.Dispose();
         _createAgentTaskPage?.Dispose();
+        _contextualCodespacePage?.Dispose();
     }
 
     internal void Reset()

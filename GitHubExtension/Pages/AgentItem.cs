@@ -17,11 +17,17 @@ internal sealed partial class AgentItem : ListItem
         Subtitle = AgentFormatting.Subtitle(task, now);
         Icon = Icons.Agents;
         Tags = [AgentFormatting.StateTag(task.State)];
-        Command = new OpenInBrowserCommand(browser, task.WebUrl, "Open", Icons.Agents);
+        if (task.ArchivedAt is not null || page.Archived)
+        {
+            Tags = [.. Tags, new Tag("Archived")];
+        }
+        Command = new OpenInBrowserCommand(new CurrentBrowser(page, page.CurrentAccount, page.Generation, browser), task.WebUrl, "Open", Icons.Agents);
         MoreCommands =
         [
             new CommandContextItem(new CopyTextCommand(task.WebUrl.AbsoluteUri) { Name = "Copy URL", Icon = Icons.Copy }),
             new CommandContextItem(new RefreshAgentsCommand(page)),
+            new CommandContextItem(page.DetailsPage(task)),
+            .. page.QueryCommands(),
         ];
     }
 
@@ -33,4 +39,12 @@ internal sealed partial class AgentItem : ListItem
         || (Task.Model?.Contains(t, StringComparison.OrdinalIgnoreCase) ?? false)
         || Task.State.Contains(t, StringComparison.OrdinalIgnoreCase)
         || AgentFormatting.StateText(Task.State).Contains(t, StringComparison.OrdinalIgnoreCase));
+
+    private sealed class CurrentBrowser(AgentsPage page, GitHubAccount? account, int generation, IBrowserLauncher browser) : IBrowserLauncher
+    {
+        public void Open(Uri uri)
+        {
+            if (page.CanNavigate(account, generation)) { browser.Open(uri); }
+        }
+    }
 }

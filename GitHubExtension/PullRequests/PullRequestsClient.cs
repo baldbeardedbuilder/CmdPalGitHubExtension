@@ -5,6 +5,7 @@
 using System.Text.Json;
 using BaldBeardedBuilder.CmdPal.GitHub.Api;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
+using BaldBeardedBuilder.CmdPal.GitHub.Issues;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using static BaldBeardedBuilder.CmdPal.GitHub.Api.GitHubRest;
 
@@ -19,7 +20,7 @@ internal interface IPullRequestsClient
         CancellationToken cancellationToken);
 }
 
-internal sealed class PullRequestsClient(HttpClient httpClient) : IPullRequestsClient
+internal sealed class PullRequestsClient(HttpClient httpClient) : IPullRequestsClient, IIssueConversationClient
 {
     internal const int PageSize = 100;
 
@@ -35,6 +36,22 @@ internal sealed class PullRequestsClient(HttpClient httpClient) : IPullRequestsC
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
         return new PullRequestsPageResult(ParsePullRequests(json.RootElement), NextPage(response));
     }, cancellationToken: cancellationToken);
+
+    public Task<IssueCommentsPage> GetCommentsAsync(
+        GitHubAccount account, string repository, int number, Uri? page, CancellationToken token) =>
+        new IssueConversationClient(httpClient, DiagnosticArea.PullRequests).GetCommentsAsync(account, repository, number, page, token);
+
+    public Task<IssueComment> CreateCommentAsync(
+        GitHubAccount account, string repository, int number, string body, CancellationToken token) =>
+        new IssueConversationClient(httpClient, DiagnosticArea.PullRequests).CreateCommentAsync(account, repository, number, body, token);
+
+    public Task<IssueComment> EditCommentAsync(
+        GitHubAccount account, string repository, int number, int commentId, string body, CancellationToken token) =>
+        new IssueConversationClient(httpClient, DiagnosticArea.PullRequests).EditCommentAsync(account, repository, number, commentId, body, token);
+
+    public Task DeleteCommentAsync(
+        GitHubAccount account, string repository, int number, int commentId, CancellationToken token) =>
+        new IssueConversationClient(httpClient, DiagnosticArea.PullRequests).DeleteCommentAsync(account, repository, number, commentId, token);
 
     internal static List<GitHubPullRequest> ParsePullRequests(JsonElement array) =>
         DomainDiagnostics.Read(DiagnosticArea.PullRequests, () =>

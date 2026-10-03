@@ -59,6 +59,20 @@ internal sealed partial class RepoItem : ListItem
             more.Add(new CommandContextItem(starPage));
         }
 
+        if (page.WatchPage(repository, _account, _accountGeneration) is { } watchPage)
+        {
+            more.Add(new CommandContextItem(watchPage));
+        }
+
+        if (page.RepositoryAgents(repository.FullName, _account, _accountGeneration) is { } agentsPage)
+        {
+            more.Add(new CommandContextItem(agentsPage));
+        }
+        if (page.WorkSearch is { } search)
+        {
+            more.Add(new CommandContextItem(search));
+        }
+
         MoreCommands = [.. more];
     }
 

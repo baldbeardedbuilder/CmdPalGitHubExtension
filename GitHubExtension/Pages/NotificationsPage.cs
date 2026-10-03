@@ -25,6 +25,7 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
     private readonly IssueDetailsPage? _issueDetails;
     private readonly IPullRequestActionsClient? _pullRequestActionsClient;
     private readonly TimeProvider _time;
+    private readonly WorkItemDetailsCache _nativeDetails;
     private readonly PageEmptyContent _emptyContent;
     private readonly ListLoadState _load = new();
     private Lock _lock => _load.SyncRoot;
@@ -47,12 +48,14 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
     public NotificationsPage(AuthService auth, INotificationsClient client, IBrowserLauncher browser, TimeProvider? time = null,
         IssueDetailsPage? issueDetails = null,
         IThreadSubscriptionsClient? subscriptionsClient = null,
-        IPullRequestActionsClient? pullRequestActionsClient = null)
+        IPullRequestActionsClient? pullRequestActionsClient = null,
+        WorkItemDetailFactories? workItemDetailFactories = null)
     {
         _auth = auth;
         _client = client;
         _subscriptionsClient = subscriptionsClient ?? client as IThreadSubscriptionsClient;
         _pullRequestActionsClient = pullRequestActionsClient;
+        _nativeDetails = new(workItemDetailFactories);
         _browser = browser;
         _executor = new MutationExecutor(auth);
         _issueDetails = issueDetails;
@@ -126,11 +129,13 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
             StartLoad(reset: true);
         }
 
-        EmptyContent = mutationError is not null
+        var empty = mutationError is not null
             ? _emptyContent.Get("Couldn't update notification", mutationError, refresh: true, command: authorizeCommand)
             : error is not null
                 ? _emptyContent.Get("Couldn't load notifications", error, refresh: true, command: authorizeCommand)
                 : _emptyContent.Get("You're all caught up", "No notifications to show");
+        empty.MoreCommands = BrowsingCommands();
+        EmptyContent = empty;
 
         var terms = SearchText.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         IListItem[] result = terms.Length == 0
@@ -161,7 +166,8 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
 
     public Task RefreshAsync()
     {
-        PullRequestActionsPage[] pullRequestActions;
+        PullRequestActionsPage[] pullRequestActions = [];
+        bool previewsOnly;
         lock (_lock)
         {
             if (_load.Disposed)
@@ -169,8 +175,12 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
                 return _load.CurrentLoad;
             }
 
-            _load.Invalidate();
-            pullRequestActions = TakePullRequestActionPages();
+            previewsOnly = _client is INotificationBrowsingClient && _time.GetUtcNow() < _nextPoll;
+            if (!previewsOnly)
+            {
+                _load.Invalidate();
+                pullRequestActions = TakePullRequestActionPages();
+            }
         }
 
         foreach (var page in pullRequestActions)
@@ -178,7 +188,31 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
             page.Dispose();
         }
 
-        return StartLoad(reset: true);
+        return previewsOnly ? RetrySubjectsAsync() : StartLoad(reset: true);
+    }
+
+    private Task RetrySubjectsAsync()
+    {
+        ListLoadState.Operation operation;
+        GitHubAccount account;
+        List<NotificationItem> items;
+        lock (_lock)
+        {
+            items = _items.Where(item => item.Subject is null && NotificationFormatting.HasState(item.Notification)).ToList();
+            if (_auth.CurrentAccount is not { } current || items.Count == 0 || !_load.TryBegin(true, out operation))
+            {
+                return _load.CurrentLoad;
+            }
+            account = current;
+            _load.Succeed(operation, _load.NextPage);
+        }
+
+        _load.Publish(operation, () => IsLoading = true);
+        return _load.Run(operation, () => LoadSubjectsAsync(account, items, operation), () =>
+        {
+            _load.Publish(operation, () => IsLoading = false);
+            _load.Publish(operation, () => RaiseItemsChanged());
+        }, "GitHub took too long to return notification details.", area: DiagnosticArea.Notifications);
     }
 
     internal ICommandResult Open(NotificationItem item)
@@ -283,6 +317,7 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
                 lock (_lock)
                 {
                     if (!state.IsCurrent(operation)
+                        || item.AccountGeneration != _accountGeneration
                         || !_items.Any(current => current.Notification.Id == item.Notification.Id
                             && current.Notification.RepositoryFullName == item.Notification.RepositoryFullName))
                     {
@@ -297,7 +332,11 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
                     var target = fresh.Notifications.FirstOrDefault(n => n.Id == item.Notification.Id);
                     if (target is not null)
                     {
-                        return target.RepositoryFullName == item.Notification.RepositoryFullName;
+                        lock (_lock)
+                        {
+                            return state.IsCurrent(operation) && item.AccountGeneration == _accountGeneration
+                                && target.RepositoryFullName == item.Notification.RepositoryFullName;
+                        }
                     }
 
                     next = fresh.NextPage;
@@ -307,6 +346,13 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
             },
             async token =>
             {
+                lock (_lock)
+                {
+                    if (!state.IsCurrent(operation) || item.AccountGeneration != _accountGeneration)
+                    {
+                        return new MutationResult<bool>(MutationState.Stale);
+                    }
+                }
                 try
                 {
                     if (done)
@@ -354,7 +400,8 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
 
         lock (_lock)
         {
-            if (!state.IsCurrent(operation) || result.State == MutationState.Stale || !_executor.IsCurrent(account))
+            if (!state.IsCurrent(operation) || item.AccountGeneration != _accountGeneration
+                || result.State == MutationState.Stale || !_executor.IsCurrent(account))
             {
                 return;
             }
@@ -368,7 +415,7 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
 
         if (result.State == MutationState.Completed)
         {
-            await RefreshAsync().ConfigureAwait(false);
+            await RefreshAfterMutationAsync().ConfigureAwait(false);
         }
     }
 
@@ -404,12 +451,59 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
     private async Task LoadAsync(GitHubAccount account, ListLoadState.Operation operation)
     {
         List<NotificationItem> added = [];
-        var result = await _client.GetNotificationsAsync(account, operation.Page, operation.Token).ConfigureAwait(false);
+        NotificationsPageResult result;
+        if (_client is INotificationBrowsingClient browsing)
+        {
+            NotificationQuery query;
+            DateTimeOffset? modified;
+            lock (_lock) { query = _query; modified = _forceRefresh ? null : _lastModified; _forceRefresh = false; }
+            NotificationPollResult poll;
+            try
+            {
+                poll = await browsing.GetNotificationsAsync(account, query, operation.Page, modified, operation.Token).ConfigureAwait(false);
+            }
+            catch (GitHubApiException ex) when (ex.Data["NotificationPollInterval"] is TimeSpan interval)
+            {
+                lock (_lock)
+                {
+                    if (_load.IsCurrent(operation) && operation.Page is null) { _nextPoll = _time.GetUtcNow() + interval; }
+                }
+
+                throw;
+            }
+            lock (_lock)
+            {
+                if (!_load.IsCurrent(operation) || _auth.CurrentAccount != account) { return; }
+                if (operation.Page is null)
+                {
+                    _lastModified = poll.LastModified;
+                    _nextPoll = _time.GetUtcNow() + poll.PollInterval;
+                }
+
+                if (poll.NotModified)
+                {
+                    _load.Succeed(operation, _load.NextPage);
+                    added = _items.Where(item => item.Subject is null).ToList();
+                }
+            }
+
+            if (poll.NotModified)
+            {
+                await LoadSubjectsAsync(account, added, operation).ConfigureAwait(false);
+                return;
+            }
+
+            result = new(poll.Notifications, poll.NextPage);
+        }
+        else
+        {
+            result = await _client.GetNotificationsAsync(account, operation.Page, operation.Token).ConfigureAwait(false);
+        }
         var now = _time.GetUtcNow();
 
         lock (_lock)
         {
-            if (!_load.IsCurrent(operation))
+            if (!_load.IsCurrent(operation) || _auth.CurrentAccount != account)
             {
                 return;
             }
@@ -492,7 +586,7 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
                     var details = await _client.GetSubjectAsync(account, item.Notification.SubjectApiUrl!, load.Token).ConfigureAwait(false);
                     lock (_lock)
                     {
-                        if (!_load.IsCurrent(load))
+                        if (!_load.IsCurrent(load) || _auth.CurrentAccount != account)
                         {
                             return;
                         }
@@ -527,7 +621,7 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
                     failure = ex;
                     lock (_lock)
                     {
-                        if (!_load.IsCurrent(load))
+                        if (!_load.IsCurrent(load) || _auth.CurrentAccount != account)
                         {
                             return;
                         }
@@ -564,18 +658,27 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
             }
 
             _load.Invalidate(reset: true);
-            _accountGeneration++;
+            Interlocked.Increment(ref _accountGeneration);
             CancelMutations();
             details = TakeDetailPages();
             subscriptions = TakeSubscriptionPages();
             pullRequestActions = TakePullRequestActionPages();
             _items.Clear();
             _subjectCache.Clear();
+            _query = new();
+            _lastModified = null;
+            _nextPoll = default;
+            _forceRefresh = false;
+            _browsingCommands = null;
+            _pollLifetime.Cancel();
+            _pollLifetime.Dispose();
+            _pollLifetime = new();
             _mutationError = null;
             revision = _load.Revision;
             _authorizeUrl = null;
         }
 
+        _nativeDetails.Dispose();
         foreach (var page in details)
         {
             page.Dispose();
@@ -628,6 +731,7 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
                 return;
             }
 
+            Interlocked.Increment(ref _accountGeneration);
             _load.Dispose();
             CancelMutations();
             details = TakeDetailPages();
@@ -635,8 +739,11 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
             pullRequestActions = TakePullRequestActionPages();
             _items.Clear();
             _subjectCache.Clear();
+            _pollLifetime.Cancel();
+            _pollLifetime.Dispose();
         }
 
+        _nativeDetails.Dispose();
         foreach (var page in details)
         {
             page.Dispose();

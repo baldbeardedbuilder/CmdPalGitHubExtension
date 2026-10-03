@@ -18,7 +18,7 @@ public class ActionsViewTests
 {
     private static readonly GitHubAccount Account = new(GitHubHost.GitHubDotCom, "octocat", "t");
     private static readonly DateTimeOffset Now = new(2025, 6, 1, 12, 0, 0, TimeSpan.Zero);
-    private static readonly string[] RepositorySections = ["o/r", "Issues", "Pull Requests", "Actions", "Start Copilot task", "Discussions"];
+    private static readonly string[] RepositorySections = ["o/r", "Issues", "Pull Requests", "Actions", "Copilot tasks", "Open Codespace", "Start Copilot task", "Discussions"];
     private static readonly string[] ExpectedFilters = ["Running", "Succeeded", "Failed"];
     private static readonly string[] ExpectedCancelEndpoints =
     [
@@ -58,8 +58,12 @@ public class ActionsViewTests
         var repository = Assert.IsInstanceOfType<RepositoryPage>(item.Command);
         Assert.AreEqual("o/r", repository.Title);
         Assert.IsNull(browser.LastOpened);
-        CollectionAssert.AreEqual(RepositorySections, repository.GetItems().Select(section => section.Title).ToArray());
-        var command = repository.GetItems().Single(i => i.Title == "Actions").Command;
+        var sections = repository.GetItems();
+        CollectionAssert.AreEqual(RepositorySections, sections.Select(section => section.Title).ToArray(),
+            string.Join(", ", sections.Select(section => section.Title)));
+        Assert.IsInstanceOfType<AgentsPage>(sections.Single(section => section.Title == "Copilot tasks").Command);
+        Assert.IsInstanceOfType<ContextualCodespacePage>(sections.Single(section => section.Title == "Open Codespace").Command);
+        var command = sections.Single(i => i.Title == "Actions").Command;
 
         var actions = Assert.IsInstanceOfType<ActionsPage>(command);
         actions.GetItems();
@@ -247,8 +251,8 @@ public class ActionsViewTests
         page.SearchText = string.Empty;
         page.Filters.CurrentFilterId = ActionFilters.Succeeded;
         Assert.IsEmpty(page.GetItems());
-        Assert.AreEqual("No succeeded workflow runs. Refresh to check for new runs", page.EmptyContent.Subtitle);
-        Assert.IsInstanceOfType<RefreshActionsCommand>(page.EmptyContent.Command);
+        Assert.AreEqual("No succeeded workflow runs. Run a workflow manually or refresh to check for new runs.", page.EmptyContent.Subtitle);
+        Assert.IsInstanceOfType<WorkflowDispatchPage>(page.EmptyContent.Command);
     }
 
     [TestMethod]
@@ -314,8 +318,8 @@ public class ActionsViewTests
 
         Assert.IsEmpty(page.GetItems());
         Assert.AreEqual("No workflow runs found", page.EmptyContent!.Title);
-        Assert.AreEqual("No running workflow runs. Refresh to check for new runs", page.EmptyContent.Subtitle);
-        Assert.IsInstanceOfType<RefreshActionsCommand>(page.EmptyContent.Command);
+        Assert.AreEqual("No running workflow runs. Run a workflow manually or refresh to check for new runs.", page.EmptyContent.Subtitle);
+        Assert.IsInstanceOfType<WorkflowDispatchPage>(page.EmptyContent.Command);
     }
 
     [TestMethod]

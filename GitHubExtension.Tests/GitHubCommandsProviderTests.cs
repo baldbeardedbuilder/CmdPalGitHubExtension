@@ -86,7 +86,8 @@ public class GitHubCommandsProviderTests
             .Single(c => c.Command is CreateCodespacePage);
         Assert.AreSame(provider.GetCommand(CreateCodespacePage.PageId), create.Command);
         Assert.AreEqual("Create Codespace", create.Command!.Name);
-        Assert.IsInstanceOfType<NoOpCommand>(items[1].Command);
+        Assert.IsInstanceOfType<IssueSearchPage>(items[1].Command);
+        Assert.AreSame(provider.GetCommand(IssueSearchPage.PageId), items[1].Command);
         Assert.IsTrue(items.All(i => i.MoreCommands.OfType<CommandContextItem>().Any(c => c.Command is SignOutCommand)));
     }
 
@@ -126,6 +127,18 @@ public class GitHubCommandsProviderTests
         Assert.IsInstanceOfType<AgentsPage>(provider.GetCommand(AgentsPage.PageId));
         Assert.IsInstanceOfType<CodespacesPage>(provider.GetCommand(CodespacesPage.PageId));
         Assert.IsInstanceOfType<CreateCodespacePage>(provider.GetCommand(CreateCodespacePage.PageId));
+        Assert.IsInstanceOfType<IssueSearchPage>(provider.GetCommand(IssueSearchPage.PageId));
+    }
+
+    [TestMethod]
+    public void Dispose_RemovesSavedQueryCommand()
+    {
+        using var provider = CreateProvider(new InMemoryAccountStore(), out _);
+        Assert.IsInstanceOfType<IssueSearchPage>(provider.GetCommand(IssueSearchPage.PageId));
+
+        provider.Dispose();
+
+        Assert.IsNull(provider.GetCommand(IssueSearchPage.PageId));
     }
 
     [TestMethod]

@@ -1,6 +1,6 @@
 ---
 title: Codespaces
-description: Open and manage your Codespaces, with confirmations for compute and permanent deletion.
+description: Open, create, and manage Codespaces from GitHub and pull request context.
 ---
 
 Open **GitHub > Codespaces** to see your development environments. Select one to open it in your browser. Type to filter loaded rows by repository, name, display name, branch, or state.
@@ -28,6 +28,14 @@ Starting compute can incur charges. Closing compute doesn't delete the environme
 5. Check the account, host, repository, branch, and billing warning before confirming.
 
 After creation, **Open Codespace** opens the new environment. GitHub may still be preparing it.
+
+## Start from a repository or pull request
+
+Repository and pull request actions can open a Codespace using the context you're already viewing. The extension checks for an existing Codespace for that repository and branch first. If it finds one, open it directly or choose to create another.
+
+Creating from a repository uses that repository's Codespaces endpoint. Creating from a pull request uses GitHub's pull request Codespaces endpoint so GitHub can set up the pull request's head context, including a fork. Review the repository or pull request and confirm before starting compute. Creation may incur charges.
+
+These contextual actions are available on **github.com** only. GitHub Enterprise Server and other Enterprise hosts don't support this feature in the extension.
 
 ## Delete a Codespace
 

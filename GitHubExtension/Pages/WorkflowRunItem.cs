@@ -28,6 +28,9 @@ internal sealed partial class WorkflowRunItem : ListItem
             new CommandContextItem(new NoOpCommand()) { Title = $"Status: {state}", Icon = Icon },
             new CommandContextItem(new CopyTextCommand(run.WebUrl.AbsoluteUri) { Name = "Copy run URL", Icon = Icons.Copy }),
             new CommandContextItem(new RefreshActionsCommand(page)),
+            new CommandContextItem(page.JobsPage(repository, run)) { Title = "View jobs and steps", Icon = Icons.Actions },
+            new CommandContextItem(page.ArtifactsPage(repository, run)) { Title = "Download logs and artifacts", Icon = Icons.Actions },
+            new CommandContextItem(page.DispatchPage(repository)) { Title = "Run workflow manually", Icon = Icons.Actions },
         };
         if (run.Status is "in_progress" or "queued" or "requested" or "waiting" or "pending")
         {

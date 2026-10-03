@@ -14,7 +14,22 @@ internal sealed record GitHubAgentTask(
     string? RepositoryFullName = null,
     string? Model = null,
     string? DetailsError = null,
-    string? RepositoryError = null);
+    string? RepositoryError = null,
+    IReadOnlyList<AgentSession>? Sessions = null,
+    IReadOnlyList<AgentArtifact>? Artifacts = null,
+    DateTimeOffset? ArchivedAt = null);
+
+internal sealed record AgentSession(string Id, string? Name, string State, string? Prompt, string? Model,
+    DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, string? HeadRef, string? BaseRef,
+    string? Error, string? UsageType, double? UsageAmount);
+
+internal sealed record AgentArtifact(string Provider, string Type, long? Id, string? GlobalId, string? HeadRef, string? BaseRef,
+    Uri? WebUrl = null);
+
+internal sealed record AgentQuery(bool Archived = false, string? State = null, string? Repository = null)
+{
+    internal static readonly string[] States = ["queued", "in_progress", "completed", "failed", "idle", "waiting_for_user", "timed_out", "cancelled"];
+}
 
 internal sealed record AgentTasksPageResult(IReadOnlyList<GitHubAgentTask> Tasks, Uri? NextPage);
 

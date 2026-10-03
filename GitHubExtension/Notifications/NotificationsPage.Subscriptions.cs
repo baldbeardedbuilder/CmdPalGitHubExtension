@@ -21,7 +21,7 @@ internal sealed partial class NotificationsPage
             _load.Invalidate();
         }
 
-        return StartLoad(reset: true);
+        return RefreshAfterMutationAsync();
     }
 
     private readonly IThreadSubscriptionsClient? _subscriptionsClient;

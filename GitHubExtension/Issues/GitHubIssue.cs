@@ -16,4 +16,5 @@ internal sealed record GitHubIssue(
     string? Author,
     IReadOnlyList<string> Assignees,
     IReadOnlyList<string> Labels,
-    int Comments);
+    int Comments,
+    int? MilestoneNumber = null);
