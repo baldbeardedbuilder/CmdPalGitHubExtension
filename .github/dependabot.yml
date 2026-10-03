@@ -1,5 +1,15 @@
 version: 2
 updates:
+  - package-ecosystem: npm
+    directory: /docs
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+    groups:
+      documentation:
+        patterns: ["*"]
+
   - package-ecosystem: nuget
     directory: /
     schedule:

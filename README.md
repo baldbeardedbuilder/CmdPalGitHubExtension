@@ -21,9 +21,15 @@ Open **Starred repositories** from the home page to browse your personal starred
 
 You can cancel a running workflow from its **More** menu. Force cancel is a separate confirmed action, offered when a normal cancellation was accepted but the run remains active. An accepted request does not mean the run has stopped, so the extension checks GitHub for the final state.
 
+## Documentation
+
+Start with the [documentation site](https://baldbeardedbuilder.github.io/CmdPalGitHubExtension/) for installation, sign-in, feature guides, and troubleshooting. The site publishes through GitHub Pages once Pages is enabled and the documentation workflow is on `main`.
+
+The documentation source lives in [`docs`](docs). See [Contributing](CONTRIBUTING.md#documentation-site) to preview or update it.
+
 ## Install
 
-Releases aren't published yet. Until they are, build it yourself using the steps in [CONTRIBUTING.md](CONTRIBUTING.md).
+Releases aren't published yet. Until they are, follow the [installation guide](docs/src/content/docs/getting-started/installation.md) to build, configure sign-in, and deploy it.
 
 ## Signing in
 
