@@ -20,5 +20,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\GitHubExtension\GitHubExtension.csproj" />
+    <None Include="..\GitHubExtension\GitHubExtension.csproj" Link="GitHubExtension.csproj" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

@@ -106,8 +106,4 @@
     </PropertyGroup>
   </Target>
 
-  <!-- Command Palette keeps the extension process alive, which locks the exe during rebuilds. -->
-  <Target Name="KillRunningExecutable" BeforeTargets="Build;Deploy;Publish">
-    <Exec Command="taskkill /F /IM $(AssemblyName).exe" ContinueOnError="true" IgnoreExitCode="true" StandardOutputImportance="low" StandardErrorImportance="low" />
-  </Target>
 </Project>
