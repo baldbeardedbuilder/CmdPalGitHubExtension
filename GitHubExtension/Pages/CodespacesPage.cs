@@ -100,7 +100,8 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
     internal Task<GitHubCodespace> GetDeleteDetailsAsync(GitHubAccount account, string name, CancellationToken token)
         => _client.GetCodespaceAsync(account, name, token);
 
-    internal async Task<string> DeleteAsync(CodespaceItem item, GitHubAccount account, int generation)
+    internal async Task<string> DeleteAsync(
+        CodespaceItem item, GitHubCodespace confirmed, GitHubAccount account, int generation)
     {
         ListLoadState.Operation operation;
         lock (_lock)
@@ -126,6 +127,12 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         async Task DeleteCoreAsync()
         {
             using var diagnostics = OperationDiagnostics.Begin(DiagnosticEvent.Mutation, DiagnosticArea.Codespaces);
+            var current = await _client.GetCodespaceAsync(account, item.Codespace.Name, operation.Token).ConfigureAwait(false);
+            if (!SameDeleteTarget(current, confirmed))
+            {
+                throw new GitHubApiException("The codespace or its git status changed after confirmation. Return and review the fresh status before deleting.");
+            }
+
             async Task<MutationResult<List<GitHubCodespace>>> Reconcile(CancellationToken token)
             {
                 var codespaces = await GetAllCodespacesAsync(account, token).ConfigureAwait(false);
@@ -187,6 +194,16 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
             }
         }
     }
+
+    private static bool SameDeleteTarget(GitHubCodespace current, GitHubCodespace confirmed) =>
+        current.Name == confirmed.Name
+        && string.Equals(current.RepositoryFullName, confirmed.RepositoryFullName, StringComparison.OrdinalIgnoreCase)
+        && current.Branch == confirmed.Branch
+        && current.State == confirmed.State
+        && current.HasUncommittedChanges == confirmed.HasUncommittedChanges
+        && current.HasUnpushedChanges == confirmed.HasUnpushedChanges
+        && current.Ahead == confirmed.Ahead
+        && current.Behind == confirmed.Behind;
 
     private async Task<List<GitHubCodespace>> GetAllCodespacesAsync(GitHubAccount account, CancellationToken token)
     {

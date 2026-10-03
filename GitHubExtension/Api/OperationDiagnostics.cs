@@ -142,6 +142,9 @@ internal static partial class OperationDiagnostics
     internal static DiagnosticFailure FailureCategory(Exception exception) =>
         GetFailure(exception)?.Failure ?? Classify(exception);
 
+    internal static DiagnosticOutcome? FailureOutcome(Exception exception) =>
+        GetFailure(exception)?.Outcome;
+
     internal static bool HasFailure(Exception exception) => GetFailure(exception) is not null;
 
     internal static void CorrelateFailure(Exception source, Exception target)

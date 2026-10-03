@@ -68,7 +68,7 @@ internal sealed class ActionsClient(HttpClient httpClient) : IActionsClient
                 timeoutMessage: "The cancellation request timed out. It may have been accepted. Refresh the run before trying again.")
                 .ConfigureAwait(false);
             return true;
-        }, name: DiagnosticEvent.Mutation, outcome: _ => DiagnosticOutcome.Requested, mutationSent: () => sent,
+        }, name: DiagnosticEvent.Mutation, outcome: _ => DiagnosticOutcome.Accepted, mutationSent: () => sent,
             cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 

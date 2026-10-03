@@ -58,6 +58,41 @@ public sealed class GitHubRestTests
     }
 
     [TestMethod]
+    [DataRow(HttpStatusCode.Accepted)]
+    [DataRow(HttpStatusCode.NoContent)]
+    [DataRow(HttpStatusCode.OK)]
+    public async Task SendAsync_EmptyMutationResponseIsAcceptedNotCompleted(HttpStatusCode status)
+    {
+        var entries = new List<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Add);
+        using var http = new HttpClient(new StubHandler(_ => new HttpResponseMessage(status)));
+
+        using var response = await GitHubRest.SendAsync(
+            http, Account, HttpMethod.Post, Endpoint, TestContext.CancellationToken);
+
+        Assert.HasCount(2, entries);
+        Assert.AreEqual(DiagnosticOutcome.Requested, entries[0].Outcome);
+        var entry = entries[^1];
+        Assert.AreEqual(DiagnosticOutcome.Accepted, entry.Outcome);
+        Assert.AreEqual((int)status, entry.Status);
+    }
+
+    [TestMethod]
+    public async Task SendAsync_ServerFailureAfterMutationHasUnknownOutcome()
+    {
+        var entries = new List<DiagnosticEntry>();
+        using var sink = OperationDiagnostics.UseSink(entries.Add);
+        using var http = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError)));
+
+        await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            GitHubRest.SendAsync(http, Account, HttpMethod.Post, Endpoint, TestContext.CancellationToken));
+
+        Assert.HasCount(2, entries);
+        Assert.AreEqual(DiagnosticOutcome.Requested, entries[0].Outcome);
+        Assert.AreEqual(DiagnosticOutcome.Unknown, entries[^1].Outcome);
+    }
+
+    [TestMethod]
     public async Task SendAsync_TransportFailureLogsCategoryWithoutExceptionSecrets()
     {
         var logs = new List<string>();
