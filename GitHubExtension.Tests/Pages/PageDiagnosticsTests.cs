@@ -118,16 +118,20 @@ public sealed class PageDiagnosticsTests
         using var sink = OperationDiagnostics.UseSink(entries.Enqueue);
         var auth = CreateAuth();
         var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var client = new Mock<INotificationsClient>();
         client.Setup(c => c.GetNotificationsAsync(Account, null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new NotificationsPageResult(
                 [new GitHubNotification("1", "private title", "Discussion", null, "private/repository", WebUrl, "mention", true, Now)], null));
-        client.Setup(c => c.MarkAsDoneAsync(Account, "1", It.IsAny<CancellationToken>())).Returns(pending.Task);
-        var page = new NotificationsPage(auth, client.Object, new FakeBrowser(_ => null));
+        client.Setup(c => c.MarkAsDoneAsync(Account, "1", It.IsAny<CancellationToken>()))
+            .Callback(() => started.SetResult())
+            .Returns(pending.Task);
+        using var page = new NotificationsPage(auth, client.Object, new FakeBrowser(_ => null));
         page.GetItems();
         await page.CurrentLoad;
         page.MarkAsDone(Assert.IsInstanceOfType<NotificationItem>(page.GetItems().Single()));
         var mutation = page.CurrentMutation;
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         auth.SignOut();
         pending.SetException(new GitHubApiException("private failure"));
         await mutation;
