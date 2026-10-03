@@ -25,6 +25,10 @@ Repository pull request lists start with **Open** selected, including drafts. Sw
 
 Actions lists start with **Running** selected, including queued runs; switch to **Succeeded** for successful runs or **Failed** for every other completed outcome, including cancelled and skipped runs. Each filter has a status icon, text search narrows the selected group, and more results load as you scroll.
 
+On a completed run, use **More > Rerun workflow...** to rerun all jobs. Runs that failed or timed out also offer failed jobs and their dependents. The confirmation warns that reruns use Actions compute and may incur charges; you can optionally enable debug logging. You need repository write access and a classic PAT/OAuth token with `repo` scope, or a fine-grained token with **Actions: write**. GitHub enforces rerun limits, including the 30-day window.
+
+Rerunning keeps the same run ID. The extension rechecks its state before requesting a rerun, refreshes the Actions list, and shows the attempt and status reported by GitHub. **Rerun requested** means the request was accepted, not that the jobs succeeded or finished. Use **Refresh status** to follow the new attempt, including when GitHub hasn't updated it yet or a request timed out. Repeated confirmation won't submit another request; account changes invalidate the confirmation.
+
 Codespaces requires a github.com account and the `codespace` token scope. It isn't available on GitHub Enterprise Server. Use **More > Close Codespace** on an active codespace to stop it without deleting its files, or **More > Start Codespace** on a stopped one to start it. The list shows the state GitHub returns, and **Refresh** checks on a start or shutdown. Starting a codespace doesn't open it in your browser. Opening a stopped codespace still takes you to GitHub's browser editor, where it can start the environment.
 
 ### Agents access
