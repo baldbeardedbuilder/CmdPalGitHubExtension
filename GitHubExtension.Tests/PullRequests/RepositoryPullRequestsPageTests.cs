@@ -64,6 +64,11 @@ public sealed class RepositoryPullRequestsPageTests
         var commands = item.MoreCommands.Cast<CommandContextItem>().Select(context => context.Command).ToArray();
         Assert.IsTrue(commands.Any(command => command is PullRequestDetailsPage));
         Assert.IsTrue(commands.Any(command => command is IssueConversationPage));
+        Assert.IsInstanceOfType<OpenInBrowserCommand>(item.Command);
+        Assert.AreSame(item.DetailsPage, commands[0]);
+        Assert.AreEqual("Show details", commands[0]!.Name);
+        Assert.IsFalse(commands.Any(command => command is OpenInBrowserCommand));
+        Assert.AreSame(item.Icon, item.ConversationPage!.Icon);
     }
 
     [TestMethod]

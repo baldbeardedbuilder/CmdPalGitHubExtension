@@ -86,7 +86,7 @@ public sealed class PageLifetimeTests
         response.SetException(new GitHubApiException("stale error"));
         await old;
         Assert.IsTrue(token.IsCancellationRequested);
-        var template = ((FormContent)page.GetContent().Single()).TemplateJson;
+        var template = Assert.ContainsSingle(page.GetContent().OfType<FormContent>()).TemplateJson;
         Assert.Contains("Fresh issue", template);
         Assert.DoesNotContain("stale error", template);
     }

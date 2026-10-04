@@ -158,7 +158,7 @@ internal sealed partial class IssueDetailsPage
                         IssueDetailsActions.Confirm));
                 }
 
-                RaiseItemsChanged();
+                PublishItemsChanged();
             }
         }
 
@@ -181,7 +181,7 @@ internal sealed partial class IssueDetailsPage
         }
 
         _load.Publish(operation, () => IsLoading = true);
-        _load.Publish(operation, () => RaiseItemsChanged());
+        _load.Publish(operation, PublishItemsChanged);
         _load.Run(operation, async () =>
         {
             var names = add
@@ -217,7 +217,7 @@ internal sealed partial class IssueDetailsPage
         }
 
         _load.Publish(operation, () => IsLoading = true);
-        _load.Publish(operation, () => RaiseItemsChanged());
+        _load.Publish(operation, PublishItemsChanged);
         _load.Run(operation, async () =>
         {
             var result = await _mutations.ExecuteAsync(review.Account, review.Repository, review.Issue, review.Change,
@@ -236,9 +236,9 @@ internal sealed partial class IssueDetailsPage
                     changed = _changed;
                 }
 
-                _form = new IssueDetailsForm(this, IssueDetailsCards.Details(review.Repository, _issue!, true,
+                _form = new IssueDetailsForm(this, IssueDetailsCards.Details(review.Repository, _issue!,
                     result.State == MutationState.Completed ? "Issue updated." : result.Error ?? "The change is still unconfirmed. Refresh to check GitHub.",
-                    result.AuthorizeUrl, review.Account.Login));
+                    result.AuthorizeUrl), showsDescription: true);
                 _load.Succeed(operation, null);
             }
 
@@ -267,7 +267,7 @@ internal sealed partial class IssueDetailsPage
         }
 
         _load.Publish(operation, () => IsLoading = false);
-        _load.Publish(operation, () => RaiseItemsChanged());
+        _load.Publish(operation, PublishItemsChanged);
     }
 
     private void ShowDetails(long revision, string? feedback = null, Uri? authorizeUrl = null)
@@ -281,11 +281,11 @@ internal sealed partial class IssueDetailsPage
 
             _review = null;
             _choices = null;
-            _form = new IssueDetailsForm(this, IssueDetailsCards.Details(_repository, _issue, _mutations is not null,
-                feedback, authorizeUrl, _loadedAccount?.Login));
+            _form = new IssueDetailsForm(this, IssueDetailsCards.Details(_repository, _issue,
+                feedback, authorizeUrl), showsDescription: true);
         }
 
-        RaiseItemsChanged();
+        PublishItemsChanged();
     }
 
     private static bool TryReadSelection(string inputs, int count, out int index)

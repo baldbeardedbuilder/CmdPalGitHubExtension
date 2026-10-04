@@ -339,7 +339,8 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
 
                     if (_client is IIssueConversationClient conversationClient)
                     {
-                        conversation = new IssueConversationPage(_auth, conversationClient, account, repository, issue.Number, "Issue");
+                        conversation = new IssueConversationPage(_auth, conversationClient, account, repository, issue.Number, "Issue",
+                            icon: Icons.SubjectIcon(false, issue.State));
                         _auxiliaryPages.Add(conversation);
                     }
 
@@ -390,6 +391,7 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
 
     private void ApplyIssueUpdate(GitHubAccount account, string repository, IssueDetailsPage source, GitHubIssue updated)
     {
+        IssueConversationPage? conversation;
         lock (_lock)
         {
             var index = _items.FindIndex(item => ReferenceEquals(item.Command, source));
@@ -403,8 +405,10 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
                 existing.Editor, existing.ConversationPage);
             _load.Invalidate();
             _items[index] = item;
+            conversation = existing.ConversationPage;
         }
 
+        if (conversation is not null) conversation.Icon = Icons.SubjectIcon(false, updated.State);
         IsLoading = false;
         RaiseItemsChanged();
     }
@@ -440,13 +444,7 @@ internal sealed partial class RepositoryIssueItem : ListItem
         }
 
         Subtitle = $"{opened} · {issue.Comments} {(issue.Comments == 1 ? "comment" : "comments")}";
-        Icon = issue.State switch
-        {
-            SubjectState.Open => Icons.StateOpenIssue,
-            SubjectState.Closed => Icons.StateClosedIssue,
-            SubjectState.NotPlanned => Icons.StateNotPlanned,
-            _ => Icons.Issues,
-        };
+        Icon = Icons.SubjectIcon(false, issue.State);
         Tags = [.. issue.Labels.Select(label => new Tag(label))];
         var commands = new List<IContextItem>
         {

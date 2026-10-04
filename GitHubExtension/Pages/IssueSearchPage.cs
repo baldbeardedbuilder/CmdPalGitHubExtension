@@ -123,7 +123,10 @@ internal sealed partial class IssueSearchPage : DynamicListPage, IDisposable
             MoreCommands = [new CommandContextItem(form), new CommandContextItem(new RefreshCommand(this)),
                 new CommandContextItem(new CopyTextCommand(item.WebUrl.AbsoluteUri) { Name = "Copy URL" }),
                 .. _nativeDetails.Commands($"{generation}:{item.Id}", account, item.Repository, item.Number,
-                    item.IsPullRequest, () => Volatile.Read(ref _generation) == generation)],
+                    item.IsPullRequest, () => Volatile.Read(ref _generation) == generation,
+                    Icons.SubjectIcon(item.IsPullRequest, item.State == "open"
+                        ? Notifications.SubjectState.Open : item.State == "closed"
+                        ? Notifications.SubjectState.Closed : Notifications.SubjectState.Unknown))],
         })];
         return _pagination.Append(rows,
             total > IssueSearchClient.ResultLimit ? "GitHub search is limited to 1,000 results"

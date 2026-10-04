@@ -132,7 +132,7 @@ public sealed class IssueFeaturePageTests
         Assert.Contains("Keep this comment", card);
         Assert.DoesNotContain("Confirm delete", card);
         client.Verify(c => c.DeleteCommentAsync(It.IsAny<GitHubAccount>(), It.IsAny<string>(), It.IsAny<int>(),
-            It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [TestMethod]
@@ -233,9 +233,141 @@ public sealed class IssueFeaturePageTests
         await page.CurrentWork;
         Assert.IsFalse(created);
         using var card = JsonDocument.Parse(((IFormContent)page.GetContent().Single()).TemplateJson);
-        Assert.Contains("Review issue", card.RootElement.GetRawText());
+        Assert.Contains("Save", card.RootElement.GetRawText());
     }
 
     private static void Submit(ContentPage page, string inputs, string data) =>
         ((IFormContent)page.GetContent().Single()).SubmitForm(inputs, data);
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task CancelIssueEditor_ReturnsWithoutSavingOrReusingConfirmation(bool reviewing)
+    {
+        var client = new Mock<IIssueManagementClient>();
+        client.Setup(c => c.GetMilestonesAsync(Account, "octo/tool", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new IssueMilestonesPage([], null));
+        using var auth = CreateAuth();
+        using var page = new IssueWritePage(auth, client.Object, "octo/tool");
+        page.GetContent();
+        await page.CurrentWork;
+        if (reviewing)
+            Submit(page, """{"title":"Unsaved issue","body":"Draft","milestone":"0"}""", """{"action":"review"}""");
+
+        var form = Assert.ContainsSingle(page.GetContent().OfType<IFormContent>());
+        var actions = CardActions(form.TemplateJson);
+        var cancel = Assert.ContainsSingle(actions.Where(action => action.GetProperty("title").GetString() == "Cancel"));
+        Assert.AreEqual("none", cancel.GetProperty("associatedInputs").GetString());
+        var result = form.SubmitForm("{}", cancel.GetProperty("data").GetRawText());
+        form.SubmitForm("{}", """{"action":"confirm"}""");
+
+        Assert.AreEqual(CommandResultKind.GoBack, result.Kind);
+        client.Verify(c => c.CreateIssueAsync(It.IsAny<GitHubAccount>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<string>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()), Times.Never);
+        Assert.DoesNotContain("Unsaved issue", Assert.ContainsSingle(page.GetContent().OfType<IFormContent>()).TemplateJson);
+    }
+
+    [TestMethod]
+    public async Task IssueEditor_SaveOpensReviewBeforeWriting()
+    {
+        var client = new Mock<IIssueManagementClient>();
+        client.Setup(c => c.GetMilestonesAsync(Account, "octo/tool", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new IssueMilestonesPage([], null));
+        using var auth = CreateAuth();
+        using var page = new IssueWritePage(auth, client.Object, "octo/tool");
+        page.GetContent();
+        await page.CurrentWork;
+        var form = Assert.ContainsSingle(page.GetContent().OfType<IFormContent>());
+        var save = Assert.ContainsSingle(CardActions(form.TemplateJson)
+            .Where(action => action.GetProperty("title").GetString() == "Save"));
+        Assert.AreEqual("auto", save.GetProperty("associatedInputs").GetString());
+
+        form.SubmitForm("""{"title":"New issue","body":"Description","milestone":"0"}""", save.GetProperty("data").GetRawText());
+
+        var review = Assert.ContainsSingle(page.GetContent().OfType<IFormContent>());
+        var actions = CardActions(review.TemplateJson);
+        Assert.Contains("Create issue", actions.Select(action => action.GetProperty("title").GetString()));
+        Assert.Contains("Cancel", actions.Select(action => action.GetProperty("title").GetString()));
+        client.Verify(c => c.CreateIssueAsync(It.IsAny<GitHubAccount>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<string>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task Conversation_EditAndDeletePreserveLargeCommentId()
+    {
+        const long id = 4_123_456_789;
+        var comment = new IssueComment(id, "Old comment", Account.Login, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            ApiUrl);
+        var client = new Mock<IIssueConversationClient>();
+        client.Setup(c => c.GetCommentsAsync(Account, "octo/tool", 42, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new IssueCommentsPage([comment], null));
+        client.Setup(c => c.EditCommentAsync(Account, "octo/tool", 42, id, "Edited comment", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(comment with { Body = "Edited comment" });
+        client.Setup(c => c.DeleteCommentAsync(Account, "octo/tool", 42, id, It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        using var auth = CreateAuth();
+        using var page = new IssueConversationPage(auth, client.Object, Account, "octo/tool", 42, "Pull request",
+            icon: Icons.StateMerged);
+        page.GetContent();
+        await page.CurrentWork;
+        Assert.AreSame(Icons.StateMerged, page.Icon);
+        var form = Assert.ContainsSingle(page.GetContent().OfType<IFormContent>());
+        var edit = Assert.ContainsSingle(CardActions(form.TemplateJson)
+            .Where(action => action.GetProperty("title").GetString() == "Edit"));
+        form.SubmitForm("{}", edit.GetProperty("data").GetRawText());
+        form = Assert.ContainsSingle(page.GetContent().OfType<IFormContent>());
+        var save = Assert.ContainsSingle(CardActions(form.TemplateJson)
+            .Where(action => action.GetProperty("title").GetString() == "Save comment"));
+        Assert.AreEqual("auto", save.GetProperty("associatedInputs").GetString());
+        form.SubmitForm("""{"body":"Edited comment"}""", save.GetProperty("data").GetRawText());
+        await page.CurrentWork;
+
+        form = Assert.ContainsSingle(page.GetContent().OfType<IFormContent>());
+        var delete = Assert.ContainsSingle(CardActions(form.TemplateJson)
+            .Where(action => action.GetProperty("title").GetString() == "Delete"));
+        Assert.AreEqual("none", delete.GetProperty("associatedInputs").GetString());
+        form.SubmitForm("{}", delete.GetProperty("data").GetRawText());
+        form = Assert.ContainsSingle(page.GetContent().OfType<IFormContent>());
+        var confirm = Assert.ContainsSingle(CardActions(form.TemplateJson)
+            .Where(action => action.GetProperty("title").GetString() == "Confirm delete"));
+        form.SubmitForm("{}", confirm.GetProperty("data").GetRawText());
+        await page.CurrentWork;
+
+        client.Verify(c => c.EditCommentAsync(Account, "octo/tool", 42, id, "Edited comment", It.IsAny<CancellationToken>()), Times.Once);
+        client.Verify(c => c.DeleteCommentAsync(Account, "octo/tool", 42, id, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public void ConversationCards_AllButtonsAreValidActionsAndOnlySavesValidateInputs()
+    {
+        var comment = new IssueComment(4_123_456_789, "Comment", Account.Login, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, ApiUrl);
+        foreach (var editing in new long?[] { null, comment.Id })
+        {
+            var card = IssueConversationCards.Comments("Issue", "octo/tool", 42, [comment], Account.Login, "Draft",
+                editing, true, null, null, false);
+            var actions = CardActions(card);
+            Assert.Contains(editing is null ? "Post comment" : "Save comment",
+                actions.Select(action => action.GetProperty("title").GetString()));
+            Assert.Contains("Refresh comments", actions.Select(action => action.GetProperty("title").GetString()));
+            Assert.Contains("Load more comments", actions.Select(action => action.GetProperty("title").GetString()));
+            foreach (var action in actions)
+            {
+                var operation = action.GetProperty("data").GetProperty("action").GetString();
+                Assert.AreEqual(operation is "post" or "save-edit" ? "auto" : "none",
+                    action.GetProperty("associatedInputs").GetString());
+            }
+        }
+        var confirmation = CardActions(IssueConversationCards.ConfirmDelete("Issue", "octo/tool", 42, comment, null, null));
+        Assert.HasCount(2, confirmation);
+    }
+
+    private static JsonElement[] CardActions(string template)
+    {
+        using var card = JsonDocument.Parse(template);
+        var body = card.RootElement.GetProperty("body").EnumerateArray().ToArray();
+        Assert.IsFalse(body.Any(item => item.GetProperty("type").GetString() is "Action.Submit" or "Action.OpenUrl"),
+            "Actions must be contained in ActionSet, not the card body.");
+        return body.Where(item => item.GetProperty("type").GetString() == "ActionSet")
+            .SelectMany(item => item.GetProperty("actions").EnumerateArray()).Select(action => action.Clone()).ToArray();
+    }
 }

@@ -399,7 +399,7 @@ public sealed class PageNotificationTests
         await page.CurrentLoad;
 
         Assert.IsFalse(page.IsLoading);
-        Assert.Contains("Test issue", Assert.IsInstanceOfType<FormContent>(page.GetContent().Single()).TemplateJson);
+        Assert.Contains("Test issue", Assert.ContainsSingle(page.GetContent().OfType<FormContent>()).TemplateJson);
         auth.SignOut();
         Assert.IsGreaterThan(0, events);
         Assert.IsEmpty(blocked, string.Join(", ", blocked));

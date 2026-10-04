@@ -29,7 +29,7 @@ public sealed class IssueConversationClientTests
         Assert.AreEqual(new Uri("https://api.github.com/repos/octo/tool/issues/42/comments"), request.Uri);
         using var body = JsonDocument.Parse(request.Body);
         Assert.AreEqual("New comment", body.RootElement.GetProperty("body").GetString());
-        Assert.AreEqual(12, result.Id);
+        Assert.AreEqual(12L, result.Id);
     }
 
     [TestMethod]
@@ -135,6 +135,52 @@ public sealed class IssueConversationClientTests
         Assert.AreEqual(2, handler.Requests.Count);
     }
 
-    private static string Comment(int id, int issue, string body, string? author = "octocat") =>
+    [TestMethod]
+    [DataRow(2_147_483_648L)]
+    [DataRow(4_123_456_789L)]
+    [DataRow(long.MaxValue)]
+    public async Task CommentOperations_Accept64BitIdsAndPreserveRoutes(long id)
+    {
+        var identifier = id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        using var handler = new IssueTestHandler((request, _, _) => Task.FromResult(
+            request.Method == HttpMethod.Delete ? new HttpResponseMessage(HttpStatusCode.NoContent)
+                : Response(request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath.EndsWith("/42/comments", StringComparison.Ordinal)
+                    ? "[" + Comment(id, 42, "Comment", Account.Login) + "]"
+                    : Comment(id, 42, "Comment", Account.Login))));
+        using var http = new HttpClient(handler);
+        var client = new IssueConversationClient(http);
+
+        var list = await client.GetCommentsAsync(Account, "octo/tool", 42, null, TestContext.CancellationToken);
+        var created = await client.CreateCommentAsync(Account, "octo/tool", 42, "Comment", TestContext.CancellationToken);
+        var edited = await client.EditCommentAsync(Account, "octo/tool", 42, id, "Comment", TestContext.CancellationToken);
+        await client.DeleteCommentAsync(Account, "octo/tool", 42, id, TestContext.CancellationToken);
+
+        Assert.AreEqual(id, Assert.ContainsSingle(list.Comments).Id);
+        Assert.AreEqual(id, created.Id);
+        Assert.AreEqual(id, edited.Id);
+        Assert.AreEqual(new Uri($"https://api.github.com/repos/octo/tool/issues/comments/{identifier}"),
+            Assert.ContainsSingle(handler.Requests.Where(request => request.Method == HttpMethod.Patch)).Uri);
+        Assert.AreEqual(new Uri($"https://api.github.com/repos/octo/tool/issues/comments/{identifier}"),
+            Assert.ContainsSingle(handler.Requests.Where(request => request.Method == HttpMethod.Delete)).Uri);
+    }
+
+    [TestMethod]
+    [DataRow("0")]
+    [DataRow("-1")]
+    [DataRow("1.5")]
+    [DataRow("\"123\"")]
+    [DataRow("9223372036854775808")]
+    [DataRow("null")]
+    public async Task GetComments_InvalidIdsRemainRejected(string id)
+    {
+        var json = Comment(1, 42, "Comment").Replace("\"id\":1,", "\"id\":" + id + ",", StringComparison.Ordinal);
+        using var handler = new IssueTestHandler((_, _, _) => Task.FromResult(Response("[" + json + "]")));
+        using var http = new HttpClient(handler);
+
+        await Assert.ThrowsExactlyAsync<GitHubApiException>(() =>
+            new IssueConversationClient(http).GetCommentsAsync(Account, "octo/tool", 42, null, TestContext.CancellationToken));
+    }
+
+    private static string Comment(long id, int issue, string body, string? author = "octocat") =>
         $$"""{"id":{{id}},"body":{{GitHubJson.String(body)}},"user":{"login":{{GitHubJson.String(author ?? string.Empty)}}},"created_at":"2025-06-01T10:00:00Z","updated_at":"2025-06-01T11:00:00Z","issue_url":"https://api.github.com/repos/octo/tool/issues/{{issue}}"}""";
 }

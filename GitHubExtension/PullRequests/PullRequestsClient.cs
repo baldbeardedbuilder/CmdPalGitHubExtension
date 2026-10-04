@@ -46,11 +46,11 @@ internal sealed class PullRequestsClient(HttpClient httpClient) : IPullRequestsC
         new IssueConversationClient(httpClient, DiagnosticArea.PullRequests).CreateCommentAsync(account, repository, number, body, token);
 
     public Task<IssueComment> EditCommentAsync(
-        GitHubAccount account, string repository, int number, int commentId, string body, CancellationToken token) =>
+        GitHubAccount account, string repository, int number, long commentId, string body, CancellationToken token) =>
         new IssueConversationClient(httpClient, DiagnosticArea.PullRequests).EditCommentAsync(account, repository, number, commentId, body, token);
 
     public Task DeleteCommentAsync(
-        GitHubAccount account, string repository, int number, int commentId, CancellationToken token) =>
+        GitHubAccount account, string repository, int number, long commentId, CancellationToken token) =>
         new IssueConversationClient(httpClient, DiagnosticArea.PullRequests).DeleteCommentAsync(account, repository, number, commentId, token);
 
     internal static List<GitHubPullRequest> ParsePullRequests(JsonElement array) =>

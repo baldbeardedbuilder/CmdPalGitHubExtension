@@ -23,8 +23,8 @@ internal sealed partial class IssueConversationPage : ContentPage, IDisposable
     private readonly List<IssueComment> _comments = [];
     private IssueConversationForm _form;
     private string _draft = string.Empty;
-    private int? _editing;
-    private int? _deleting;
+    private long? _editing;
+    private long? _deleting;
     private GitHubAccount? _account;
     private readonly Func<bool>? _isCurrent;
     private bool _busy;
@@ -37,7 +37,7 @@ internal sealed partial class IssueConversationPage : ContentPage, IDisposable
 
     public IssueConversationPage(
         AuthService auth, IIssueConversationClient client, GitHubAccount account, string repository, int number, string kind,
-        Func<bool>? isCurrent = null)
+        Func<bool>? isCurrent = null, IconInfo? icon = null)
     {
         _isCurrent = isCurrent;
         _auth = auth;
@@ -49,7 +49,7 @@ internal sealed partial class IssueConversationPage : ContentPage, IDisposable
         Id = $"com.baldbeardedbuilder.cmdpal.github.conversation.{Uri.EscapeDataString(repository)}.{number}.{Guid.NewGuid():N}";
         Name = "Conversation";
         Title = $"{kind} conversation";
-        Icon = Icons.Issues;
+        Icon = icon ?? (kind == "Pull request" ? Icons.PullRequests : Icons.Issues);
         _form = new IssueConversationForm(this, IssueConversationCards.Loading(kind, repository, number));
         _accountSubscription = auth.Subscribe(this, static page => page.AccountChanged());
     }
@@ -82,7 +82,7 @@ internal sealed partial class IssueConversationPage : ContentPage, IDisposable
     private CommandResult Submit(IssueConversationForm source, string inputs, string data)
     {
         var action = ReadString(data, "action");
-        var commentId = ReadInt(data, "id");
+        var commentId = ReadId(data, "id");
         ListLoadState.Operation? mutationOperation = null;
         bool loadMore = false;
         bool refresh = false;
@@ -142,6 +142,7 @@ internal sealed partial class IssueConversationPage : ContentPage, IDisposable
                 else
                 {
                     if (!_load.TryBegin(true, out var operation)) return CommandResult.KeepOpen();
+                    if (action == "save-edit") commentId = _editing;
                     mutationOperation = operation;
                     _busy = true;
                     _form = new IssueConversationForm(this, IssueConversationCards.Loading(_kind, _repository, _number));
@@ -214,7 +215,7 @@ internal sealed partial class IssueConversationPage : ContentPage, IDisposable
         }
     }
 
-    private async Task RunMutationAsync(string action, int? commentId, string body, ListLoadState.Operation operation)
+    private async Task RunMutationAsync(string action, long? commentId, string body, ListLoadState.Operation operation)
     {
         GitHubAccount? account;
         lock (_lock)
@@ -340,8 +341,8 @@ internal sealed partial class IssueConversationPage : ContentPage, IDisposable
         catch (JsonException) { return null; }
     }
 
-    private static int? ReadInt(string json, string property) =>
-        int.TryParse(ReadString(json, property), NumberStyles.None, CultureInfo.InvariantCulture, out var result) && result > 0
+    private static long? ReadId(string json, string property) =>
+        long.TryParse(ReadString(json, property), NumberStyles.None, CultureInfo.InvariantCulture, out var result) && result > 0
             ? result : null;
 
     private sealed partial class IssueConversationForm : FormContent
@@ -364,14 +365,14 @@ internal static class IssueConversationCards
     internal static string SignedOut() => Card(Text("Sign in to view conversation comments."));
 
     internal static string Comments(string kind, string repository, int number, IReadOnlyList<IssueComment> comments,
-        string? login, string draft, int? editing, bool hasMore, string? feedback, Uri? authorizeUrl, bool outcomeUnknown)
+        string? login, string draft, long? editing, bool hasMore, string? feedback, Uri? authorizeUrl, bool outcomeUnknown)
     {
         var items = new List<string>
         {
             Text($"{kind} conversation. {repository}#{number}"),
             Text(feedback ?? string.Empty),
             outcomeUnknown ? Text("The last comment change may have reached GitHub. Verify it on GitHub before retrying; comment changes are locked to avoid duplicates.") : string.Empty,
-            Submit("Refresh comments", "refresh"),
+            ActionSet(Submit("Refresh comments", "refresh")),
         };
         if (authorizeUrl is not null)
             items.Add($$"""{"type":"ActionSet","actions":[{"type":"Action.OpenUrl","title":"Authorize organization access","url":{{GitHubJson.String(authorizeUrl.AbsoluteUri)}}}]}""");
@@ -386,12 +387,12 @@ internal static class IssueConversationCards
             if (actions.Count > 0)
                 items.Add($$"""{"type":"ActionSet","actions":[{{string.Join(",", actions)}}]}""");
         }
-        if (hasMore) items.Add(Submit("Load more comments", "load-more"));
+        if (hasMore) items.Add(ActionSet(Submit("Load more comments", "load-more")));
         if (!outcomeUnknown)
         {
-            if (editing is not null) items.Add(Submit("Cancel edit", "cancel-edit"));
+            if (editing is not null) items.Add(ActionSet(Submit("Cancel edit", "cancel-edit")));
             items.Add($$"""{"type":"Input.Text","id":"body","label":"{{(editing is null ? "Comment" : "Edit comment")}}","isMultiline":true,"isRequired":true,"value":{{GitHubJson.String(draft)}}}""");
-            items.Add(Submit(editing is null ? "Post comment" : "Save comment", editing is null ? "post" : "save-edit", style: "positive"));
+            items.Add(ActionSet(Submit(editing is null ? "Post comment" : "Save comment", editing is null ? "post" : "save-edit", style: "positive")));
         }
         return Card([.. items]);
     }
@@ -404,11 +405,12 @@ internal static class IssueConversationCards
             Text(feedback ?? string.Empty),
             authorizeUrl is null ? string.Empty
                 : $$"""{"type":"ActionSet","actions":[{"type":"Action.OpenUrl","title":"Authorize organization access","url":{{GitHubJson.String(authorizeUrl.AbsoluteUri)}}}]}""",
-            Submit("Confirm delete", "confirm-delete", comment?.Id, "destructive"),
-            Submit("Cancel", "cancel-delete"));
+            ActionSet(Submit("Confirm delete", "confirm-delete", comment?.Id, "destructive"), Submit("Cancel", "cancel-delete")));
 
-    private static string Submit(string title, string action, int? id = null, string? style = null) =>
-        $$"""{"type":"Action.Submit","title":{{GitHubJson.String(title)}},"data":{"action":{{GitHubJson.String(action)}}{{(id is null ? string.Empty : $$""","id":"{{id.Value.ToString(CultureInfo.InvariantCulture)}}" """.Trim())}}}{{(style is null ? string.Empty : $$""","style":"{{style}}" """.Trim())}}}""";
+    private static string ActionSet(params string[] actions) =>
+        $$"""{"type":"ActionSet","actions":[{{string.Join(",", actions)}}]}""";
+    private static string Submit(string title, string action, long? id = null, string? style = null) =>
+        $$"""{"type":"Action.Submit","title":{{GitHubJson.String(title)}},"associatedInputs":"{{(action is "post" or "save-edit" ? "auto" : "none")}}","data":{"action":{{GitHubJson.String(action)}}{{(id is null ? string.Empty : $$""","id":"{{id.Value.ToString(CultureInfo.InvariantCulture)}}" """.Trim())}}}{{(style is null ? string.Empty : $$""","style":"{{style}}" """.Trim())}}}""";
     private static string Text(string text) => $$"""{"type":"TextBlock","text":{{GitHubJson.String(text)}},"wrap":true}""";
     private static string Card(params string[] items) => $$"""{"$schema":"http://adaptivecards.io/schemas/adaptive-card.json","type":"AdaptiveCard","version":"1.6","body":[{{string.Join(",", items.Where(item => !string.IsNullOrEmpty(item)))}}]}""";
 }

@@ -46,9 +46,9 @@ public sealed class NotificationIssueMutationTests
         var detail = Assert.IsInstanceOfType<IssueDetailsPage>(oldItem.Command);
         detail.GetContent();
         await detail.CurrentLoad;
-        Assert.IsInstanceOfType<FormContent>(detail.GetContent().Single())
+        Assert.ContainsSingle(detail.GetContent().OfType<FormContent>())
             .SubmitForm("{}", $$"""{"action":"{{IssueDetailsActions.CloseCompleted}}"}""");
-        Assert.IsInstanceOfType<FormContent>(detail.GetContent().Single())
+        Assert.ContainsSingle(detail.GetContent().OfType<FormContent>())
             .SubmitForm("{}", $$"""{"action":"{{IssueDetailsActions.Confirm}}"}""");
         await detail.CurrentMutation;
         await page.CurrentLoad;

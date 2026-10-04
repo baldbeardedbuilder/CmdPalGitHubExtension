@@ -63,11 +63,11 @@ internal sealed partial class IssuesClient(HttpClient httpClient) :
         new IssueConversationClient(httpClient).CreateCommentAsync(account, repository, number, body, token);
 
     public Task<IssueComment> EditCommentAsync(
-        GitHubAccount account, string repository, int number, int commentId, string body, CancellationToken token) =>
+        GitHubAccount account, string repository, int number, long commentId, string body, CancellationToken token) =>
         new IssueConversationClient(httpClient).EditCommentAsync(account, repository, number, commentId, body, token);
 
     public Task DeleteCommentAsync(
-        GitHubAccount account, string repository, int number, int commentId, CancellationToken token) =>
+        GitHubAccount account, string repository, int number, long commentId, CancellationToken token) =>
         new IssueConversationClient(httpClient).DeleteCommentAsync(account, repository, number, commentId, token);
 
     internal static List<GitHubIssue> ParseIssues(JsonElement array) =>

@@ -11,7 +11,7 @@ using static BaldBeardedBuilder.CmdPal.GitHub.Api.GitHubRest;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Issues;
 
-internal sealed record IssueComment(int Id, string Body, string? Author, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, Uri? IssueApiUrl);
+internal sealed record IssueComment(long Id, string Body, string? Author, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, Uri? IssueApiUrl);
 
 internal sealed record IssueCommentsPage(IReadOnlyList<IssueComment> Comments, Uri? NextPage);
 
@@ -19,8 +19,8 @@ internal interface IIssueConversationClient
 {
     Task<IssueCommentsPage> GetCommentsAsync(GitHubAccount account, string repository, int number, Uri? page, CancellationToken token);
     Task<IssueComment> CreateCommentAsync(GitHubAccount account, string repository, int number, string body, CancellationToken token);
-    Task<IssueComment> EditCommentAsync(GitHubAccount account, string repository, int number, int commentId, string body, CancellationToken token);
-    Task DeleteCommentAsync(GitHubAccount account, string repository, int number, int commentId, CancellationToken token);
+    Task<IssueComment> EditCommentAsync(GitHubAccount account, string repository, int number, long commentId, string body, CancellationToken token);
+    Task DeleteCommentAsync(GitHubAccount account, string repository, int number, long commentId, CancellationToken token);
 }
 
 internal sealed class IssueConversationClient(HttpClient httpClient, DiagnosticArea area = DiagnosticArea.Issues) : IIssueConversationClient
@@ -59,7 +59,7 @@ internal sealed class IssueConversationClient(HttpClient httpClient, DiagnosticA
         }, cancellationToken: token);
 
     public Task<IssueComment> EditCommentAsync(
-        GitHubAccount account, string repository, int number, int commentId, string body, CancellationToken token) =>
+        GitHubAccount account, string repository, int number, long commentId, string body, CancellationToken token) =>
         DomainDiagnostics.RunAsync(area, async () =>
         {
             RequireBody(body);
@@ -76,7 +76,7 @@ internal sealed class IssueConversationClient(HttpClient httpClient, DiagnosticA
         }, cancellationToken: token);
 
     public async Task DeleteCommentAsync(
-        GitHubAccount account, string repository, int number, int commentId, CancellationToken token)
+        GitHubAccount account, string repository, int number, long commentId, CancellationToken token)
     {
         await DomainDiagnostics.RunAsync(area, async () =>
         {
@@ -90,7 +90,7 @@ internal sealed class IssueConversationClient(HttpClient httpClient, DiagnosticA
     }
 
     private async Task RequireCommentPermissionAsync(
-        GitHubAccount account, string repository, int number, int commentId, bool edit, CancellationToken token)
+        GitHubAccount account, string repository, int number, long commentId, bool edit, CancellationToken token)
     {
         if (commentId <= 0) throw new GitHubApiException("Choose a valid comment.");
         using var commentResponse = await SendAsync(httpClient, account, HttpMethod.Get,
@@ -123,12 +123,14 @@ internal sealed class IssueConversationClient(HttpClient httpClient, DiagnosticA
     private IssueComment ParseComment(JsonElement value, bool mutation = false) =>
         DomainDiagnostics.Read(area, () =>
         {
-            if (value.ValueKind != JsonValueKind.Object || GetInt(value, "id") <= 0
+            if (value.ValueKind != JsonValueKind.Object
+                || !value.TryGetProperty("id", out var idValue) || idValue.ValueKind != JsonValueKind.Number
+                || !idValue.TryGetInt64(out var id) || id <= 0
                 || GetString(value, "body") is not { } body)
                 throw new GitHubApiException("GitHub sent back a comment we couldn't verify.", outcomeUnknown: mutation);
             var user = value.TryGetProperty("user", out var author) && author.ValueKind == JsonValueKind.Object
                 ? GetString(author, "login") : null;
-            return new IssueComment(GetInt(value, "id"), body, user, GetDate(value, "created_at"), GetDate(value, "updated_at"),
+            return new IssueComment(id, body, user, GetDate(value, "created_at"), GetDate(value, "updated_at"),
                 GetUri(value, "issue_url"));
         });
 
@@ -164,7 +166,7 @@ internal sealed class IssueConversationClient(HttpClient httpClient, DiagnosticA
             ? new Uri(RepositoryUri(account, repository).AbsoluteUri + $"/issues/{number.ToString(CultureInfo.InvariantCulture)}")
             : throw new GitHubApiException("Choose a valid issue or pull request number.");
 
-    private static Uri CommentUri(GitHubAccount account, string repository, int commentId)
+    private static Uri CommentUri(GitHubAccount account, string repository, long commentId)
     {
         if (commentId <= 0) throw new GitHubApiException("Choose a valid comment.");
         return new Uri(RepositoryUri(account, repository).AbsoluteUri

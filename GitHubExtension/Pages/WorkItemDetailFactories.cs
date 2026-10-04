@@ -12,12 +12,17 @@ internal sealed partial class WorkItemDetailsCache(WorkItemDetailFactories? fact
     private readonly Dictionary<string, ICommand[]> _pages = [];
 
     internal IContextItem[] Commands(string key, GitHubAccount account, string repository, int number,
-        bool pullRequest, Func<bool> isCurrent)
+        bool pullRequest, Func<bool> isCurrent, IconInfo? icon = null)
     {
         if (factories is null || !isCurrent()) { return []; }
+        ICommand[] pages;
         lock (_lock)
         {
-            if (!_pages.TryGetValue(key, out var pages))
+            if (_pages.TryGetValue(key, out var cached))
+            {
+                pages = cached;
+            }
+            else
             {
                 pages = new[]
                 {
@@ -27,8 +32,12 @@ internal sealed partial class WorkItemDetailsCache(WorkItemDetailFactories? fact
                 _pages[key] = pages;
             }
 
-            return pages.Select(page => (IContextItem)new CommandContextItem(page)).ToArray();
         }
+        if (icon is not null)
+        {
+            foreach (var conversation in pages.OfType<IssueConversationPage>()) conversation.Icon = icon;
+        }
+        return pages.Select(page => (IContextItem)new CommandContextItem(page)).ToArray();
     }
 
     public void Dispose()

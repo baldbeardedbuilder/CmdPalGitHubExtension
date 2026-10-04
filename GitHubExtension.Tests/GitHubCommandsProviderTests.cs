@@ -9,6 +9,8 @@ using BaldBeardedBuilder.CmdPal.GitHub.Pages;
 using BaldBeardedBuilder.CmdPal.GitHub.Repositories;
 using BaldBeardedBuilder.CmdPal.GitHub.Tests.Notifications;
 using Microsoft.CommandPalette.Extensions.Toolkit;
+using Microsoft.CommandPalette.Extensions;
+using System.Runtime.InteropServices;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub.Tests;
 
@@ -65,6 +67,34 @@ public class GitHubCommandsProviderTests
         Assert.IsInstanceOfType<SignInPage>(provider.GetCommand(SignInPage.PageId));
         Assert.IsInstanceOfType<HomePage>(provider.GetCommand(HomePage.PageId));
         Assert.IsNull(provider.GetCommand("nope"));
+    }
+
+    [TestMethod]
+    public void ExtensionProvider_DoesNotAdvertisePinningAcrossWinRT()
+    {
+        using var provider = CreateProvider(new InMemoryAccountStore(), out _);
+        using var disposed = new ManualResetEvent(false);
+        using var extension = new GitHubExtension(disposed, provider);
+        var exposed = extension.GetProvider(ProviderType.Commands);
+        var hostProvider = Assert.IsInstanceOfType<ICommandProvider3>(exposed);
+        Assert.IsNotInstanceOfType<ICommandProvider4>(exposed);
+        Assert.AreSame(provider.TopLevelCommands().Single(), hostProvider.TopLevelCommands().Single());
+        Assert.AreSame(provider.GetCommand(HomePage.PageId), hostProvider.GetCommand(HomePage.PageId));
+        Assert.IsNotEmpty(hostProvider.GetApiExtensionStubs());
+        var pointer = WinRT.MarshalInterface<ICommandProvider>.FromManaged(hostProvider);
+        try
+        {
+            var id = typeof(ICommandProvider4).GUID;
+            var result = Marshal.QueryInterface(pointer, in id, out var pinningPointer);
+            if (pinningPointer != IntPtr.Zero) Marshal.Release(pinningPointer);
+            Assert.AreEqual(unchecked((int)0x80004002), result);
+        }
+        finally
+        {
+            Marshal.Release(pointer);
+        }
+        extension.Dispose();
+        Assert.IsTrue(disposed.WaitOne(0));
     }
 
     [TestMethod]

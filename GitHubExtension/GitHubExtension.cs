@@ -8,18 +8,26 @@ namespace BaldBeardedBuilder.CmdPal.GitHub;
 public sealed partial class GitHubExtension : IExtension, IDisposable
 {
     private readonly ManualResetEvent _extensionDisposedEvent;
-    private readonly GitHubCommandsProvider _provider = new();
+    private readonly GitHubCommandsProvider _provider;
+    private readonly UnpinnableCommandProvider _hostProvider;
     private readonly Lock _disposeLock = new();
     private bool _isDisposed;
 
     public GitHubExtension(ManualResetEvent extensionDisposedEvent)
+        : this(extensionDisposedEvent, new GitHubCommandsProvider())
+    {
+    }
+
+    internal GitHubExtension(ManualResetEvent extensionDisposedEvent, GitHubCommandsProvider provider)
     {
         _extensionDisposedEvent = extensionDisposedEvent;
+        _provider = provider;
+        _hostProvider = new UnpinnableCommandProvider(provider);
     }
 
     public object? GetProvider(ProviderType providerType) => providerType switch
     {
-        ProviderType.Commands => _provider,
+        ProviderType.Commands => _hostProvider,
         _ => null,
     };
 
