@@ -36,7 +36,6 @@ internal sealed partial class RepositoryStarPage : ListPage, IDisposable
         _isCurrent = isCurrent;
         _browser = browser;
         _changed = changed;
-        Id = $"com.baldbeardedbuilder.cmdpal.github.star.{Uri.EscapeDataString(repository)}";
         Name = "Manage star";
         Title = repository;
         Icon = Icons.Repos;

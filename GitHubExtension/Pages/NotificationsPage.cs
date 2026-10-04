@@ -61,7 +61,7 @@ internal sealed partial class NotificationsPage : DynamicListPage, IDisposable
         _issueDetails = issueDetails;
         _time = time ?? TimeProvider.System;
         _emptyContent = new PageEmptyContent(Icons.Notifications, new RefreshNotificationsCommand(this));
-        Id = PageId;
+        Id = PinDestination.GlobalId(PinDestinationKind.Notifications);
         Name = "Open";
         Title = "Notifications";
         Icon = Icons.Notifications;

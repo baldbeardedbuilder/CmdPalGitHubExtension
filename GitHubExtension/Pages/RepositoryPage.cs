@@ -59,7 +59,6 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
         _repositoryAgents = repositoryAgents;
         _codespacesClient = codespacesClient;
         _repository = repository;
-        Id = $"{PageId}.{Uri.EscapeDataString(repository.FullName)}";
         Name = "Open";
         Icon = Icons.Repos;
         Title = repository.FullName;
@@ -82,14 +81,14 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
         var items = new List<IListItem>
         {
             new ListItem(open) { Title = repository.FullName, Subtitle = repository.Description ?? string.Empty, Icon = Icons.Repos, MoreCommands = more },
-            new ListItem(_issuesPage is null
+            new PinnableListItem(_issuesPage is null
                 ? new OpenInBrowserCommand(_browser, new Uri(repoBase + "issues"), "Open on GitHub", Icons.Issues)
                 : _issuesPage)
             {
                 Title = "Issues", Subtitle = _issuesPage is null ? "Open issues on GitHub" : $"Browse issues in {repository.FullName}",
                 Icon = Icons.Issues, MoreCommands = more,
             },
-            new ListItem(_pullRequestsPage is null
+            new PinnableListItem(_pullRequestsPage is null
                 ? new OpenInBrowserCommand(_browser, new Uri(repoBase + "pulls"), "Open on GitHub", Icons.PullRequests)
                 : _pullRequestsPage)
             {
@@ -98,7 +97,7 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
                     : $"Browse pull requests in {repository.FullName}",
                 Icon = Icons.PullRequests, MoreCommands = more,
             },
-            new ListItem(actions)
+            new PinnableListItem(actions)
             {
                 Title = "Actions", Subtitle = _actions is null ? "Open workflows on GitHub" : "Browse workflow runs",
                 Icon = Icons.Actions, MoreCommands = more,
@@ -121,7 +120,7 @@ internal sealed partial class RepositoryPage : ListPage, IDisposable
 
         if (_repositoryAgents is not null)
         {
-            items.Add(new ListItem(_repositoryAgents)
+            items.Add(new PinnableListItem(_repositoryAgents)
             {
                 Title = "Copilot tasks",
                 Subtitle = "Browse current and archived repository tasks",

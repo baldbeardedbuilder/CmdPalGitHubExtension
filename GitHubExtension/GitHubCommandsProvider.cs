@@ -6,6 +6,7 @@ using BaldBeardedBuilder.CmdPal.GitHub.Actions;
 using BaldBeardedBuilder.CmdPal.GitHub.Agents;
 using BaldBeardedBuilder.CmdPal.GitHub.Auth;
 using BaldBeardedBuilder.CmdPal.GitHub.Codespaces;
+using BaldBeardedBuilder.CmdPal.GitHub.Commands;
 using BaldBeardedBuilder.CmdPal.GitHub.Issues;
 using BaldBeardedBuilder.CmdPal.GitHub.Notifications;
 using BaldBeardedBuilder.CmdPal.GitHub.Pages;
@@ -33,6 +34,10 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
     private readonly CommandItem _topLevel;
     private readonly HttpClient? _ownedHttp;
     private readonly bool _ownsAuth;
+    private readonly Lock _pinLock = new();
+    private readonly Dictionary<string, ICommandItem> _pinItems = new(StringComparer.Ordinal);
+    private readonly List<PinnedDestinationPage> _pinPages = [];
+    private readonly Func<PinDestination, AuthService, ListPage> _pinFactory;
     private int _disposed;
 
     public GitHubCommandsProvider()
@@ -63,7 +68,7 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         browser ??= new ShellBrowserLauncher();
         HttpClient? http = null;
         HttpClient Http() => http ??= httpFactory?.Invoke() ?? new HttpClient();
-        _signInPage = new SignInPage(auth, logoProvider);
+        _signInPage = new SignInPage(auth, logoProvider) { Id = PinDestination.GlobalId(PinDestinationKind.Home) };
         repositoriesClient ??= new RepositoriesClient(Http());
         issueSearchClient ??= new IssueSearchClient(Http());
         codespacesClient ??= new CodespacesClient(Http());
@@ -110,7 +115,8 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
             workItemDetailFactories: workItemDetailFactories);
         agentsClient ??= new AgentsClient(Http());
         _agentsPage = new AgentsPage(auth, agentsClient, browser);
-        _actionsPage = new ActionsPage(auth, actionsClient ?? new ActionsClient(Http()), browser);
+        var resolvedActionsClient = actionsClient ?? new ActionsClient(Http());
+        _actionsPage = new ActionsPage(auth, resolvedActionsClient, browser);
         _reposPage = new ReposPage(
             auth,
             repositoriesClient,
@@ -135,12 +141,35 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         DisplayName = "GitHub";
         Icon = Icons.GitHub;
 
-        _topLevel = new CommandItem(CurrentPage)
+        _topLevel = new PinnableCommandItem(CurrentPage)
         {
             Title = "GitHub",
             Icon = Icons.GitHub,
         };
         UpdateTopLevel();
+
+        _pinFactory = (destination, pageAuth) => destination.Kind switch
+        {
+            PinDestinationKind.Home => new HomePage(pageAuth, _notificationsPage, _reposPage, _agentsPage,
+                _codespacesPage, _createCodespacePage, _starredReposPage),
+            PinDestinationKind.Notifications => new NotificationsPage(pageAuth, resolvedNotificationsClient, browser,
+                issueDetails: _issueDetailsPage, subscriptionsClient: threadSubscriptionsClient,
+                pullRequestActionsClient: resolvedPullRequestActionsClient, workItemDetailFactories: workItemDetailFactories),
+            PinDestinationKind.Repos => new ReposPage(pageAuth, repositoriesClient, browser,
+                _repositoryIssuesPage, _repositoryPullRequestsPage, actions: _actionsPage, agentsClient: agentsClient,
+                starsClient: repositoryStarsClient, workItemDetailFactories: workItemDetailFactories,
+                issueSearchClient: issueSearchClient, codespacesClient: codespacesClient),
+            PinDestinationKind.Agents => new AgentsPage(pageAuth, agentsClient, browser),
+            PinDestinationKind.Codespaces => new CodespacesPage(pageAuth, codespacesClient, browser, createPage: _createCodespacePage),
+            PinDestinationKind.RepositoryIssues => _repositoryIssuesPage.ForRepository(destination.Repository!, auth: pageAuth),
+            PinDestinationKind.RepositoryPullRequests => _repositoryPullRequestsPage.ForRepository(destination.Repository!, auth: pageAuth,
+                contextualCodespaceFactory: (repository, number, head) =>
+                    pageAuth.CurrentAccount?.Host.IsGitHubDotCom == true
+                        ? ContextualCodespacePage.ForPullRequest(pageAuth, codespacesClient, browser, repository, number, head) : null),
+            PinDestinationKind.RepositoryAgents => new AgentsPage(pageAuth, agentsClient, browser, query: new(Repository: destination.Repository)),
+            PinDestinationKind.RepositoryActions => _actionsPage.ForRepository(destination.Repository!, auth: pageAuth),
+            _ => throw new ArgumentOutOfRangeException(nameof(destination)),
+        };
 
         _auth.AccountChanged += OnAccountChanged;
         _ownedHttp = http;
@@ -165,8 +194,41 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         ActionsPage.PageId => _actionsPage,
         CodespacesPage.PageId => _codespacesPage,
         CreateCodespacePage.PageId => _createCodespacePage,
-        _ => null,
+        _ => GetCommandItem(id)?.Command,
     };
+
+    public override ICommandItem? GetCommandItem(string id)
+    {
+        var dock = id.StartsWith(PinDestination.DockPrefix, StringComparison.Ordinal);
+        var destinationId = dock ? id[PinDestination.DockPrefix.Length..] : id;
+        if (!PinDestination.TryParse(destinationId, out var destination) || destination is null) { return null; }
+
+        lock (_pinLock)
+        {
+            if (_disposed != 0) { return null; }
+            if (!dock && destination.Kind == PinDestinationKind.Home) { return _topLevel; }
+            if (_pinItems.TryGetValue(id, out var existing)) { return existing; }
+            if (!_pinItems.TryGetValue(destinationId, out var item))
+            {
+                PinnedDestinationPage page = destination.Kind == PinDestinationKind.Home
+                    ? new PinnedDestinationPage(_auth, destination, _signInPage, pageAuth => _pinFactory(destination, pageAuth))
+                    : new PinnedDynamicDestinationPage(_auth, destination, _signInPage, pageAuth => _pinFactory(destination, pageAuth));
+                _pinPages.Add(page);
+                item = new PinnableListItem(page)
+                {
+                    Title = destination.Title,
+                    Subtitle = destination.IsRepository ? $"@{destination.Login} on {destination.Host!.Name}" : "GitHub",
+                    Icon = destination.Icon,
+                };
+                _pinItems.Add(destinationId, item);
+            }
+
+            if (!dock) { return item; }
+            var band = new WrappedDockItem([(IListItem)item], id, destination.Title) { Icon = destination.Icon };
+            _pinItems.Add(id, band);
+            return band;
+        }
+    }
 
     public override void Dispose()
     {
@@ -176,6 +238,14 @@ public sealed partial class GitHubCommandsProvider : CommandProvider
         }
 
         _auth.AccountChanged -= OnAccountChanged;
+        PinnedDestinationPage[] pinPages;
+        lock (_pinLock)
+        {
+            pinPages = [.. _pinPages];
+            _pinPages.Clear();
+            _pinItems.Clear();
+        }
+        foreach (var page in pinPages) { page.Dispose(); }
         _homePage.Dispose();
         _signInPage.Dispose();
         _notificationsPage.Dispose();

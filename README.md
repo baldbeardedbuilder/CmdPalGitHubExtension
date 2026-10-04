@@ -25,6 +25,12 @@ Open Command Palette, type **GitHub**, and pick it.
 
 To sign out, open the extension and pick **Sign out**.
 
+## Pin your GitHub destinations
+
+Use a destination's **More** menu to pin **GitHub**, **Notifications**, **Repos**, **Agents**, or **Codespaces** to Command Palette Home or the Dock. Inside a repository, you can also pin **Issues**, **Pull Requests**, **Copilot tasks**, and **Actions**. Each Dock pin is one button that opens its page.
+
+General pins follow your current account. Repository pins require the account and host that created them, even after a restart. Pins don't save filters, search text, or form inputs. Saved queries, detail pages, creation forms, and one-time actions aren't pinnable.
+
 ## Contributing
 
 Bugs, ideas, and pull requests are all welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md).

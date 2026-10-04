@@ -10,7 +10,6 @@ internal sealed partial class BrowsingFormPage : ContentPage
     {
         Name = name;
         Title = name;
-        Id = $"com.baldbeardedbuilder.cmdpal.github.query.{Guid.NewGuid():N}";
         _form = new(this, body, submit);
     }
 

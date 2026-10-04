@@ -48,7 +48,7 @@ internal sealed partial class CodespacesPage : DynamicListPage, IDisposable
         _emptyContent = new PageEmptyContent(Icons.Codespaces, new RefreshCodespacesCommand(this));
         CreatePage = createPage;
         _createCommands = createPage is null ? [] : [new CommandContextItem(createPage)];
-        Id = PageId;
+        Id = PinDestination.GlobalId(PinDestinationKind.Codespaces);
         Name = "Open";
         Title = "Codespaces";
         Icon = Icons.Codespaces;

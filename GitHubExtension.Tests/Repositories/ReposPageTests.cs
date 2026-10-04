@@ -200,7 +200,8 @@ public class ReposPageTests
             page.GetItems().Single(item => item.Title == "Start Copilot task").Command);
 
         Assert.AreEqual("Start Agent Task", create.Name);
-        Assert.Contains("octocat%2Fhello", create.Id);
+        Assert.IsEmpty(create.Id);
+        Assert.AreEqual("octocat/hello", page.Title);
     }
 
     [TestMethod]
@@ -385,7 +386,9 @@ public class ReposPageTests
         first.SearchText = "issues";
         var second = new RepositoryPage(browser, null, RepoFormattingTests.Repo("o/b", description: "Another repo"));
 
-        Assert.AreNotEqual(first.Id, second.Id);
+        Assert.AreNotSame(first, second);
+        Assert.IsEmpty(first.Id);
+        Assert.IsEmpty(second.Id);
         Assert.AreEqual("issues", first.SearchText);
         Assert.AreEqual("o/a", first.Title);
         var overview = second.GetItems()[0];

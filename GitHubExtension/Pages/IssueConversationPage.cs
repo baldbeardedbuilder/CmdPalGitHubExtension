@@ -46,7 +46,6 @@ internal sealed partial class IssueConversationPage : ContentPage, IDisposable
         _repository = repository;
         _number = number;
         _kind = kind;
-        Id = $"com.baldbeardedbuilder.cmdpal.github.conversation.{Uri.EscapeDataString(repository)}.{number}.{Guid.NewGuid():N}";
         Name = "Conversation";
         Title = $"{kind} conversation";
         Icon = icon ?? (kind == "Pull request" ? Icons.PullRequests : Icons.Issues);

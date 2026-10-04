@@ -27,7 +27,6 @@ internal sealed partial class DeleteCodespacePage : ListPage
         _page = page;
         _item = item;
         (_account, _generation, _token) = page.DeleteContext();
-        Id = $"com.baldbeardedbuilder.cmdpal.github.delete-codespace.{item.Codespace.Name}";
         Name = "Delete Codespace";
         Title = "Delete Codespace";
         Icon = Icons.Codespaces;

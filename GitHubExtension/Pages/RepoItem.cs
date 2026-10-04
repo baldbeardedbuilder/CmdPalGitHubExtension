@@ -66,7 +66,7 @@ internal sealed partial class RepoItem : ListItem
 
         if (page.RepositoryAgents(repository.FullName, _account, _accountGeneration) is { } agentsPage)
         {
-            more.Add(new CommandContextItem(agentsPage));
+            more.Add(new PinnableCommandContextItem(agentsPage));
         }
         if (page.WorkSearch is { } search)
         {
@@ -105,8 +105,14 @@ internal sealed partial class RepoItem : ListItem
         || (Repository.Description?.Contains(t, StringComparison.OrdinalIgnoreCase) ?? false)
         || (Repository.Language?.Equals(t, StringComparison.OrdinalIgnoreCase) ?? false));
 
-    private sealed partial class RepositoryActionsContextItem(RepoItem item) : CommandContextItem(new NoOpCommand())
+    private sealed partial class RepositoryActionsContextItem(RepoItem item) : CommandContextItem(new NoOpCommand()), IExtendedAttributesProvider
     {
+        IDictionary<string, object> IExtendedAttributesProvider.GetProperties()
+        {
+            if (Command is { } actions) { PinItemProperties.Apply(this, actions); }
+            return GetProperties();
+        }
+
         public override ICommand? Command
         {
             get => (item.Command as RepositoryPage)?.Actions;

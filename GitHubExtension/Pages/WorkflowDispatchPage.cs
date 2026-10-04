@@ -42,7 +42,6 @@ internal sealed partial class WorkflowDispatchPage : ContentPage, IDisposable
         _repository = repository;
         _parent = parent;
         _account = auth.CurrentAccount;
-        Id = $"{ActionsPage.PageId}.dispatch.{Uri.EscapeDataString(repository)}";
         Name = "Run workflow manually";
         Title = $"Dispatch workflow in {repository}";
         Icon = Icons.Actions;

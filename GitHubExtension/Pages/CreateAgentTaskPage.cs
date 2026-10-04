@@ -34,7 +34,6 @@ internal sealed partial class CreateAgentTaskPage : ContentPage, IDisposable
         _auth = auth;
         _client = client;
         _repository = repository;
-        Id = $"{PageId}.{Uri.EscapeDataString(repository.FullName)}";
         Name = "Start Agent Task";
         Title = "Start Copilot task";
         Icon = Icons.Agents;

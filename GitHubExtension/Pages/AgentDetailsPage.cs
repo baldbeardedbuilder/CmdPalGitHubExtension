@@ -19,7 +19,6 @@ internal sealed partial class AgentDetailsPage : ListPage, IDisposable
         GitHubAccount account, Func<bool> isCurrent, AuthService? auth = null)
     {
         (_client, _task, _browser, _account, _isCurrent) = (client, task, browser, account, isCurrent);
-        Id = $"com.baldbeardedbuilder.cmdpal.github.agent.details.{Uri.EscapeDataString(task.Id)}";
         Name = "Task details";
         Title = task.Title;
         ShowDetails = true;

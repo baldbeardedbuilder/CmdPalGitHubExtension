@@ -45,7 +45,6 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
         _browser = browser;
         _time = time ?? TimeProvider.System;
         _emptyContent = new PageEmptyContent(Icons.Actions, new RefreshActionsCommand(this));
-        Id = PageId;
         Name = "Actions";
         Title = "Actions";
         Icon = Icons.Actions;
@@ -117,10 +116,10 @@ internal sealed partial class ActionsPage : DynamicListPage, IDisposable
 
     internal RepositoryPage? Owner { get; private init; }
 
-    internal ActionsPage ForRepository(string repository, RepositoryPage? owner = null) =>
-        new(_auth, _client, _browser, _time)
+    internal ActionsPage ForRepository(string repository, RepositoryPage? owner = null, AuthService? auth = null) =>
+        new(auth ?? _auth, _client, _browser, _time)
         {
-            Id = $"{PageId}.{Uri.EscapeDataString(repository)}",
+            Id = PinDestination.RepositoryId(PinDestinationKind.RepositoryActions, (auth ?? _auth).CurrentAccount, repository),
             Title = $"{repository} actions",
             _repository = repository,
             Owner = owner,

@@ -56,7 +56,6 @@ internal sealed partial class PullRequestDetailsPage : ContentPage, IDisposable
         _repository = repository;
         _number = number;
         _contextualCodespaceFactory = contextualCodespaceFactory;
-        Id = $"com.baldbeardedbuilder.cmdpal.github.pull-request-details.{Uri.EscapeDataString(repository)}.{number}.{Guid.NewGuid():N}";
         Name = "Show details";
         Title = $"Pull request {repository}#{number}";
         Icon = Icons.PullRequests;

@@ -50,7 +50,6 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
         _contextualCodespaceFactory = contextualCodespaceFactory;
         _emptyContent = new PageEmptyContent(Icons.PullRequests, new RefreshRepositoryItemsCommand(RefreshAsync, Icons.PullRequests));
         _pagination = new PagedListPresentation(Icons.PullRequests, () => StartLoad(reset: false));
-        Id = PageId;
         Name = "Pull requests";
         Title = "Pull requests";
         Icon = Icons.PullRequests;
@@ -74,10 +73,11 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
 
     internal RepositoryPage? Owner { get; private init; }
 
-    internal RepositoryPullRequestsPage ForRepository(string repository, RepositoryPage? owner = null) =>
-        new(_auth, _client, _browser, _time, _mergeClient, _actionsClient, _contextualCodespaceFactory)
+    internal RepositoryPullRequestsPage ForRepository(string repository, RepositoryPage? owner = null, AuthService? auth = null,
+        Func<string, int, string?, ICommand?>? contextualCodespaceFactory = null) =>
+        new(auth ?? _auth, _client, _browser, _time, _mergeClient, _actionsClient, contextualCodespaceFactory ?? _contextualCodespaceFactory)
         {
-            Id = $"{PageId}.{Uri.EscapeDataString(repository)}",
+            Id = PinDestination.RepositoryId(PinDestinationKind.RepositoryPullRequests, (auth ?? _auth).CurrentAccount, repository),
             Title = $"{repository} pull requests",
             _repository = repository,
             Owner = owner,

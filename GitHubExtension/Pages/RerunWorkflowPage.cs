@@ -34,7 +34,6 @@ internal sealed partial class RerunWorkflowPage : ContentPage, IDisposable
         _repository = repository;
         _account = auth.CurrentAccount;
         _original = run;
-        Id = $"{ActionsPage.PageId}.rerun.{Uri.EscapeDataString(repository)}.{run.Id}.{run.RunAttempt}";
         Name = "Rerun workflow...";
         Title = $"Rerun {run.Name}";
         Icon = Icons.Actions;

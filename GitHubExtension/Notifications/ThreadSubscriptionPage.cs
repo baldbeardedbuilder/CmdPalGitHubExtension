@@ -33,7 +33,6 @@ internal sealed partial class ThreadSubscriptionPage : ListPage, IDisposable
         _threadId = threadId;
         _isCurrent = isCurrent;
         _browser = browser;
-        Id = $"com.baldbeardedbuilder.cmdpal.github.subscription.{Uri.EscapeDataString(threadId)}";
         Name = "Manage thread subscription";
         Title = "Thread subscription";
         Icon = Icons.Notifications;

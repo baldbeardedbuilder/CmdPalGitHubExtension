@@ -24,7 +24,6 @@ internal sealed partial class RepositoryWatchPage : ListPage, IDisposable
         string repository, Func<bool> isCurrent, IBrowserLauncher browser)
     {
         (_client, _executor, _account, _repository, _isCurrent, _browser) = (client, executor, account, repository, isCurrent, browser);
-        Id = $"com.baldbeardedbuilder.cmdpal.github.watch.{Uri.EscapeDataString(repository)}";
         Name = "Manage watching";
         Title = repository;
         Icon = Icons.Repos;
