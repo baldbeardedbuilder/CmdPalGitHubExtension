@@ -51,6 +51,18 @@ jobs:
 
           Write-Host "Updated Package.appxmanifest to version $version"
 
+      - name: Update app.manifest version
+        shell: pwsh
+        run: |
+          $manifestPath = "GitHubExtension/app.manifest"
+          $version = "${{ steps.version.outputs.version }}"
+
+          [xml]$manifest = Get-Content $manifestPath
+          $manifest.assembly.assemblyIdentity.version = $version
+          $manifest.Save($manifestPath)
+
+          Write-Host "Updated app.manifest to version $version"
+
       - name: Restore dependencies
         run: |
           dotnet restore GitHubExtension/GitHubExtension.csproj -r win-x64
@@ -93,6 +105,18 @@ jobs:
 
           Write-Host "Updated Package.appxmanifest to version $version"
 
+      - name: Update app.manifest version
+        shell: pwsh
+        run: |
+          $manifestPath = "GitHubExtension/app.manifest"
+          $version = "${{ needs.build-and-test.outputs.version }}"
+
+          [xml]$manifest = Get-Content $manifestPath
+          $manifest.assembly.assemblyIdentity.version = $version
+          $manifest.Save($manifestPath)
+
+          Write-Host "Updated app.manifest to version $version"
+
       - name: Restore dependencies
         run: dotnet restore GitHubExtension.slnx
 
@@ -118,7 +142,7 @@ jobs:
           if ($mapping) { $config.configuration.RemoveChild($mapping); $config.Save("${{ github.workspace }}/nuget.config") }
 
       - name: Azure login
-        uses: azure/login@v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           creds: ${{ secrets.AZURE_CREDS }}
 
