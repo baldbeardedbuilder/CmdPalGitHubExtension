@@ -15,7 +15,9 @@ The same actions are available from pull request notifications after their detai
 
 ## Review pull request details and conversation
 
-Choose **Pull request details** from a repository row's **More** menu to inspect changed files, submitted reviews, check runs, and combined commit status. Each section reports its own load failure; unavailable check data is never treated as a passing result. Choose **Conversation** to browse, post, edit, or delete comments using the same author and maintainer rules as issue comments.
+**Open in browser** is a row's primary command, and **Show details** is secondary. Details render the description as Markdown and show changed files, submitted reviews, check runs, and combined commit status. **Refresh** is the detail page's primary command, not a button in the description. Each section reports its own load failure; unavailable check data is never treated as a passing result.
+
+Choose **Conversation** to browse, post, edit, or delete comments using the same author and maintainer rules as issue comments. Use **Post comment** for a new comment and **Save comment** when editing. The conversation icon follows the pull request's state. Pinning to Command Palette home or dock is disabled until the extension supports reopening pinned destinations.
 
 When contextual Codespaces are wired in, the repository row's **More** menu includes **Open Codespace** for the pull request's head branch.
 

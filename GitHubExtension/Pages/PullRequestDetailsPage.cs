@@ -57,7 +57,7 @@ internal sealed partial class PullRequestDetailsPage : ContentPage, IDisposable
         _number = number;
         _contextualCodespaceFactory = contextualCodespaceFactory;
         Id = $"com.baldbeardedbuilder.cmdpal.github.pull-request-details.{Uri.EscapeDataString(repository)}.{number}.{Guid.NewGuid():N}";
-        Name = "Pull request details";
+        Name = "Show details";
         Title = $"Pull request {repository}#{number}";
         Icon = Icons.PullRequests;
         _form = new PullRequestDetailsForm(this, PullRequestDetailsCards.Loading(repository, number));
@@ -100,7 +100,12 @@ internal sealed partial class PullRequestDetailsPage : ContentPage, IDisposable
     public override IContent[] GetContent()
     {
         StartLoad();
-        lock (_lock) return [_form];
+        lock (_lock)
+        {
+            return _form.ShowsDescription && _details is { } details
+                ? [new MarkdownContent(PullRequestDetailsCards.Description(_repository, details)), _form]
+                : [_form];
+        }
     }
 
     public void Dispose()
@@ -124,6 +129,7 @@ internal sealed partial class PullRequestDetailsPage : ContentPage, IDisposable
         }
         (contextualCodespace as IDisposable)?.Dispose();
         IsLoading = false;
+        Commands = [];
     }
 
     private CommandResult Submit(PullRequestDetailsForm source, string inputs, string data, string? confirmation)
@@ -134,7 +140,7 @@ internal sealed partial class PullRequestDetailsPage : ContentPage, IDisposable
         lock (_lock)
         {
             if (_disposed || _busy || !ReferenceEquals(source, _form)
-                || _details is null || _account is null || !IsLive(_account))
+                || (_details is null && action != "refresh") || _account is null || !IsLive(_account))
                 return CommandResult.KeepOpen();
             if (action == "cancel" && confirmation == _pendingConfirmation)
             {
@@ -153,6 +159,10 @@ internal sealed partial class PullRequestDetailsPage : ContentPage, IDisposable
                 _feedback = null;
                 _outcomeUnknown = _pendingReviewCreationUnknown;
                 StartLoadUnderLock(out operation);
+            }
+            else if (_details is null)
+            {
+                return CommandResult.KeepOpen();
             }
             else if (action is "draft" or "ready" or "update-branch")
             {
@@ -240,7 +250,7 @@ internal sealed partial class PullRequestDetailsPage : ContentPage, IDisposable
             }
             IsLoading = true;
         }
-        RaiseItemsChanged();
+        PublishItemsChanged();
         return CommandResult.KeepOpen();
     }
 
@@ -249,14 +259,17 @@ internal sealed partial class PullRequestDetailsPage : ContentPage, IDisposable
         ListLoadState.Operation operation;
         lock (_lock)
         {
-            if (_disposed || _details is not null || _busy || _account is not { } account
+            if (_disposed || _load.Loaded || _details is not null || _busy || _account is not { } account
                 || !IsLive(account) || !_load.TryBegin(true, out operation))
                 return;
+            _busy = true;
+            _form = new PullRequestDetailsForm(this, PullRequestDetailsCards.Loading(_repository, _number));
         }
+        IsLoading = true;
+        PublishItemsChanged();
         CurrentWork = _load.Run(operation, () => LoadAsync(operation),
             () => FinishOperation(operation), "GitHub took too long to load pull request details.",
             area: DiagnosticArea.PullRequests);
-        IsLoading = true;
     }
 
     private void StartLoadUnderLock(out ListLoadState.Operation? operation)
@@ -423,13 +436,36 @@ internal sealed partial class PullRequestDetailsPage : ContentPage, IDisposable
                 : DetailsForm(_feedback, _load.AuthorizeUrl);
         }
         _load.Publish(operation, () => IsLoading = false);
-        _load.Publish(operation, () => RaiseItemsChanged());
+        _load.Publish(operation, PublishItemsChanged);
     }
 
     private PullRequestDetailsForm DetailsForm(string? feedback, Uri? authorizeUrl = null) =>
         new(this, _details is null ? PullRequestDetailsCards.Error(_repository, _number, feedback ?? "Pull request details unavailable.")
             : PullRequestDetailsCards.Details(_repository, _details, _account?.Login, feedback, authorizeUrl,
-                _outcomeUnknown, _reviewDraft, _pendingReview is not null));
+                _outcomeUnknown, _reviewDraft, _pendingReview is not null), showsDescription: _details is not null);
+
+    private void PublishItemsChanged()
+    {
+        PullRequestDetailsForm form;
+        bool canRefresh;
+        SubjectState? state;
+        lock (_lock)
+        {
+            form = _form;
+            canRefresh = !_disposed && !_busy && !_load.Fetching && IsLive(_account);
+            state = _details?.PullRequest.State;
+        }
+        Commands = canRefresh
+            ? [new CommandContextItem(new RefreshDetailsCommand(this, form) { Name = "Refresh", Icon = Icons.Refresh })]
+            : [];
+        Icon = state is { } current ? Icons.SubjectIcon(true, current) : Icons.PullRequests;
+        RaiseItemsChanged();
+    }
+
+    private sealed partial class RefreshDetailsCommand(PullRequestDetailsPage page, PullRequestDetailsForm source) : InvokableCommand
+    {
+        public override ICommandResult Invoke() => page.Submit(source, "{}", """{"action":"refresh"}""", null);
+    }
 
     private static string ConfirmationTitle(string action) => action switch
     {
@@ -478,7 +514,7 @@ internal sealed partial class PullRequestDetailsPage : ContentPage, IDisposable
         }
         (contextualCodespace as IDisposable)?.Dispose();
         IsLoading = false;
-        RaiseItemsChanged();
+        PublishItemsChanged();
     }
 
     private static string? ReadString(string json, string property)
@@ -496,9 +532,12 @@ internal sealed partial class PullRequestDetailsPage : ContentPage, IDisposable
     private sealed partial class PullRequestDetailsForm : FormContent
     {
         private readonly PullRequestDetailsPage _page;
-        public PullRequestDetailsForm(PullRequestDetailsPage page, string template)
+        internal bool ShowsDescription { get; }
+
+        public PullRequestDetailsForm(PullRequestDetailsPage page, string template, bool showsDescription = false)
         {
             _page = page;
+            ShowsDescription = showsDescription;
             TemplateJson = template;
         }
         public override ICommandResult SubmitForm(string inputs, string data) =>
@@ -513,7 +552,13 @@ internal static class PullRequestDetailsCards
     internal static string Loading(string repository, int number) => Card(Text("Loading pull request details..."), Text($"{repository}#{number}"));
     internal static string SignedOut() => Card(Text("Sign in to view pull request details."));
     internal static string Error(string repository, int number, string message) => Card(
-        Text($"{repository}#{number}"), Text(message), Submit("Refresh", "refresh"));
+        Text($"{repository}#{number}"), Text(message));
+
+    internal static string Description(string repository, PullRequestDetailsSnapshot data) =>
+        $"# #{data.PullRequest.Number} {data.PullRequest.Title}\n\n"
+        + $"{repository} · {data.PullRequest.State} · {data.HeadSha} into {data.PullRequest.BaseRef ?? data.PullRequest.BaseBranch ?? "unknown"}\n\n"
+        + $"Author: @{data.PullRequest.Author ?? "unknown"} · Mergeable: {data.Mergeable?.ToString() ?? "unknown"} · Checks: {data.ChecksState}\n\n"
+        + (string.IsNullOrWhiteSpace(data.PullRequest.Body) ? "No description provided." : data.PullRequest.Body);
 
     internal static string Details(string repository, PullRequestDetailsSnapshot data, string? login, string? feedback,
         Uri? authorizeUrl, bool outcomeUnknown, PullRequestReviewDraft? draft, bool hasPendingReview)
@@ -521,10 +566,6 @@ internal static class PullRequestDetailsCards
         var pull = data.PullRequest;
         var body = new List<string>
         {
-            Text($"#{pull.Number} {pull.Title}"),
-            Text($"{repository} · {pull.State} · {data.HeadSha} into {pull.BaseRef ?? pull.BaseBranch ?? "unknown"}"),
-            Text($"Author: @{pull.Author ?? "unknown"} · Mergeable: {data.Mergeable?.ToString() ?? "unknown"} · Checks: {data.ChecksState}"),
-            Text(pull.Body ?? "No description provided."),
             feedback is null ? string.Empty : Text(feedback),
             authorizeUrl is null ? string.Empty : Authorize(authorizeUrl),
         };
@@ -545,7 +586,6 @@ internal static class PullRequestDetailsCards
         else foreach (var check in data.Checks) body.Add(Text($"{check.Name}: {check.Status} {check.Conclusion}"));
         if (data.StatusError is not null) body.Add(Text(data.StatusError));
         else if (data.CommitStatus is not null) body.Add(Text($"Combined commit status: {data.CommitStatus}"));
-        body.Add(Submit("Refresh pull request", "refresh"));
         return Card([.. body]);
     }
 

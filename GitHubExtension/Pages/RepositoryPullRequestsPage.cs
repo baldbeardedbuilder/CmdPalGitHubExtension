@@ -314,7 +314,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
                     if (_client is BaldBeardedBuilder.CmdPal.GitHub.Issues.IIssueConversationClient conversationClient)
                     {
                         conversationPage = new IssueConversationPage(_auth, conversationClient, account, repository,
-                            pullRequest.Number, "Pull request");
+                            pullRequest.Number, "Pull request", icon: Icons.SubjectIcon(true, pullRequest.State));
                         _featurePages.Add(conversationPage);
                     }
 
@@ -380,6 +380,7 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
     internal void ApplyPullRequestUpdate(GitHubAccount account, string repository, PullRequestDetailsPage source, GitHubPullRequest updated)
     {
         MergePullRequestPage? retiredMergePage = null;
+        IssueConversationPage? conversation;
         lock (_lock)
         {
             if (_load.Disposed || !ReferenceEquals(account, _auth.CurrentAccount) || _repository != repository)
@@ -396,8 +397,10 @@ internal sealed partial class RepositoryPullRequestsPage : DynamicListPage, IDis
                 existing.ActionsPage, existing.DetailsPage, existing.ConversationPage);
             var index = _items.IndexOf(existing);
             _items[index] = replacement;
+            conversation = existing.ConversationPage;
         }
         retiredMergePage?.Dispose();
+        if (conversation is not null) conversation.Icon = Icons.SubjectIcon(true, updated.State);
         RaiseItemsChanged();
     }
 
@@ -462,23 +465,15 @@ internal sealed partial class RepositoryPullRequestItem : ListItem
 
         metadata.Add(opened);
         Subtitle = string.Join(" · ", metadata);
-        Icon = pullRequest.State switch
-        {
-            SubjectState.Open => Icons.StateOpenPullRequest,
-            SubjectState.Draft => Icons.StateDraft,
-            SubjectState.Merged => Icons.StateMerged,
-            SubjectState.Closed => Icons.StateClosedPullRequest,
-            _ => Icons.PullRequests,
-        };
+        Icon = Icons.SubjectIcon(true, pullRequest.State);
         Tags = NotificationFormatting.StateTag("PullRequest", pullRequest.State) is { } state ? [state] : [];
         var commands = new List<IContextItem>
         {
-            new CommandContextItem(new OpenInBrowserCommand(browser, pullRequest.WebUrl, "Open in browser", Icons.PullRequests)),
             new CommandContextItem(new CopyTextCommand(pullRequest.WebUrl.AbsoluteUri) { Name = "Copy link", Icon = Icons.Copy }),
         };
+        if (detailsPage is not null) commands.Insert(0, new CommandContextItem(detailsPage) { Title = "Show details" });
         if (mergePage is not null) commands.Add(new CommandContextItem(mergePage));
         if (actionsPage is not null) commands.Add(new CommandContextItem(actionsPage));
-        if (detailsPage is not null) commands.Add(new CommandContextItem(detailsPage));
         if (detailsPage?.ContextualCodespaceCommand is { } codespace)
             commands.Add(new CommandContextItem(codespace));
         if (conversationPage is not null) commands.Add(new CommandContextItem(conversationPage));

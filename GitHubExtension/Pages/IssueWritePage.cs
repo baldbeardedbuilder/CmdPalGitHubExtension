@@ -117,8 +117,11 @@ internal sealed partial class IssueWritePage : ContentPage, IDisposable
             }
             else if (action == "cancel")
             {
+                _draft = null;
+                _reviewAccount = null;
                 _reviewing = false;
                 _form = Form(null);
+                return CommandResult.GoBack();
             }
             else if (action is not ("confirm" or "back" or "cancel"))
             {
@@ -362,7 +365,8 @@ internal static class IssueWriteCards
             $$"""{"type":"Input.Text","id":"body","label":"Description","isMultiline":true,"value":{{GitHubJson.String(draft?.Body ?? issue?.Body ?? string.Empty)}}}""",
             $$"""{"type":"Input.ChoiceSet","id":"milestone","label":"Milestone","style":"compact","value":"{{selectedIndex.ToString(CultureInfo.InvariantCulture)}}","choices":[{{string.Join(",", choices.Select((item, index) => $$"""{"title":{{GitHubJson.String(item.Title)}},"value":"{{index.ToString(CultureInfo.InvariantCulture)}}"}"""))}}]}""",
             Text("Issue templates and forms aren't applied in this editor. Use GitHub when the repository requires a structured issue."),
-            Submit("Review issue", "review"),
+            Submit("Save", "review"),
+            Submit("Cancel", "cancel"),
         };
         return Card([.. elements]);
     }
@@ -385,8 +389,9 @@ internal static class IssueWriteCards
     private static string Submit(string title, string action, string? style = null)
     {
         var styleJson = style is null ? string.Empty : ",\"style\":" + GitHubJson.String(style);
-        return "{\"type\":\"Action.Submit\",\"title\":" + GitHubJson.String(title) + styleJson
-            + ",\"data\":{\"action\":" + GitHubJson.String(action) + "}}";
+        return "{\"type\":\"ActionSet\",\"actions\":[{\"type\":\"Action.Submit\",\"title\":" + GitHubJson.String(title) + styleJson
+            + ",\"associatedInputs\":\"" + (action == "review" ? "auto" : "none")
+            + "\",\"data\":{\"action\":" + GitHubJson.String(action) + "}}]}";
     }
     private static string Authorize(Uri url) =>
         $$"""{"type":"ActionSet","actions":[{"type":"Action.OpenUrl","title":"Authorize organization access","url":{{GitHubJson.String(url.AbsoluteUri)}}}]}""";

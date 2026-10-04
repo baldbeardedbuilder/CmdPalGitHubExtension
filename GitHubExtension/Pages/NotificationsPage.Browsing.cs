@@ -24,7 +24,8 @@ internal sealed partial class NotificationsPage
 
         return _nativeDetails.Commands($"{item.AccountGeneration}:{item.Notification.Id}", account,
             item.Notification.RepositoryFullName, number, item.Notification.SubjectType == "PullRequest",
-            () => Volatile.Read(ref _accountGeneration) == item.AccountGeneration);
+            () => Volatile.Read(ref _accountGeneration) == item.AccountGeneration,
+            Icons.SubjectIcon(item.Notification.SubjectType == "PullRequest", item.Subject?.State ?? SubjectState.Unknown));
     }
 
     internal IContextItem[] BrowsingCommands()

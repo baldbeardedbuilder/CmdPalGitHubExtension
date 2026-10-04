@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using Windows.UI.ViewManagement;
+using SubjectState = BaldBeardedBuilder.CmdPal.GitHub.Notifications.SubjectState;
 
 namespace BaldBeardedBuilder.CmdPal.GitHub;
 
@@ -59,7 +60,7 @@ internal static class Icons
 
     internal static IconInfo PullRequests { get; } = Themed("git-pull-request");
 
-    internal static IconInfo StateOpenIssue { get; } = Octicon("state-issue-closed.svg");
+    internal static IconInfo StateOpenIssue { get; } = Octicon("state-issue-opened.svg");
 
     internal static IconInfo StateOpenPullRequest { get; } = Octicon("state-git-pull-request.svg");
 
@@ -67,11 +68,23 @@ internal static class Icons
 
     internal static IconInfo StateMerged { get; } = Octicon("state-git-merge.svg");
 
-    internal static IconInfo StateClosedIssue { get; } = Octicon("state-issue-opened.svg");
+    internal static IconInfo StateClosedIssue { get; } = Octicon("state-issue-closed.svg");
 
     internal static IconInfo StateNotPlanned { get; } = Octicon("state-skip.svg");
 
     internal static IconInfo StateClosedPullRequest { get; } = Octicon("state-git-pull-request-closed.svg");
+
+    internal static IconInfo SubjectIcon(bool pullRequest, SubjectState state) => (pullRequest, state) switch
+    {
+        (true, SubjectState.Open) => StateOpenPullRequest,
+        (true, SubjectState.Draft) => StateDraft,
+        (true, SubjectState.Merged) => StateMerged,
+        (true, SubjectState.Closed) => StateClosedPullRequest,
+        (false, SubjectState.Open) => StateOpenIssue,
+        (false, SubjectState.Closed) => StateClosedIssue,
+        (false, SubjectState.NotPlanned) => StateNotPlanned,
+        _ => pullRequest ? PullRequests : Issues,
+    };
 
     private static readonly Dictionary<(string Glyph, bool Unread), IconInfo> ListIcons = [];
 

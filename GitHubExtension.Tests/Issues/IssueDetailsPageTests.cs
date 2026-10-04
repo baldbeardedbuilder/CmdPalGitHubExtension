@@ -60,7 +60,7 @@ public class IssueDetailsPageTests
 
         var content = (FormContent)page.GetContent().Single();
         Assert.Contains("GitHub refused the request.", content.TemplateJson);
-        Assert.Contains(IssueDetailsActions.Retry, content.TemplateJson);
+        Assert.AreEqual("Refresh", Assert.ContainsSingle(page.Commands.OfType<CommandContextItem>()).Command!.Name);
     }
 
     [TestMethod]

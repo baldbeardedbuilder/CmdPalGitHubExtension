@@ -52,7 +52,9 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
         ActivateNotification();
         lock (_lock)
         {
-            return [_form];
+            return _form.ShowsDescription && _issue is { } issue
+                ? [_form, new MarkdownContent(string.IsNullOrWhiteSpace(issue.Body) ? "No description provided." : issue.Body)]
+                : [_form];
         }
     }
 
@@ -113,6 +115,7 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
         }
 
         _load.Publish(operation, () => IsLoading = true);
+        _load.Publish(operation, PublishItemsChanged);
         _load.Run(operation, () => LoadAsync(account, issueApiUrl, repository, operation), () =>
         {
             string? error;
@@ -126,7 +129,7 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
             }
 
             _load.Publish(operation, () => IsLoading = false);
-            _load.Publish(operation, () => RaiseItemsChanged());
+            _load.Publish(operation, PublishItemsChanged);
         }, "GitHub took too long to respond. Try loading the issue again.", area: DiagnosticArea.Issues);
     }
 
@@ -227,7 +230,7 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
             }
 
             _issue = issue;
-            _form = new IssueDetailsForm(this, IssueDetailsCards.Details(repository, issue, _mutations is not null, login: account.Login));
+            _form = new IssueDetailsForm(this, IssueDetailsCards.Details(repository, issue), showsDescription: true);
             _load.Succeed(operation, null);
         }
     }
@@ -257,7 +260,7 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
         }
 
         _load.Publish(revision, () => IsLoading = false);
-        _load.Publish(revision, () => RaiseItemsChanged());
+        _load.Publish(revision, PublishItemsChanged);
     }
 
     public void Dispose()
@@ -285,15 +288,19 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
 
         _mutations?.Dispose();
         IsLoading = false;
+        Commands = [];
     }
 
     private sealed partial class IssueDetailsForm : FormContent
     {
         private readonly IssueDetailsPage _page;
 
-        public IssueDetailsForm(IssueDetailsPage page, string template)
+        internal bool ShowsDescription { get; }
+
+        public IssueDetailsForm(IssueDetailsPage page, string template, bool showsDescription = false)
         {
             _page = page;
+            ShowsDescription = showsDescription;
             TemplateJson = template;
         }
 

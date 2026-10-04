@@ -43,7 +43,7 @@ public sealed class PullRequestDetailsPageTests
         SubmitReview(page);
         await page.CurrentWork;
 
-        var retryTemplate = ((IFormContent)page.GetContent().Single()).TemplateJson;
+        var retryTemplate = Assert.ContainsSingle(page.GetContent().OfType<IFormContent>()).TemplateJson;
         Assert.Contains("pending review draft is ready to submit again", retryTemplate);
         Assert.Contains("Original review", retryTemplate);
 
@@ -54,7 +54,7 @@ public sealed class PullRequestDetailsPageTests
             It.IsAny<CancellationToken>()), Times.Once);
         client.Verify(c => c.SubmitReviewAsync(Account, "octo/tool", 7,
             It.Is<PendingPullRequestReview>(review => review.Id == 21), "APPROVE", It.IsAny<CancellationToken>()), Times.Exactly(2));
-        Assert.Contains("Review submitted as approved.", ((IFormContent)page.GetContent().Single()).TemplateJson);
+        Assert.Contains("Review submitted as approved.", Assert.ContainsSingle(page.GetContent().OfType<IFormContent>()).TemplateJson);
     }
 
     [TestMethod]
@@ -119,7 +119,7 @@ public sealed class PullRequestDetailsPageTests
             It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
         page.GetContent();
         await page.CurrentWork;
-        Assert.DoesNotContain("Original review", ((IFormContent)page.GetContent().Single()).TemplateJson);
+        Assert.DoesNotContain("Original review", Assert.ContainsSingle(page.GetContent().OfType<IFormContent>()).TemplateJson);
     }
 
     [TestMethod]
@@ -263,7 +263,7 @@ public sealed class PullRequestDetailsPageTests
         page.GetContent();
         await page.CurrentWork;
         Submit(page, "{}", """{"action":"draft"}""");
-        var template = ((IFormContent)page.GetContent().Single()).TemplateJson;
+        var template = Assert.ContainsSingle(page.GetContent().OfType<IFormContent>()).TemplateJson;
         using var card = JsonDocument.Parse(template);
         var cancelData = card.RootElement.GetProperty("body").EnumerateArray()
             .Where(element => element.TryGetProperty("type", out var type) && type.GetString() == "ActionSet")
@@ -275,7 +275,7 @@ public sealed class PullRequestDetailsPageTests
 
         client.Verify(c => c.SetDraftAsync(It.IsAny<GitHubAccount>(), It.IsAny<string>(), It.IsAny<int>(),
             It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
-        Assert.Contains("Convert to draft", ((IFormContent)page.GetContent().Single()).TemplateJson);
+        Assert.Contains("Convert to draft", Assert.ContainsSingle(page.GetContent().OfType<IFormContent>()).TemplateJson);
     }
 
     private static void SubmitReview(PullRequestDetailsPage page)
@@ -284,9 +284,61 @@ public sealed class PullRequestDetailsPageTests
         Confirm(page);
     }
 
+    [TestMethod]
+    public async Task NativeRefresh_ReloadsMarkdownWithoutBodyButtonAndRejectsStaleCommand()
+    {
+        const string markdown = "## Description\n\n- First\n\n```csharp\nvar value = 1;\n```";
+        var details = Details() with { PullRequest = Details().PullRequest with { Body = markdown } };
+        var client = new Mock<IPullRequestFeatureClient>();
+        client.Setup(c => c.GetDetailsAsync(Account, "octo/tool", 7, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(details);
+        using var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(),
+            new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
+        using var page = new PullRequestDetailsPage(auth, client.Object, Account, "octo/tool", 7);
+        page.GetContent();
+        await page.CurrentWork;
+        Assert.Contains(markdown, Assert.ContainsSingle(page.GetContent().OfType<MarkdownContent>()).Body);
+        var form = Assert.ContainsSingle(page.GetContent().OfType<IFormContent>());
+        Assert.DoesNotContain("\"action\":\"refresh\"", form.TemplateJson);
+        var refresh = Assert.ContainsSingle(page.Commands.OfType<CommandContextItem>());
+        Assert.AreEqual("Refresh", refresh.Command!.Name);
+        var command = Assert.IsInstanceOfType<IInvokableCommand>(refresh.Command);
+
+        command.Invoke(null!);
+        await page.CurrentWork;
+        command.Invoke(null!);
+        await page.CurrentWork;
+
+        client.Verify(c => c.GetDetailsAsync(Account, "octo/tool", 7, It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    [TestMethod]
+    public async Task NativeRefresh_RecoversFailedInitialLoad()
+    {
+        var client = new Mock<IPullRequestFeatureClient>();
+        client.SetupSequence(c => c.GetDetailsAsync(Account, "octo/tool", 7, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new GitHubApiException("Unavailable."))
+            .ReturnsAsync(Details());
+        using var auth = new AuthService(new InMemoryAccountStore(Account), Mock.Of<IGitHubAuthClient>(),
+            new FakeBrowser(_ => null), new OAuthOptions("id", "secret"));
+        using var page = new PullRequestDetailsPage(auth, client.Object, Account, "octo/tool", 7);
+        page.GetContent();
+        await page.CurrentWork;
+        Assert.Contains("Unavailable.", Assert.ContainsSingle(page.GetContent().OfType<IFormContent>()).TemplateJson);
+        page.GetContent();
+        client.Verify(c => c.GetDetailsAsync(Account, "octo/tool", 7, It.IsAny<CancellationToken>()), Times.Once);
+        var refresh = Assert.ContainsSingle(page.Commands.OfType<CommandContextItem>());
+
+        Assert.IsInstanceOfType<IInvokableCommand>(refresh.Command).Invoke(null!);
+        await page.CurrentWork;
+
+        Assert.Contains("Improve login", Assert.ContainsSingle(page.GetContent().OfType<MarkdownContent>()).Body);
+        client.Verify(c => c.GetDetailsAsync(Account, "octo/tool", 7, It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
     private static void Confirm(PullRequestDetailsPage page)
     {
-        var template = ((IFormContent)page.GetContent().Single()).TemplateJson;
+        var template = Assert.ContainsSingle(page.GetContent().OfType<IFormContent>()).TemplateJson;
         using var card = JsonDocument.Parse(template);
         var data = card.RootElement.GetProperty("body").EnumerateArray()
             .Where(element => element.TryGetProperty("type", out var type) && type.GetString() == "ActionSet")
@@ -297,7 +349,7 @@ public sealed class PullRequestDetailsPageTests
     }
 
     private static void Submit(PullRequestDetailsPage page, string inputs, string data) =>
-        ((IFormContent)page.GetContent().Single()).SubmitForm(inputs, data);
+        Assert.ContainsSingle(page.GetContent().OfType<IFormContent>()).SubmitForm(inputs, data);
 
     private static PullRequestDetailsSnapshot Details() => new(
         new GitHubPullRequest

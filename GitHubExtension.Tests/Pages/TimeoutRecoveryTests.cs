@@ -105,7 +105,7 @@ public sealed class TimeoutRecoveryTests
     }
 
     [TestMethod]
-    public async Task IssueDetailTimeout_ShowsRetryAndRecovers()
+    public async Task IssueDetailTimeout_ShowsRefreshAndRecovers()
     {
         var requests = 0;
         using var http = new HttpClient(new StubHandler(_ =>
@@ -119,13 +119,16 @@ public sealed class TimeoutRecoveryTests
         Assert.IsFalse(page.IsLoading);
         var error = Assert.IsInstanceOfType<FormContent>(page.GetContent().Single()).TemplateJson;
         Assert.Contains(TimeoutMessage, error);
-        Assert.Contains(IssueDetailsActions.Retry, error);
+        Assert.DoesNotContain("Action.Submit", error);
+        var refresh = Assert.IsInstanceOfType<InvokableCommand>(
+            Assert.IsInstanceOfType<CommandContextItem>(page.Commands.Single()).Command);
+        Assert.AreEqual("Refresh", refresh.Name);
 
-        page.HandleSubmit(IssueDetailsActions.Retry);
+        refresh.Invoke();
         await page.CurrentLoad;
 
         Assert.IsFalse(page.IsLoading);
-        Assert.Contains("Recovered", Assert.IsInstanceOfType<FormContent>(page.GetContent().Single()).TemplateJson);
+        Assert.Contains("Recovered", page.GetContent().OfType<FormContent>().Single().TemplateJson);
         Assert.AreEqual(2, requests);
     }
 

@@ -15,20 +15,28 @@ namespace BaldBeardedBuilder.CmdPal.GitHub.Tests.Issues;
 [TestClass]
 public sealed class IssueDetailsMutationTests
 {
+    private static readonly string[] CloseCommands = ["Close as completed", "Close as not planned"];
+    private static readonly string[] LabelCommands = ["Add label", "Remove label"];
     public TestContext TestContext { get; set; }
 
     [TestMethod]
-    [DataRow("Open", "closeCompleted", "reopen")]
-    [DataRow("Closed", "reopen", "closeCompleted")]
-    [DataRow("NotPlanned", "reopen", "closeNotPlanned")]
-    [DataRow("Unknown", "addLabel", "closeCompleted")]
-    public void DetailsCard_OnlyOffersApplicableLifecycleActions(string state, string present, string absent)
+    [DataRow("Open", "Close as completed", "Reopen issue")]
+    [DataRow("Closed", "Reopen issue", "Close as completed")]
+    [DataRow("NotPlanned", "Reopen issue", "Close as not planned")]
+    [DataRow("Unknown", "Add label", "Close as completed")]
+    public async Task DetailsCommands_OnlyOfferApplicableLifecycleActions(string state, string present, string absent)
     {
-        var card = IssueDetailsCards.Details("octo/tool", Issue(Enum.Parse<SubjectState>(state)), true, login: Account.Login);
+        var issue = Issue(Enum.Parse<SubjectState>(state));
+        using var page = new IssueDetailsPage(CreateAuth(), Reader(issue).Object, new FakeBrowser(_ => null),
+            IssueMutationSessionTests.Client(issue).Object);
+        page.LoadIssue(Account, ApiUrl, "octo/tool");
+        await page.CurrentLoad;
+        var card = Form(page).TemplateJson;
         using var json = JsonDocument.Parse(card);
         Assert.AreEqual("AdaptiveCard", json.RootElement.GetProperty("type").GetString());
-        Assert.Contains(present, card);
-        Assert.DoesNotContain(absent, card);
+        Assert.Contains(present, CommandNames(page));
+        Assert.DoesNotContain(absent, CommandNames(page));
+        Assert.DoesNotContain("Action.Submit", card);
     }
 
     [TestMethod]
@@ -73,7 +81,7 @@ public sealed class IssueDetailsMutationTests
         old.SubmitForm("{}", $$"""{"action":"{{IssueDetailsActions.Confirm}}"}""");
         await page.CurrentMutation;
 
-        Assert.Contains(IssueDetailsActions.CloseCompleted, Form(page).TemplateJson);
+        Assert.Contains("Close as completed", CommandNames(page));
         mutations.Verify(c => c.ChangeStateAsync(It.IsAny<GitHubAccount>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<SubjectState>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -96,7 +104,7 @@ public sealed class IssueDetailsMutationTests
         await page.CurrentMutation;
 
         Assert.Contains("mona", Form(page).TemplateJson);
-        Assert.Contains(add ? IssueDetailsActions.RemoveSelf : IssueDetailsActions.AssignSelf, Form(page).TemplateJson);
+        Assert.Contains(add ? "Remove myself" : "Assign myself", CommandNames(page));
         mutations.Verify(c => c.ChangeAssigneeAsync(Account, "octo/tool", 42, "octocat", add, It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -308,7 +316,83 @@ public sealed class IssueDetailsMutationTests
         return client;
     }
 
-    private static FormContent Form(IssueDetailsPage page) => Assert.IsInstanceOfType<FormContent>(Assert.ContainsSingle(page.GetContent()));
+    private static FormContent Form(IssueDetailsPage page) => Assert.ContainsSingle(page.GetContent().OfType<FormContent>());
+
+    private static string[] CommandNames(IssueDetailsPage page) =>
+        Flatten(page.Commands).Select(item => item.Command!.Name).ToArray();
+
+    private static IEnumerable<CommandContextItem> Flatten(IEnumerable<Microsoft.CommandPalette.Extensions.IContextItem> items)
+    {
+        foreach (var item in items.OfType<CommandContextItem>())
+        {
+            yield return item;
+            foreach (var child in Flatten(item.MoreCommands)) yield return child;
+        }
+    }
     private static void Submit(IssueDetailsPage page, string action, string inputs = "{}") =>
         Form(page).SubmitForm(inputs, $$"""{"action":"{{action}}"}""");
+
+    [TestMethod]
+    public async Task NativeCommands_HaveRequestedOrderSubmenusAndMarkdownDescription()
+    {
+        const string markdown = "## Details\n\n- First item\n- Second item\n\n```csharp\nvar value = 1;\n```\n\n[GitHub](https://github.com)";
+        var issue = Issue() with { Body = markdown };
+        var mutations = IssueMutationSessionTests.Client(issue);
+        var browser = new FakeBrowser(_ => null);
+        using var page = new IssueDetailsPage(CreateAuth(), Reader(issue).Object, browser, mutations.Object);
+        page.LoadIssue(Account, ApiUrl, "octo/tool");
+        await page.CurrentLoad;
+
+        var commands = page.Commands.OfType<CommandContextItem>().ToArray();
+        Assert.AreEqual("Open in browser", commands[0].Command!.Name);
+        Assert.AreEqual("Refresh", commands[1].Command!.Name);
+        var close = Assert.ContainsSingle(commands.Where(item => item.Command!.Name == "Close"));
+        CollectionAssert.AreEqual(CloseCommands,
+            close.MoreCommands.OfType<CommandContextItem>().Select(item => item.Command!.Name).ToArray());
+        var labels = Assert.ContainsSingle(commands.Where(item => item.Command!.Name == "Add/remove labels"));
+        CollectionAssert.AreEqual(LabelCommands,
+            labels.MoreCommands.OfType<CommandContextItem>().Select(item => item.Command!.Name).ToArray());
+        Assert.Contains("Assign myself", CommandNames(page));
+        Assert.Contains("Assign", CommandNames(page));
+        Assert.AreEqual(markdown, Assert.ContainsSingle(page.GetContent().OfType<MarkdownContent>()).Body);
+        Assert.DoesNotContain("Action.Submit", Form(page).TemplateJson);
+        Assert.DoesNotContain(markdown, Form(page).TemplateJson);
+        Assert.AreSame(Icons.StateOpenIssue, page.Icon);
+        var openIcon = Icons.StateOpenIssue.Light.Icon;
+        var closedIcon = Icons.StateClosedIssue.Light.Icon;
+        Assert.IsNotNull(openIcon);
+        Assert.IsNotNull(closedIcon);
+        Assert.Contains("state-issue-opened.svg", openIcon);
+        Assert.Contains("state-issue-closed.svg", closedIcon);
+
+        Assert.IsInstanceOfType<Microsoft.CommandPalette.Extensions.IInvokableCommand>(
+            commands[0].Command).Invoke(null!);
+        Assert.AreEqual(issue.WebUrl, browser.LastOpened);
+        Assert.IsInstanceOfType<Microsoft.CommandPalette.Extensions.IInvokableCommand>(
+            close.MoreCommands.OfType<CommandContextItem>().First().Command).Invoke(null!);
+        Assert.Contains("Close as completed", Form(page).TemplateJson);
+        Assert.IsEmpty(page.GetContent().OfType<MarkdownContent>());
+        mutations.Verify(c => c.ChangeStateAsync(It.IsAny<GitHubAccount>(), It.IsAny<string>(), It.IsAny<int>(),
+            It.IsAny<SubjectState>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task ReplacedIssue_RejectsOldNativeCommand()
+    {
+        var mutations = IssueMutationSessionTests.Client(Issue());
+        using var page = new IssueDetailsPage(CreateAuth(), Reader(Issue()).Object, new FakeBrowser(_ => null), mutations.Object);
+        page.LoadIssue(Account, ApiUrl, "octo/tool");
+        await page.CurrentLoad;
+        var command = Assert.IsInstanceOfType<Microsoft.CommandPalette.Extensions.IInvokableCommand>(
+            Flatten(page.Commands).Single(item => item.Command!.Name == "Close as completed").Command);
+        page.LoadIssue(Account, ApiUrl, "octo/tool");
+        await page.CurrentLoad;
+
+        command.Invoke(null!);
+
+        Assert.DoesNotContain("Confirm", Form(page).TemplateJson);
+        Assert.AreEqual("Open in browser", page.Commands.OfType<CommandContextItem>().First().Command!.Name);
+        mutations.Verify(c => c.ChangeStateAsync(It.IsAny<GitHubAccount>(), It.IsAny<string>(), It.IsAny<int>(),
+            It.IsAny<SubjectState>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
 }
