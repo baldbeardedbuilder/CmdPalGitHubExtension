@@ -22,6 +22,7 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
     private Lock _lock => _load.SyncRoot;
     private readonly List<AgentItem> _items = [];
     private AgentQuery _query = new();
+    private readonly string? _repository;
     private int _generation;
     internal GitHubAccount? CurrentAccount => _auth.CurrentAccount;
     internal int Generation => _generation;
@@ -36,8 +37,11 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
         _browser = browser;
         _time = time ?? TimeProvider.System;
         _query = query ?? new();
+        _repository = _query.Repository;
         _emptyContent = new PageEmptyContent(Icons.Agents, new RefreshAgentsCommand(this));
-        Id = PageId;
+        Id = _repository is { } scopedRepository
+            ? PinDestination.RepositoryId(PinDestinationKind.RepositoryAgents, auth.CurrentAccount, scopedRepository)
+            : PinDestination.GlobalId(PinDestinationKind.Agents);
         Name = "Open";
         Title = _query.Repository is { } repository ? $"Agents in {repository}" : "Agents";
         Icon = Icons.Agents;
@@ -195,7 +199,7 @@ internal sealed partial class AgentsPage : DynamicListPage, IDisposable
             _load.Invalidate(reset: true);
             _generation++;
             _items.Clear();
-            _query = new();
+            _query = new(Repository: _repository);
             _queryCommands = null;
         }
 

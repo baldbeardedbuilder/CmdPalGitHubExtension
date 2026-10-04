@@ -22,6 +22,14 @@ Select a repository to open its menu:
 
 Repository rows also offer **Copy clone URL** when a clone URL is available, and **Copy name**. Opening a repository doesn't clone it to your machine.
 
+## Pin a repository view
+
+Open the **More** menu on **Issues**, **Pull Requests**, **Copilot tasks**, or **Actions** and choose the native pin option for Command Palette Home or the Dock. Each Dock pin opens the page as a single button, not a strip of live issue or workflow rows.
+
+Repository pins remember the repository, host, and account. Switching accounts doesn't retarget a pin to another server or user. It asks you to sign back in with its original identity. Reauthenticating with that account restores access, provided your token can still read the repository.
+
+Pins don't save the current search or filters. A restored destination starts with Open issues, Open pull requests, current agent tasks, or Running workflow runs. Repository overview, individual work items, and mutation forms aren't pinnable.
+
 ## Star repositories
 
 Open **Starred repositories** from the home page to browse your starred repositories. The list loads page by page; use **Load more** to continue. A repository's **Manage star** action checks your personal star state and offers a confirmed star or unstar action. It doesn't derive your state from the public star count.

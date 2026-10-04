@@ -52,7 +52,6 @@ internal sealed partial class MutationConfirmationPage : ContentPage
     {
         Name = action;
         Title = action;
-        Id = $"com.baldbeardedbuilder.cmdpal.github.confirm.{Guid.NewGuid():N}";
         _form = new ConfirmationForm(this, MutationConfirmation.Card(account, action, target, consequences), submit, feedback, isCurrent);
     }
 

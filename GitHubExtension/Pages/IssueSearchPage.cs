@@ -29,7 +29,6 @@ internal sealed partial class IssueSearchPage : DynamicListPage, IDisposable
     {
         (_auth, _client, _browser, _store) = (auth, client, browser, store ?? new SavedIssueQueryStore());
         _nativeDetails = new(detailFactories);
-        Id = PageId;
         Name = "Search issues and pull requests";
         Title = Name;
         Icon = Icons.Issues;

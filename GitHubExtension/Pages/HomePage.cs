@@ -41,7 +41,7 @@ internal sealed partial class HomePage : ListPage, IDisposable
         _createCodespace = createCodespace;
         _starredRepos = starredRepos;
         _signOut = new SignOutCommand(auth);
-        Id = PageId;
+        Id = PinDestination.GlobalId(PinDestinationKind.Home);
         Name = "Open";
         Title = "GitHub";
         Icon = Icons.GitHub;
@@ -65,8 +65,8 @@ internal sealed partial class HomePage : ListPage, IDisposable
 
         var items = new List<IListItem>
         {
-            new ListItem(_notifications) { Title = "Notifications", Subtitle = "Your GitHub inbox", Icon = Icons.Notifications, MoreCommands = accountCommands },
-            new ListItem(_repos) { Title = "Repos", Subtitle = "Find and open repositories", Icon = Icons.Repos, MoreCommands = accountCommands },
+            new PinnableListItem(_notifications) { Title = "Notifications", Subtitle = "Your GitHub inbox", Icon = Icons.Notifications, MoreCommands = accountCommands },
+            new PinnableListItem(_repos) { Title = "Repos", Subtitle = "Find and open repositories", Icon = Icons.Repos, MoreCommands = accountCommands },
         };
         if (_repos.WorkSearch is { } search)
         {
@@ -91,8 +91,8 @@ internal sealed partial class HomePage : ListPage, IDisposable
 
         items.AddRange(
         [
-            new ListItem(_agents) { Title = "Agents", Subtitle = "Check your Copilot agent tasks", Icon = Icons.Agents, MoreCommands = accountCommands },
-            new ListItem(_codespaces)
+            new PinnableListItem(_agents) { Title = "Agents", Subtitle = "Check your Copilot agent tasks", Icon = Icons.Agents, MoreCommands = accountCommands },
+            new PinnableListItem(_codespaces)
             {
                 Title = "Codespaces",
                 Subtitle = "Find and open your codespaces",

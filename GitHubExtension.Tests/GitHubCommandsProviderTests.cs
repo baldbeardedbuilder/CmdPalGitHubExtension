@@ -70,14 +70,13 @@ public class GitHubCommandsProviderTests
     }
 
     [TestMethod]
-    public void ExtensionProvider_DoesNotAdvertisePinningAcrossWinRT()
+    public void ExtensionProvider_AdvertisesPinningAcrossWinRT()
     {
         using var provider = CreateProvider(new InMemoryAccountStore(), out _);
         using var disposed = new ManualResetEvent(false);
         using var extension = new GitHubExtension(disposed, provider);
         var exposed = extension.GetProvider(ProviderType.Commands);
-        var hostProvider = Assert.IsInstanceOfType<ICommandProvider3>(exposed);
-        Assert.IsNotInstanceOfType<ICommandProvider4>(exposed);
+        var hostProvider = Assert.IsInstanceOfType<ICommandProvider4>(exposed);
         Assert.AreSame(provider.TopLevelCommands().Single(), hostProvider.TopLevelCommands().Single());
         Assert.AreSame(provider.GetCommand(HomePage.PageId), hostProvider.GetCommand(HomePage.PageId));
         Assert.IsNotEmpty(hostProvider.GetApiExtensionStubs());
@@ -87,7 +86,7 @@ public class GitHubCommandsProviderTests
             var id = typeof(ICommandProvider4).GUID;
             var result = Marshal.QueryInterface(pointer, in id, out var pinningPointer);
             if (pinningPointer != IntPtr.Zero) Marshal.Release(pinningPointer);
-            Assert.AreEqual(unchecked((int)0x80004002), result);
+            Assert.AreEqual(0, result);
         }
         finally
         {

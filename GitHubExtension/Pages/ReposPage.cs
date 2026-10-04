@@ -84,7 +84,7 @@ internal sealed partial class ReposPage : DynamicListPage, IDisposable
         _searchPagination = new PagedListPresentation(Icons.Repos, () => StartSearch(reset: false));
         _searchDelay = searchDelay ?? DefaultSearchDelay;
         Actions = actions;
-        Id = starred ? StarredPageId : PageId;
+        Id = starred ? "" : PinDestination.GlobalId(PinDestinationKind.Repos);
         Name = "Open";
         Title = starred ? "Starred repositories" : "Repos";
         Icon = Icons.Repos;

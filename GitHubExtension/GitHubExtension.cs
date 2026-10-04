@@ -9,7 +9,6 @@ public sealed partial class GitHubExtension : IExtension, IDisposable
 {
     private readonly ManualResetEvent _extensionDisposedEvent;
     private readonly GitHubCommandsProvider _provider;
-    private readonly UnpinnableCommandProvider _hostProvider;
     private readonly Lock _disposeLock = new();
     private bool _isDisposed;
 
@@ -22,12 +21,11 @@ public sealed partial class GitHubExtension : IExtension, IDisposable
     {
         _extensionDisposedEvent = extensionDisposedEvent;
         _provider = provider;
-        _hostProvider = new UnpinnableCommandProvider(provider);
     }
 
     public object? GetProvider(ProviderType providerType) => providerType switch
     {
-        ProviderType.Commands => _hostProvider,
+        ProviderType.Commands => _provider,
         _ => null,
     };
 

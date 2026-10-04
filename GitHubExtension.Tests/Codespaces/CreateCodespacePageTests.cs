@@ -19,7 +19,7 @@ public class CreateCodespacePageTests
     {
         using var page = CreatePage(Mock.Of<ICodespacesClient>(), out _);
 
-        Assert.AreEqual(CreateCodespacePage.PageId, page.Id);
+        Assert.IsEmpty(page.Id);
         Assert.AreEqual("Create Codespace", page.Name);
         Assert.Contains("repository", CurrentTemplate(page));
         Assert.Contains("branch", CurrentTemplate(page));

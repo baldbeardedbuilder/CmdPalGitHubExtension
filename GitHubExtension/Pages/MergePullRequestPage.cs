@@ -42,7 +42,6 @@ internal sealed partial class MergePullRequestPage : ContentPage, IDisposable
         _repository = repository;
         _number = number;
         _webUrl = webUrl;
-        Id = $"com.baldbeardedbuilder.cmdpal.github.merge.{Guid.NewGuid()}";
         Name = "Merge pull request";
         Title = $"Merge {repository}#{number}";
         Icon = Icons.PullRequests;

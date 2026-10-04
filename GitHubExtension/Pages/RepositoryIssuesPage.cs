@@ -37,7 +37,6 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
         _time = time ?? TimeProvider.System;
         _emptyContent = new PageEmptyContent(Icons.Issues, new RefreshRepositoryItemsCommand(RefreshAsync, Icons.Issues));
         _pagination = new PagedListPresentation(Icons.Issues, () => StartLoad(reset: false));
-        Id = PageId;
         Name = "Issues";
         Title = "Issues";
         Icon = Icons.Issues;
@@ -61,11 +60,12 @@ internal sealed partial class RepositoryIssuesPage : DynamicListPage, IDisposabl
 
     internal RepositoryPage? Owner { get; private init; }
 
-    internal RepositoryIssuesPage ForRepository(string repository, RepositoryPage? owner = null)
+    internal RepositoryIssuesPage ForRepository(string repository, RepositoryPage? owner = null, AuthService? auth = null)
     {
-        var page = new RepositoryIssuesPage(_auth, _client, _browser, _time)
+        var pageAuth = auth ?? _auth;
+        var page = new RepositoryIssuesPage(pageAuth, _client, _browser, _time)
         {
-            Id = $"{PageId}.{Uri.EscapeDataString(repository)}",
+            Id = PinDestination.RepositoryId(PinDestinationKind.RepositoryIssues, pageAuth.CurrentAccount, repository),
             Title = $"{repository} issues",
             _repository = repository,
             Owner = owner,

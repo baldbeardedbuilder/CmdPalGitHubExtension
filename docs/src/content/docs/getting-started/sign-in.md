@@ -41,4 +41,6 @@ On the extension's home page, open a row's **More** menu and choose **Sign out**
 
 Signing out removes the stored credentials. It also cancels local outstanding work and discards old account results, but it can't undo a request GitHub has already accepted.
 
+Home and Dock pins survive signing out. General GitHub destinations use your current account; repository views stay bound to the host and account that created the pin. A blocked repository pin shows the required identity and opens the sign-in page. It never switches your account automatically.
+
 See [privacy](/CmdPalGitHubExtension/reference/privacy/) for storage and logging details.

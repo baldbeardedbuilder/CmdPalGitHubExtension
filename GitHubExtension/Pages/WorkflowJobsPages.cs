@@ -36,7 +36,6 @@ internal sealed partial class WorkflowJobsPage : DynamicListPage, IDisposable
         _repository = repository;
         _run = run;
         _account = auth.CurrentAccount;
-        Id = $"{ActionsPage.PageId}.jobs.{Uri.EscapeDataString(repository)}.{run.Id}";
         Name = "Jobs and steps";
         Title = $"Jobs for {run.DisplayTitle}";
         Icon = Icons.Actions;
@@ -257,7 +256,6 @@ internal sealed partial class WorkflowJobDetailsPage : ContentPage, IDisposable
         _run = run;
         _initial = job;
         _account = auth.CurrentAccount;
-        Id = $"{ActionsPage.PageId}.job.{job.Id}";
         Name = job.Name;
         Title = job.Name;
         Icon = Icons.Actions;
@@ -559,7 +557,6 @@ internal sealed partial class WorkflowArtifactsPage : DynamicListPage, IDisposab
         _repository = repository;
         _run = run;
         _account = auth.CurrentAccount;
-        Id = $"{ActionsPage.PageId}.artifacts.{Uri.EscapeDataString(repository)}.{run.Id}";
         Name = "Logs and artifacts";
         Title = $"Downloads for {run.DisplayTitle}";
         Icon = Icons.Actions;
@@ -753,7 +750,6 @@ internal sealed partial class WorkflowDownloadPage : ContentPage, IDisposable
         _artifact = artifact;
         _account = auth.CurrentAccount;
         _status = "Choose a destination file. Existing files at that path will be replaced after the download completes.";
-        Id = $"{ActionsPage.PageId}.download.{run.Id}.{artifact?.Id ?? 0}";
         Name = "Save download";
         Title = artifact is null ? "Save workflow logs" : $"Save {artifact.Name}";
         Icon = Icons.Actions;

@@ -43,7 +43,6 @@ internal sealed partial class IssueWritePage : ContentPage, IDisposable
         _repository = repository;
         _expected = expected;
         _created = created;
-        Id = $"com.baldbeardedbuilder.cmdpal.github.issue-write.{Uri.EscapeDataString(repository)}.{expected?.Number ?? 0}.{Guid.NewGuid():N}";
         Name = expected is null ? "Create issue" : "Edit issue";
         Title = $"{Name} in {repository}";
         Icon = Icons.Issues;

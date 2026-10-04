@@ -26,7 +26,6 @@ internal sealed partial class BulkNotificationReadPage : ListPage, IDisposable
             (account, client, executor, cutoff, repositories, isCurrent, refresh);
         Name = "Mark notifications read in bulk";
         Title = Name;
-        Id = $"com.baldbeardedbuilder.cmdpal.github.bulk-read.{Guid.NewGuid():N}";
         Icon = Icons.Notifications;
     }
 

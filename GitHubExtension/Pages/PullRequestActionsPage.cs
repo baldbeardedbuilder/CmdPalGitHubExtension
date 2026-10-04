@@ -67,7 +67,6 @@ internal sealed partial class PullRequestActionsPage : ContentPage, IDisposable
         _refresh = refresh;
         _mutations = new MutationExecutor(auth);
         _form = new PullRequestActionsForm(this, Card("Loading current pull request and available choices..."));
-        Id = $"com.baldbeardedbuilder.cmdpal.github.pull-request-actions.{Guid.NewGuid():N}";
         Name = "Manage pull request";
         Title = $"Manage {_repository}#{_number}";
         Icon = Icons.PullRequests;

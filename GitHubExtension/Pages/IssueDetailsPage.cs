@@ -38,7 +38,6 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
         _browser = browser;
         _mutationClient = mutationsClient ?? client as IIssueMutationsClient;
         _mutations = _mutationClient is null ? null : new IssueMutationSession(auth, _mutationClient);
-        Id = PageId;
         Name = "Issue";
         Title = "Issue details";
         Icon = Icons.Issues;
@@ -62,7 +61,6 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
     {
         return new IssueDetailsPage(_auth, _client, _browser, _mutationClient)
         {
-            Id = $"{PageId}.{Uri.EscapeDataString(notificationId)}",
             _notification = (issueApiUrl, repository, onOpened),
             _changed = changed,
         };
@@ -141,7 +139,6 @@ internal sealed partial class IssueDetailsPage : ContentPage, IDisposable
     {
         var page = new IssueDetailsPage(auth, client, browser)
         {
-            Id = $"{PageId}.{Guid.NewGuid():N}",
             _initialIssue = (account, issueApiUrl, repository),
         };
         page._changed = issue => changed(page, issue);

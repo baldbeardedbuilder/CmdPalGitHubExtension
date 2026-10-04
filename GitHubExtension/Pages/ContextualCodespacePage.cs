@@ -45,7 +45,6 @@ internal sealed partial class ContextualCodespacePage : ContentPage, IDisposable
         _branch = branch;
         _pullRequestNumber = pullRequestNumber;
         _account = auth.CurrentAccount;
-        Id = $"{CreateCodespacePage.PageId}.context.{Uri.EscapeDataString(repository)}.{pullRequestNumber ?? 0}";
         Name = "Open Codespace";
         Title = pullRequestNumber is null
             ? $"Codespace for {repository}"

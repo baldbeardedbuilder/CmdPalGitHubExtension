@@ -19,6 +19,9 @@ internal sealed partial class AuthService : IDisposable
     private GitHubAccount? _currentAccount;
     private readonly List<IAccountSubscription> _subscriptions = [];
     private HttpClient? _ownedHttp;
+    private readonly AuthService? _source;
+    private readonly GitHubHost? _requiredHost;
+    private readonly string? _requiredLogin;
 
     internal const string OAuthNotConfiguredMessage = "This build doesn't have a GitHub OAuth app configured. See CONTRIBUTING.md to set one up.";
 
@@ -39,12 +42,33 @@ internal sealed partial class AuthService : IDisposable
         _currentAccount = store.Load();
     }
 
+    private AuthService(AuthService source, GitHubHost host, string login)
+    {
+        _source = source;
+        _requiredHost = host;
+        _requiredLogin = login;
+        (_store, _client, _browser, _options, _listenerFactory) =
+            (source._store, source._client, source._browser, source._options, source._listenerFactory);
+        source.AccountChanged += SourceAccountChanged;
+    }
+
+    internal AuthService ForAccount(GitHubHost host, string login) => new(this, host, login);
+
+    private void SourceAccountChanged(object? sender, EventArgs e) => NotifyAccountChanged();
+
     public event EventHandler? AccountChanged;
 
     public GitHubAccount? CurrentAccount
     {
         get
         {
+            if (_source is not null)
+            {
+                var account = _source.CurrentAccount;
+                return account?.Host == _requiredHost && string.Equals(account?.Login, _requiredLogin, StringComparison.OrdinalIgnoreCase)
+                    ? account : null;
+            }
+
             lock (_lock)
             {
                 return _currentAccount;
@@ -85,6 +109,7 @@ internal sealed partial class AuthService : IDisposable
 
     public void Dispose()
     {
+        if (_source is not null) { _source.AccountChanged -= SourceAccountChanged; }
         Interlocked.Exchange(ref _ownedHttp, null)?.Dispose();
     }
 
@@ -200,6 +225,7 @@ internal sealed partial class AuthService : IDisposable
 
     private void UpdateAccount(Action persist, GitHubAccount? account)
     {
+        if (_source is not null) { throw new InvalidOperationException("Sign in through the GitHub account page."); }
         var changed = false;
         try
         {
@@ -236,19 +262,24 @@ internal sealed partial class AuthService : IDisposable
         {
             if (changed)
             {
-                AccountChanged?.Invoke(this, EventArgs.Empty);
-                IAccountSubscription[] subscriptions;
-                lock (_lock)
-                {
-                    _subscriptions.RemoveAll(entry => !entry.IsAlive);
-                    subscriptions = [.. _subscriptions];
-                }
-
-                foreach (var subscription in subscriptions)
-                {
-                    subscription.Notify();
-                }
+                NotifyAccountChanged();
             }
+        }
+    }
+
+    private void NotifyAccountChanged()
+    {
+        AccountChanged?.Invoke(this, EventArgs.Empty);
+        IAccountSubscription[] subscriptions;
+        lock (_lock)
+        {
+            _subscriptions.RemoveAll(entry => !entry.IsAlive);
+            subscriptions = [.. _subscriptions];
+        }
+
+        foreach (var subscription in subscriptions)
+        {
+            subscription.Notify();
         }
     }
 }

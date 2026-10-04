@@ -10,7 +10,6 @@ internal sealed partial class ForceCancelWorkflowRunPage : ContentPage
 
     public ForceCancelWorkflowRunPage(ActionsPage page, WorkflowRunItem item)
     {
-        Id = $"{ActionsPage.PageId}.force-cancel.{item.Run.Id}";
         Name = "Force cancel";
         Title = "Force cancel workflow run?";
         Icon = Icons.Stop;

@@ -32,7 +32,6 @@ internal sealed partial class CreateCodespacePage : ContentPage, IDisposable
         _client = client;
         _browser = browser;
         _mutations = new MutationExecutor(auth);
-        Id = PageId;
         Name = "Create Codespace";
         Title = "Create Codespace";
         Icon = Icons.Codespaces;
